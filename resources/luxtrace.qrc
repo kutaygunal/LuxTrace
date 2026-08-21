@@ -1,0 +1,18 @@
+<!DOCTYPE RCC>
+<!--
+  The icon is compiled into the binary rather than loaded from disk, so the
+  window and taskbar icon cannot go missing on a machine the app was copied to
+  without its resource folder.
+
+  Several sizes are shipped because QIcon picks the nearest one rather than
+  rescaling a single master: the taskbar, the alt-tab switcher and the title bar
+  all ask for different sizes, and a downscaled 256 looks soft in all of them.
+-->
+<RCC>
+    <qresource prefix="/icons">
+        <file alias="luxtrace_32.png">luxtrace_32.png</file>
+        <file alias="luxtrace_64.png">luxtrace_64.png</file>
+        <file alias="luxtrace_128.png">luxtrace_128.png</file>
+        <file alias="luxtrace_256.png">luxtrace_256.png</file>
+    </qresource>
+</RCC>

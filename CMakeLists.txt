@@ -1,0 +1,105 @@
+cmake_minimum_required(VERSION 3.21)
+project(LuxTrace VERSION 1.0.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
+set(CMAKE_AUTOUIC ON)
+
+# OpenCASCADE Technology (installed via vcpkg, triplet x64-windows)
+find_package(OpenCASCADE CONFIG REQUIRED)
+
+# Qt 6 (MSVC 2022 kit at C:/Qt/6.8.2/msvc2022_64)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets OpenGL OpenGLWidgets)
+
+find_package(Threads REQUIRED)
+
+enable_testing()
+
+# ---------------------------------------------------------------------------
+# Core: geometry, meshing, BVH and the ray tracer. Kept as its own library so
+# the tests link the same objects the app runs, with no Qt Widgets dependency.
+# ---------------------------------------------------------------------------
+add_library(optics_core STATIC
+    src/core/Vec3.h
+    src/core/Optics.h
+    src/core/SurfaceOptics.h
+    src/core/Mesh.h src/core/Mesh.cpp
+    src/core/GeometryProvider.h src/core/GeometryProvider.cpp
+    src/core/MeshBuilder.h src/core/MeshBuilder.cpp
+    src/core/TraceScene.h src/core/TraceScene.cpp
+    src/core/RayTracer.h src/core/RayTracer.cpp
+    src/core/SimulationResult.h src/core/SimulationResult.cpp
+    src/core/Simulation.h src/core/Simulation.cpp
+    src/core/SimulationWorker.h src/core/SimulationWorker.cpp
+    src/core/Analysis.h src/core/Analysis.cpp
+    src/core/ConfigIO.h src/core/ConfigIO.cpp
+    src/core/Studies.h src/core/Studies.cpp
+    src/core/StudyWorker.h src/core/StudyWorker.cpp
+)
+
+target_include_directories(optics_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+target_link_libraries(optics_core PUBLIC
+    Qt6::Core
+    Threads::Threads
+    # OpenCASCADE toolkits
+    TKernel TKMath TKService
+    # Visualization: the embedded 3D viewport (V3d_View + AIS + OpenGl driver)
+    TKV3d TKOpenGl
+    TKG2d TKG3d TKBRep TKGeomBase TKGeomAlgo
+    TKPrim TKBO TKBool TKMesh TKTopAlgo
+    TKFillet TKHLR TKShHealing
+)
+
+# ---------------------------------------------------------------------------
+# Application
+#
+# WIN32_EXECUTABLE is deliberately NOT set: the diagnostics subcommands
+# (--smoke, --study, --bench, --meshcheck) write to stdout, and a GUI-subsystem
+# binary on Windows has no console to write to.
+# ---------------------------------------------------------------------------
+qt_add_executable(LuxTrace
+    src/main.cpp
+    resources/luxtrace.qrc
+    src/ui/Palette.h src/ui/Palette.cpp
+    src/ui/PlotWidget.h src/ui/PlotWidget.cpp
+    src/ui/PolarPlotWidget.h src/ui/PolarPlotWidget.cpp
+    src/ui/HeatmapWidget.h src/ui/HeatmapWidget.cpp
+    src/ui/RayDiagramWidget.h src/ui/RayDiagramWidget.cpp
+    src/ui/ControlsPanel.h src/ui/ControlsPanel.cpp
+    src/ui/OcctViewWidget.h src/ui/OcctViewWidget.cpp
+    src/ui/MainWindow.h src/ui/MainWindow.cpp
+)
+
+# The Windows resource script carries the executable's own icon and its version
+# block. Qt's resource covers the running window; this one covers the file as the
+# shell sees it, before the process starts.
+if(WIN32)
+    target_sources(LuxTrace PRIVATE resources/LuxTrace.rc)
+endif()
+
+target_link_libraries(LuxTrace PRIVATE
+    optics_core
+    Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets
+)
+
+if(WIN32)
+    target_link_libraries(LuxTrace PRIVATE opengl32 user32 gdi32 advapi32 ws2_32)
+endif()
+
+# The ray tracer is only meaningful in an optimised build. /fp:fast is
+# deliberately NOT used: the slab test tolerates the NaN that an axis-aligned
+# ray produces, and fast math is allowed to assume NaNs never occur.
+if(MSVC)
+    target_compile_options(optics_core PRIVATE /W3 /MP)
+    target_compile_options(LuxTrace PRIVATE /W3 /MP)
+    target_compile_options(optics_core PRIVATE $<$<CONFIG:Release,RelWithDebInfo>:/O2>)
+else()
+    target_compile_options(optics_core PRIVATE -Wall -Wextra)
+endif()
+
+add_subdirectory(test)

@@ -1,0 +1,44 @@
+// Windows resources for the LuxTrace executable.
+//
+// The icon here is what Explorer, the taskbar's pinned entry and the shortcut
+// show; the Qt resource in luxtrace.qrc is what the running window uses. Both
+// are needed -- Windows reads the executable's own resource table before the
+// process ever starts, so a Qt-only icon leaves the file itself looking generic.
+
+#include <windows.h>
+
+// The first icon in the table, by ordinal, is the one the shell picks for the
+// executable. Keeping it at ordinal 1 is the whole convention.
+IDI_ICON1 ICON "luxtrace.ico"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     1,0,0,0
+PRODUCTVERSION  1,0,0,0
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+#ifdef _DEBUG
+FILEFLAGS       VS_FF_DEBUG
+#else
+FILEFLAGS       0x0L
+#endif
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"          // US English, Unicode
+        BEGIN
+            VALUE "FileDescription", "LuxTrace - Optical Design Studio"
+            VALUE "FileVersion",     "1.0.0.0"
+            VALUE "InternalName",    "LuxTrace"
+            VALUE "OriginalFilename","LuxTrace.exe"
+            VALUE "ProductName",     "LuxTrace"
+            VALUE "ProductVersion",  "1.0.0.0"
+            VALUE "Comments",        "Monte Carlo optical design and illumination analysis, built on OpenCASCADE and Qt."
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
