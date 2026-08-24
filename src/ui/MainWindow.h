@@ -1,6 +1,7 @@
 #pragma once
 #include <QMainWindow>
 #include <vector>
+#include "core/GeometryWorker.h"
 #include "core/Simulation.h"
 #include "core/SimulationResult.h"
 #include "core/Report.h"
@@ -38,6 +39,8 @@ protected:
 private slots:
     void onSceneChanged();
     void onGeometryChanged();
+    void onGeometryReady(Simulation::SceneRef data, quint64 generation);
+    void onGeometryFailed(const QString& message, quint64 generation);
     void onRun();
     void onCancel();
     void onProgress(int percent);
@@ -166,7 +169,22 @@ private:
 
     SimulationWorker* m_worker = nullptr;
     StudyWorker*      m_study  = nullptr;
+    GeometryWorker*   m_geometry = nullptr;
     QTimer*           m_geometryTimer = nullptr;
+
+    // The build the viewport is waiting for. A build that comes back stamped
+    // with anything else has been overtaken -- by a later edit, or by an import
+    // taking the viewport over -- and is dropped rather than drawn. Zero means
+    // nothing is awaited.
+    quint64 m_geometryGen = 0;
+    // The geometry that was last asked for -- in flight or already drawn. An
+    // edit that lands back on it costs nothing, and it is what the delivered
+    // build is recorded as, rather than whatever the spin boxes read by the
+    // time it arrives.
+    GeometryProvider::Scene m_requestedScene   = GeometryProvider::Scene::Reflector;
+    SceneParams             m_requestedParams;
+    int                     m_requestedDetBins = -1;
+    bool                    m_haveRequested    = false;
 
     SimulationResult                      m_last;
     bool                                  m_hasResult = false;

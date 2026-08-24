@@ -41,7 +41,15 @@ public:
     explicit OcctViewWidget(QWidget* parent = nullptr);
     ~OcctViewWidget() override;
 
-    // Replaces the displayed geometry. Cheap to call on every scene change.
+    // Replaces the displayed geometry. Cheap to call on every scene change:
+    // the presentations are reused when the part list keeps its shape, so a
+    // parameter edit swaps the B-Rep behind each surface rather than rebuilding
+    // the interactive context.
+    //
+    // The camera is only reframed when `scene` differs from the one on screen.
+    // A dimension change keeps it exactly where it is -- reframing on every
+    // edit threw away the viewpoint the user had chosen, which is the whole
+    // reason for looking at a parameter in 3D in the first place.
     void setScene(GeometryProvider::Scene scene,
                   const std::vector<OpticalSurface>& surfaces);
     // Replaces the displayed ray paths (pass an empty vector to clear them).
@@ -124,6 +132,10 @@ private:
     double          m_sceneSize   = 100.0;
     double          m_bbMin[3]    = {0, 0, 0};
     double          m_bbMax[3]    = {1, 1, 1};
+    // Which scene the displayed shapes belong to, so a parameter edit can be
+    // told apart from a change of optic and leave the camera alone.
+    int             m_sceneKey    = -1;
+    bool            m_haveScene   = false;
     bool            m_raysVisible = true;
     bool            m_initFailed  = false;
     RayColor        m_rayColor    = RayColor::Energy;

@@ -11,16 +11,23 @@
 #include <Aspect_DisplayConnection.hxx>
 #include <Bnd_Box.hxx>
 #include <BRepBndLib.hxx>
+#include <BRep_Tool.hxx>
 #include <Graphic3d_ArrayOfSegments.hxx>
 #include <Graphic3d_AspectLine3d.hxx>
 #include <Graphic3d_Camera.hxx>
 #include <Graphic3d_Group.hxx>
 #include <OpenGl_GraphicDriver.hxx>
+#include <Poly_Triangulation.hxx>
+#include <Prs3d_Drawer.hxx>
 #include <Prs3d_Presentation.hxx>
 #include <PrsMgr_PresentationManager.hxx>
 #include <Quantity_Color.hxx>
 #include <SelectMgr_EntityOwner.hxx>
 #include <SelectMgr_Selection.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopLoc_Location.hxx>
+#include <TopoDS.hxx>
+#include <TopoDS_Face.hxx>
 #include <WNT_Window.hxx>
 #include <gp_Ax1.hxx>
 #include <gp_Ax3.hxx>
@@ -85,6 +92,17 @@ constexpr double kWalkFractionPerSecond = 0.55;   // of the scene size
 constexpr double kLookRadiansPerPixel   = 0.005;
 constexpr std::size_t kMaxDisplayedSegments = 6000;
 constexpr int kClickSlopPixels = 4;   // a drag beyond this is not a click
+
+// Whether the mesher has already been over this shape. Geometry that reaches
+// the viewport through the scene cache carries the tracer's own triangulation;
+// geometry straight out of a CAD file does not. The first face answers for the
+// whole shape -- the mesher goes over all of them or none.
+bool isTessellated(const TopoDS_Shape& shape) {
+    TopExp_Explorer ex(shape, TopAbs_FACE);
+    if (!ex.More()) return false;
+    TopLoc_Location loc;
+    return !BRep_Tool::Triangulation(TopoDS::Face(ex.Current()), loc).IsNull();
+}
 
 // A ray colour ramp: cool where energy is low, hot where it is high.
 Quantity_Color energyColor(double t) {
@@ -188,17 +206,41 @@ double OcctViewWidget::sceneScale() const {
     return m_sceneSize > 1e-9 ? m_sceneSize : 100.0;
 }
 
-void OcctViewWidget::setScene(GeometryProvider::Scene,
+void OcctViewWidget::setScene(GeometryProvider::Scene scene,
                               const std::vector<OpticalSurface>& surfaces) {
     initViewer();
     if (m_context.IsNull()) return;
 
-    for (const auto& s : m_shapes) m_context->Remove(s, Standard_False);
-    m_shapes.clear();
+    // Editing a dimension is not the same event as choosing a different optic.
+    // The camera used to be thrown back to its default on both, so nudging a
+    // focal length threw away whatever the user had lined up to look at; the
+    // view is only reframed when what is on screen is genuinely a new subject.
+    const int  key          = int(scene);
+    const bool sceneChanged = !m_haveScene || key != m_sceneKey;
+
+    // Same part count means the same parts with new dimensions, so the
+    // presentations are reused and handed the new B-Rep in place. Tearing the
+    // interactive context down and repopulating it costs a fresh presentation,
+    // a fresh selection tree and a fresh structure per surface, all of which
+    // are thrown away again on the next spin-box step.
+    if (m_shapes.size() != surfaces.size()) {
+        for (const auto& s : m_shapes) m_context->Remove(s, Standard_False);
+        m_shapes.clear();
+        m_shapes.reserve(surfaces.size());
+    }
 
     Bnd_Box bounds;
-    for (const OpticalSurface& os : surfaces) {
-        Handle(AIS_Shape) shape = new AIS_Shape(os.shape);
+    for (std::size_t i = 0; i < surfaces.size(); ++i) {
+        const OpticalSurface& os    = surfaces[i];
+        const bool            fresh = i >= m_shapes.size();
+
+        Handle(AIS_Shape) shape;
+        if (fresh) {
+            shape = new AIS_Shape(os.shape);
+        } else {
+            shape = m_shapes[i];
+            shape->SetShape(os.shape);
+        }
 
         if (os.isDetector) {
             shape->SetColor(Quantity_Color(0.25, 0.85, 0.45, Quantity_TOC_RGB));
@@ -216,11 +258,34 @@ void OcctViewWidget::setScene(GeometryProvider::Scene,
             shape->SetColor(Quantity_Color(0.78, 0.78, 0.82, Quantity_TOC_RGB));
             shape->SetTransparency(0.15f);
         }
+
+        // Where the mesher has already been over this shape, say its tolerance
+        // in absolute terms so OCCT reuses the triangulation that is already
+        // there. The drawer's default deflection is a fraction of the bounding
+        // box and never matches what the mesher used, so every rebuild used to
+        // tessellate the optic a second time on the GUI thread purely in order
+        // to draw it. Drawing the same facets the trace intersects is also the
+        // more honest picture.
+        //
+        // Geometry that has not been meshed -- a part fresh out of a CAD file,
+        // shown before anything is traced -- keeps the relative default, which
+        // scales itself to the part and so stays smooth on a small one.
+        if (isTessellated(os.shape)) {
+            const Handle(Prs3d_Drawer)& drawer = shape->Attributes();
+            drawer->SetTypeOfDeflection(Aspect_TOD_ABSOLUTE);
+            drawer->SetMaximalChordialDeviation(os.meshDeflection);
+            drawer->SetDeviationAngle(os.meshAngle);
+        }
+
         shape->SetDisplayMode(AIS_Shaded);
-        // Selection mode 0 is the whole shape: that is what makes a surface
-        // clickable, and it is why the ray cloud deliberately has none.
-        m_context->Display(shape, AIS_Shaded, 0, Standard_False);
-        m_shapes.push_back(shape);
+        if (fresh) {
+            // Selection mode 0 is the whole shape: that is what makes a surface
+            // clickable, and it is why the ray cloud deliberately has none.
+            m_context->Display(shape, AIS_Shaded, 0, Standard_False);
+            m_shapes.push_back(shape);
+        } else {
+            m_context->Redisplay(shape, Standard_False, Standard_False);
+        }
 
         BRepBndLib::Add(os.shape, bounds);
     }
@@ -233,8 +298,20 @@ void OcctViewWidget::setScene(GeometryProvider::Scene,
         m_sceneSize = std::max({xM - xm, yM - ym, zM - zm});
     }
 
+    m_sceneKey  = key;
+    m_haveScene = true;
+
     applyClip();
-    resetView();
+    if (sceneChanged) {
+        resetView();
+    } else if (!m_view.IsNull()) {
+        // Depth range only: the optic may have grown past the old near/far
+        // planes. Unlike FitAll this leaves the eye, the target and the zoom
+        // exactly where the user put them.
+        m_view->ZFitAll();
+        m_view->Invalidate();
+        update();
+    }
 }
 
 void OcctViewWidget::setRays(const std::vector<RaySegment>& segments) {

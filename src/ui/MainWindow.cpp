@@ -44,9 +44,12 @@
 
 namespace {
 
-// Geometry rebuilds run OCCT tessellation and a BVH build. That is fast, but
-// not per-keystroke fast, so a spin box drag is coalesced into one rebuild.
-constexpr int kGeometryDebounceMs = 180;
+// Geometry rebuilds run OCCT tessellation and a BVH build. They happen on a
+// worker thread now, and that thread coalesces requests on its own, so this
+// only has to stop a spin box drag from queueing a build per step -- it no
+// longer has to hide a stall, and can be short enough that an edit looks
+// immediate.
+constexpr int kGeometryDebounceMs = 60;
 
 QLabel* dim(const QString& text, QWidget* parent) {
     auto* l = new QLabel(text, parent);
@@ -65,6 +68,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_heatmap  = new HeatmapWidget(this);
     m_worker   = new SimulationWorker(this);
     m_study    = new StudyWorker(this);
+    m_geometry = new GeometryWorker(this);
 
     m_geometryTimer = new QTimer(this);
     m_geometryTimer->setSingleShot(true);
@@ -171,6 +175,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(m_controls, &ControlsPanel::sceneChanged,    this, &MainWindow::onSceneChanged);
     connect(m_controls, &ControlsPanel::geometryChanged, this, &MainWindow::onGeometryChanged);
     connect(m_geometryTimer, &QTimer::timeout, this, &MainWindow::rebuildGeometryView);
+    connect(m_geometry, &GeometryWorker::geometryReady,  this, &MainWindow::onGeometryReady);
+    connect(m_geometry, &GeometryWorker::geometryFailed, this, &MainWindow::onGeometryFailed);
 
     connect(m_worker, &SimulationWorker::progress,    this, &MainWindow::onProgress);
     connect(m_worker, &SimulationWorker::resultReady, this, &MainWindow::onResult);
@@ -1254,23 +1260,51 @@ void MainWindow::rebuildGeometryView() {
     m_showingImported = false;
     m_imported.reset();
     m_controls->setImportedGeometry(QString());
-    try {
-        m_sceneData = Simulation::dataFor(cfg);
-        m_view3d->setScene(cfg.scene, m_sceneData->surfaces);
+
+    const SceneParams params = cfg.effectiveParams();
+    // A spin box that ends up back where it started, or a rebuild triggered by
+    // something that does not touch the geometry, is not a rebuild at all --
+    // whether the geometry it would ask for is already drawn or already
+    // building.
+    if (!droppedImport && m_haveRequested && cfg.scene == m_requestedScene &&
+        params == m_requestedParams && cfg.detectorBins == m_requestedDetBins)
+        return;
+
+    m_requestedScene   = cfg.scene;
+    m_requestedParams  = params;
+    m_requestedDetBins = cfg.detectorBins;
+    m_haveRequested    = true;
+    m_geometryGen      = m_geometry->request(cfg);
+    if (droppedImport)
         statusBar()->showMessage(
-            (droppedImport
-                 ? QStringLiteral("%1 — %2 triangles. The imported part was replaced; "
-                                  "import it again to go back to it.")
-                 : QStringLiteral("%1 — %2 triangles"))
-                .arg(GeometryProvider::info(cfg.scene).name)
-                .arg(m_sceneData->scene.triangles().size()),
-            droppedImport ? 10000 : 4000);
-    } catch (const Standard_Failure& e) {
-        // A parameter combination the kernel cannot build should report itself
-        // rather than take the window down.
-        statusBar()->showMessage(
-            QStringLiteral("Geometry failed: %1").arg(QString::fromUtf8(e.GetMessageString())));
-    }
+            QStringLiteral("The imported part was replaced by %1; import it again to "
+                           "go back to it.")
+                .arg(GeometryProvider::info(cfg.scene).name), 10000);
+}
+
+void MainWindow::onGeometryReady(Simulation::SceneRef data, quint64 generation) {
+    // Overtaken by a later edit, or by an import that has since taken the
+    // viewport over: this geometry is no longer what is being asked for.
+    if (generation != m_geometryGen || !data) return;
+    m_geometryGen = 0;
+
+    m_sceneData = std::move(data);
+    m_view3d->setScene(m_requestedScene, m_sceneData->surfaces);
+    // A pick indexes the surface list, and this is a new one.
+    updateSurfacePanel();
+
+    statusBar()->showMessage(QStringLiteral("%1 — %2 triangles")
+                                 .arg(GeometryProvider::info(m_requestedScene).name)
+                                 .arg(m_sceneData->scene.triangles().size()),
+                             4000);
+}
+
+void MainWindow::onGeometryFailed(const QString& message, quint64 generation) {
+    if (generation != m_geometryGen) return;
+    m_geometryGen = 0;
+    // A parameter combination the kernel cannot build should report itself
+    // rather than take the window down.
+    statusBar()->showMessage(QStringLiteral("Geometry failed: %1").arg(message));
 }
 
 // ---- running ---------------------------------------------------------------
@@ -2046,6 +2080,12 @@ void MainWindow::onImportCad() {
     m_imported        = std::move(setup);
     m_showingImported = true;
     m_pickedSurface   = -1;
+    // The viewport belongs to the import now. A geometry build that was queued
+    // or already in flight for the scene list would otherwise land on top of it
+    // and put the previous shape back on screen.
+    m_geometryTimer->stop();
+    m_geometryGen   = 0;
+    m_haveRequested = false;
     updateSurfacePanel();
     m_controls->setImportedGeometry(m_imported->label);
     refreshDerivedQuantities();
@@ -2112,5 +2152,10 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     m_worker->wait();
     m_study->cancel();
     m_study->wait();
+    // The geometry build reports into the status bar and the viewport. Its own
+    // destructor joins the thread; this is what stops a build that finishes in
+    // between from being drawn into widgets that are on their way out.
+    m_geometryTimer->stop();
+    m_geometryGen = 0;
     QMainWindow::closeEvent(event);
 }

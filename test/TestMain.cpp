@@ -38,6 +38,7 @@
 #include "core/Report.h"
 #include "core/ConfigIO.h"
 #include "core/GeometryProvider.h"
+#include "core/GeometryWorker.h"
 #include "core/MeshBuilder.h"
 #include "core/Bsdf.h"
 #include "core/Coating.h"

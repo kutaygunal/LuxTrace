@@ -4131,3 +4131,71 @@ TEST(tolerancing, exports_the_ensemble_it_measured) {
     // Every sample is in it.
     CHECK(csv.count(QLatin1Char('\n')) > 32);
 }
+
+// =============================================================== geometry ===
+// The viewport rebuilds its geometry through GeometryWorker, so the async
+// plumbing the window depends on -- delivery off the GUI thread, generation
+// stamps, and the coalescing that keeps a spin-box drag from queueing a build
+// per step -- is covered here rather than only by dragging a spin box.
+
+TEST(geometry, delivers_the_build_under_the_stamp_it_returned) {
+    GeometryWorker worker;
+    Simulation::SceneRef got;
+    quint64 gotGen = 0;
+
+    QObject::connect(&worker, &GeometryWorker::geometryReady,
+                     [&](Simulation::SceneRef data, quint64 gen) {
+                         got = std::move(data);
+                         gotGen = gen;
+                     });
+
+    SimConfig cfg;
+    cfg.scene            = GeometryProvider::Scene::Reflector;
+    cfg.useSceneDefaults = false;
+    cfg.params           = GeometryProvider::defaultParams(cfg.scene);
+    cfg.params.v[0]     += 3.0;
+
+    const quint64 gen = worker.request(cfg);
+    CHECK(gen != 0);
+    // The call returns immediately; the caller keeps running its event loop.
+    CHECK(waitFor([&] { return gotGen != 0; }));
+
+    CHECK(gotGen == gen);
+    CHECK(!!got);
+    CHECK(!got->surfaces.empty());
+    CHECK(!got->scene.triangles().empty());
+}
+
+TEST(geometry, a_burst_of_requests_coalesces_onto_the_last_one) {
+    GeometryWorker worker;
+    std::vector<quint64> delivered;
+
+    QObject::connect(&worker, &GeometryWorker::geometryReady,
+                     [&](Simulation::SceneRef, quint64 gen) { delivered.push_back(gen); });
+
+    SimConfig cfg;
+    cfg.scene            = GeometryProvider::Scene::Reflector;
+    cfg.useSceneDefaults = false;
+
+    // What a drag across a spin box looks like: a new set of dimensions per
+    // step, faster than any one of them can be built.
+    quint64 last = 0;
+    for (int i = 1; i <= 12; ++i) {
+        cfg.params       = GeometryProvider::defaultParams(cfg.scene);
+        cfg.params.v[0] += 0.5 * i;
+        last = worker.request(cfg);
+    }
+
+    // The dimensions the drag ended on always arrive.
+    CHECK(waitFor([&] {
+        return !delivered.empty() && delivered.back() == last;
+    }));
+    // The ones it passed through mostly do not: the point of coalescing is that
+    // the work is spent on the state the user stopped at.
+    CHECK(delivered.size() < 12);
+    // Nothing is invented, and nothing arrives out of order.
+    for (std::size_t i = 0; i < delivered.size(); ++i) {
+        CHECK(delivered[i] >= 1 && delivered[i] <= last);
+        if (i > 0) CHECK(delivered[i] > delivered[i - 1]);
+    }
+}
