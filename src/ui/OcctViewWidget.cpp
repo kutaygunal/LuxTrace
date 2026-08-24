@@ -19,6 +19,7 @@
 #include <Prs3d_Presentation.hxx>
 #include <PrsMgr_PresentationManager.hxx>
 #include <Quantity_Color.hxx>
+#include <SelectMgr_EntityOwner.hxx>
 #include <SelectMgr_Selection.hxx>
 #include <WNT_Window.hxx>
 #include <gp_Ax1.hxx>
@@ -372,11 +373,22 @@ void OcctViewWidget::pickAt(const QPoint& pos) {
     if (m_context.IsNull() || m_view.IsNull()) return;
     m_context->MoveTo(pos.x(), pos.y(), m_view, Standard_False);
 
+    // NOTE: OCCT 7.8's DetectedInteractive() dereferences its internal
+    // myLastPicked with no null check, so clicking empty space crashes inside
+    // the library. HasDetected()/DetectedOwner() are the null-safe accessors:
+    // guard first, then resolve the owner's selectable ourselves.
     int found = -1;
-    Handle(AIS_InteractiveObject) detected = m_context->DetectedInteractive();
-    if (!detected.IsNull())
-        for (std::size_t i = 0; i < m_shapes.size(); ++i)
-            if (m_shapes[i] == detected) { found = int(i); break; }
+    if (m_context->HasDetected()) {
+        const Handle(SelectMgr_EntityOwner)& owner = m_context->DetectedOwner();
+        Handle(AIS_InteractiveObject) detected;
+        if (!owner.IsNull()) {
+            const Handle(Standard_Transient)& sel = owner->Selectable();
+            detected = Handle(AIS_InteractiveObject)::DownCast(sel);
+        }
+        if (!detected.IsNull())
+            for (std::size_t i = 0; i < m_shapes.size(); ++i)
+                if (m_shapes[i] == detected) { found = int(i); break; }
+    }
 
     m_context->ClearSelected(Standard_False);
     if (found >= 0) m_context->SelectDetected();

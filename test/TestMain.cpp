@@ -8,8 +8,10 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QStringList>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QEventLoop>
 #include <QTimer>
 
@@ -20,10 +22,29 @@
 #include <string>
 #include <vector>
 
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakePolygon.hxx>
+#include <STEPControl_Writer.hxx>
+#include <IFSelect_ReturnStatus.hxx>
+#include <BRep_Builder.hxx>
+#include <TopoDS_Compound.hxx>
+#include <gp_Ax1.hxx>
+#include <gp_Vec.hxx>
+#include <BRepAlgoAPI_Common.hxx>
+#include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepPrimAPI_MakeSphere.hxx>
 #include "core/Analysis.h"
+#include "core/CadImport.h"
+#include "core/Report.h"
 #include "core/ConfigIO.h"
 #include "core/GeometryProvider.h"
 #include "core/MeshBuilder.h"
+#include "core/Bsdf.h"
+#include "core/Coating.h"
+#include "core/Polarisation.h"
+#include "core/Material.h"
+#include "core/Spectrum.h"
+#include "core/Sampling.h"
 #include "core/Optics.h"
 #include "core/RayTracer.h"
 #include "core/Simulation.h"

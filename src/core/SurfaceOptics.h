@@ -1,4 +1,9 @@
 #pragma once
+#include <cmath>
+#include "Bsdf.h"
+#include "Coating.h"
+#include "Material.h"
+
 
 // Optical behaviour of one surface, shared verbatim by the three
 // representations a surface passes through: OpticalSurface (B-Rep + optics),
@@ -19,7 +24,15 @@ struct SurfaceOptics {
     // Cauchy dispersion coefficient B, in um^2: n(lambda) = A + B / lambda^2,
     // with A fixed so that n(587.6 nm) == index. 0 == non-dispersive.
     // BK7-like crown glass is about 0.00420 um^2 (Abbe number ~64).
+    // Only consulted when no catalogue material is assigned.
     double dispersionB = 0.0;
+
+    // The catalogue material, when one has been assigned. It supersedes the
+    // Cauchy shorthand above: a Sellmeier fit holds across the whole visible
+    // band where a two-term Cauchy diverges outside it, and it is the form every
+    // glass catalogue actually publishes. A metal material also supplies the
+    // complex index its reflectance is computed from.
+    OpticalMaterial material;
 
     // Beer-Lambert bulk attenuation of the medium *behind* this surface, 1/mm.
     // Only consulted while a ray is travelling inside the solid.
@@ -33,12 +46,67 @@ struct SurfaceOptics {
     // RMS surface slope error, radians. The interaction normal is jittered by a
     // Gaussian of this width before the laws are applied, so a mirror spreads a
     // reflected ray by twice it -- which is what a real polish tolerance does.
+    //
+    // Superseded by `bsdf` where one is set: a Gaussian tilt with a rejection
+    // branch is not an energy-conserving BSDF and cannot be fitted to measured
+    // data. It stays for the scenes that were built against it and for the
+    // simplest possible statement of "not quite polished".
     double roughness = 0.0;
+
+    // How this surface scatters, when it is described by a real BSDF rather than
+    // by the tilt above and the Lambertian fraction below.
+    bsdf::Surface bsdf;
+
+    // Scattering *inside* the medium behind this surface, rather than at it.
+    // Every white diffusing plastic in every luminaire is a volume scatterer,
+    // and there was no way to say so at all.
+    bsdf::Volume volume;
+
+    // The thin film on this surface. Without one, every refractive surface pays
+    // bare-glass Fresnel and a multi-element system overstates its loss by
+    // roughly 3.5 % per surface against any real lens.
+    coating::Coating coating;
 
     // Angle-dependent reflectance from the Fresnel equations instead of the
     // fixed reflectivity/transmissivity split. Only meaningful when index > 0;
     // an opaque mirror keeps its fixed reflectivity either way.
     bool fresnel = false;
 
+    // Where two solids overlap, the higher priority wins: a ray inside both is
+    // treated as travelling in the higher-priority medium. This is how FRED and
+    // TracePro resolve modelling overlap, and it is what lets an index-matched
+    // interface (glass -> cement -> glass) refract against the right pair of
+    // indices instead of always assuming glass -> air.
+    int mediumPriority = 0;
+
     bool isDetector = false;
+
+    // Receiver binning, when isDetector. Kept here rather than written into the
+    // mesher so a user can ask for the resolution they need.
+    int    detNX = 0, detNY = 0;          // 0 == the default grid
+
+    // Acceptance half-angle about the receiver normal, degrees. A ray arriving
+    // outside the cone is not counted -- which is how a real photometer, and a
+    // real fibre, behave. >= 180 accepts everything.
+    double detAcceptanceDeg = 180.0;
+
+    // Refractive index at `lambdaNm`. The catalogue material wins where one is
+    // assigned; otherwise the Cauchy shorthand does. `dispersion` off pins every
+    // wavelength to the reference index, which is what makes a monochromatic
+    // trace and a dispersion-free one identical.
+    // `index` stays authoritative for the level and the material supplies the
+    // *shape*: the curve is the material's, shifted so that n(587.6 nm) is
+    // exactly `index`. Assigning a catalogue material sets `index` to its d-line
+    // value, so the default is the published glass -- and overriding `index`
+    // afterwards moves the whole curve, which is what "this glass, but denser"
+    // has to mean if the two fields are not to contradict each other.
+    double indexAt(double lambdaNm, bool dispersion = true) const {
+        if (index <= 0.0) return 0.0;
+        if (!dispersion) return index;
+        if (material.valid())
+            return index + (material.indexAt(lambdaNm) - material.nd);
+        if (dispersionB == 0.0 || lambdaNm <= 0.0) return index;
+        const double lu = lambdaNm * 1e-3, ld = 587.6e-3;    // nm -> um
+        return index + dispersionB * (1.0 / (lu * lu) - 1.0 / (ld * ld));
+    }
 };

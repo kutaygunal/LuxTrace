@@ -25,19 +25,22 @@ TracePro, OpticStudio) is expected to do:
 
 | Capability | LuxTrace |
 |---|---|
-| 3D solid modeling (B-Rep) | 25 scenes from OCCT primitives, revolved/extruded profiles and booleans, each with 2-4 editable dimensions |
-| Light sources | Point / Lambertian / collimated, with a cone half-angle and a real emitting area (disc, rectangle, sphere) |
-| Surface properties | Fresnel reflectance, fixed R/T split, diffuse scatter fraction, RMS roughness, bulk absorption, Cauchy dispersion |
-| Ray tracing | Monte Carlo; Moller-Trumbore against a SAH BVH over the OCCT tessellation, multithreaded and deterministic |
-| Reflection / refraction / TIR | Angle-dependent Fresnel split, Snell refraction, total internal reflection past the critical angle |
-| Scattering | Cosine-weighted re-emission: diffusers, white reflectors, integrating spheres |
-| Spectral tracing | Three RGB bands through n(lambda), rendered as real colour |
-| Detector / irradiance | 2D flux grid, linear/log/sqrt scaling, five colour maps, movable cross-section cut |
-| Far-field intensity | theta/phi binning into candela-per-steradian, drawn as a polar diagram or an angular map |
-| Spot metrics | Peak, mean, uniformity, centroid, RMS radius, D50/D86 encircled energy, FWHM |
-| Parameter studies | Convergence sweep with Monte Carlo error bars; through-focus sweep |
-| 3D visualization | Embedded OCCT viewport with orbit/pan/zoom, WASD walkthrough, ray colouring, clipping plane and surface picking |
-| Import/export | JSON configuration save/load; CSV irradiance, intensity and metrics; PNG of any view |
+| Geometry | 25 parametric OCCT scenes, plus STEP/IGES import of a customer's own CAD; instanced parts share one mesh and one hierarchy |
+| Surface normals | Read off the exact B-Rep at each tessellation node and interpolated across the facet, so the mesh is no longer what limits how sharply a scene focuses |
+| Materials | A catalogue by name — N-BK7, N-SF11, fused silica, PMMA, polycarbonate, water, cement, Al/Ag/Au — with Sellmeier dispersion, Abbe numbers and complex-index Fresnel for the metals |
+| Media | A medium stack with priorities: cemented doublets, immersed optics, clad guides and nested solids all refract against the right pair of indices |
+| Coatings | Ideal AR/HR by residual, measured R(lambda) tables, and a characteristic-matrix thin-film solver |
+| Scattering | GGX microfacet with Smith masking, ABg / Harvey-Shack, measured BSDF tables, Lambertian, and Henyey-Greenstein volume scattering inside a medium |
+| Polarisation | Stokes vectors and Mueller matrices behind a switch: Brewster's angle, polarisers, retarders and the phase of total internal reflection |
+| Light sources | Point / Lambertian / collimated over a real emitting area, with absolute flux in watts or lumens and a real spectrum (monochromatic, RGB, blackbody, white LED, D65 or a measured SPD) |
+| Units | W/m² or lux on the receiver, W/sr or candela in the far field, from a source flux the user sets |
+| Estimator | Owen-scrambled Sobol emission, aiming at the scene, next-event estimation at diffuse bounces, Russian roulette and branch collapsing — 1.5x to 28x tighter error bars for the same rays |
+| Detectors | Any number, each with its own frame, resolution and acceptance cone; tilted and off-axis receivers bin against themselves |
+| Measurements | Spot metrics, far-field intensity, MTF, wavefront error and Strehl, CIE chromaticity and colour temperature |
+| Studies | Convergence, through-focus, parameter sweeps in 1D and 2D, Nelder-Mead and CMA-ES optimisation, and Monte Carlo tolerance analysis with a yield and a sensitivity ranking |
+| Progressive results | The image forms and the error bar shrinks while the trace runs |
+| Import/export | JSON config; CSV irradiance, intensity, metrics and ensembles; **IES LM-63 and EULUMDAT** for DIALux, AGi32 and Relux; PNG of any view; a one-click HTML report |
+| Validation | `--validate` checks the tracer against seven closed forms derived outside it and prints the residuals |
 
 ---
 
@@ -46,6 +49,13 @@ TracePro, OpticStudio) is expected to do:
 Every optical property lives in one struct (`SurfaceOptics`) shared by the B-Rep,
 mesh and BVH representations of a surface, so adding one reaches the tracer
 without touching either conversion loop.
+
+**Surface normals.** Read off the exact B-Rep surface at each tessellation node
+and interpolated across the facet by the barycentric coordinates the intersection
+already produces. A facet normal sits up to half the angular deflection from the
+true one and a mirror doubles that into the reflected ray; removing that term
+took the elliptical reflector's spot from 10.8 mm RMS to 0.99 mm and moved its
+best focus from 22 mm off the analytic answer to 1.5 mm.
 
 **Fresnel reflectance.** Unpolarised `R = (Rs + Rp) / 2` from the angle of
 incidence: about 4 % for air against n = 1.5 at normal incidence, rising
@@ -59,20 +69,45 @@ the right glass is charged. This is the loss that scales with path length rather
 than with hit count, and it is the reason a 200 mm light guide is measurably
 dimmer than a 100 mm one. Reported separately from surface absorption.
 
-**Diffuse scattering.** A `scatter` fraction of an outgoing branch leaves
-cosine-weighted about the surface normal instead of specularly, decided by a coin
-flip rather than by splitting the branch — splitting would double the path tree
-at every diffuse bounce, which an integrating sphere cannot afford, and the
-roulette is unbiased. Unlocks diffusers, matte white reflectors and cavities.
+**Coatings.** Every real lens is coated, and a bare one overstates its loss by
+roughly 3.5 % per surface. Three tiers: an ideal residual with the angular
+roll-off a real stack has, a measured `R(lambda)` table, and a
+characteristic-matrix solver over a handful of layers. A coating can never defeat
+total internal reflection, so a light guide is safe from one — and is shipped
+uncoated anyway, because that is how a light pipe is made.
 
-**Surface roughness.** A Gaussian slope error jitters the interaction normal
-before the laws are applied, which gives a mirror its factor of two in the
-reflected ray for free and keeps refraction consistent with it.
+**Scattering.** A real BSDF rather than a tilt of the normal: GGX microfacet with
+Smith shadowing-masking, the ABg model TracePro and LightTools expose, a measured
+BSDF table, and Lambertian kept as its own case. Each is energy conserving, each
+is sampled with the weight that makes it so, and each reports a total integrated
+scatter — the number a scatter specification is actually written in. The old
+Gaussian slope error stays for the scenes built against it.
 
-**Dispersion.** Cauchy `n(lambda) = A + B / lambda^2`, with A fixed so the stored
-index is exact at the d line. An RGB run splits the rays into 620 / 546 / 460 nm
-bands, keeps a separate irradiance grid per band, and paints the heatmap in real
-colour.
+**Volume scattering.** A scattering coefficient and a Henyey-Greenstein phase
+function *inside* a medium. Every white diffusing plastic in every luminaire is a
+volume scatterer, and a surface model has no way to say so.
+
+**Media.** A branch carries a stack of the media it is inside, with a priority to
+resolve overlap. A cemented doublet refracts glass against glass, an immersed
+lens against its fluid, a clad guide against its cladding.
+
+**Dispersion.** Sellmeier from a glass catalogue, quoted by name — N-BK7, N-SF11,
+fused silica, PMMA, polycarbonate — with Abbe numbers and internal transmittance
+along for the ride. Metals carry a complex index, so an aluminium mirror at 45
+degrees is genuinely not the same as at normal incidence, and not the same at
+460 nm as at 620.
+
+**Spectrum.** One wavelength sampled per ray from a real distribution —
+monochromatic, three RGB lines, a blackbody, a phosphor-converted white LED,
+CIE D65, or a measured SPD — so a spectral trace costs what a monochromatic one
+costs and resolves to whatever the ray budget supports. Lumens are watts through
+the CIE V(lambda) curve, which is what makes lux and candela available at all.
+
+**Polarisation.** A Stokes vector per branch and a Mueller matrix per
+interaction, behind a switch. It costs four times the per-ray state and most
+illumination work does not need it — but it is what makes Brewster's angle a
+polarising effect rather than a dip in a curve, and what gives total internal
+reflection the phase a Fresnel rhomb depends on.
 
 Roughness, scatter and absorption also have **scene-wide overrides**, so a
 polished mirror can be turned matte and re-run without rebuilding any geometry —
@@ -165,17 +200,43 @@ scene/source combination.
 - **Far-field intensity** bins the direction every ray leaves the system on into
   theta/phi cells and divides by each cell's solid angle. Without that division an
   isotropic source reads as dark at the poles simply because those cells are
-  small. The total over the sphere equals `escaped + detector` exactly.
+  small. The total over the sphere equals `escaped + detector` exactly. That grid
+  is already the candela distribution a luminaire is specified by, so it exports
+  as **IES LM-63** and **EULUMDAT** and goes straight into DIALux, AGi32 or Relux.
+- **Absolute units.** The source carries a flux in watts or lumens, so the
+  receiver reads in W/m² or lux and the far field in W/sr or candela. A
+  dimensionless fraction of an unnamed unit is not a number that can go in a
+  specification, and lux needs a real spectrum underneath it: lumens are watts
+  weighted by the CIE V(lambda) curve, so every ray is emitted carrying how much
+  of it the eye sees.
 - **Monte Carlo error bars.** Each run reports one standard error on its
-  efficiency from the ray-to-ray spread. The convergence sweep traces the same
-  scene at geometrically spaced ray counts, each with its own seed, and says
-  whether the last two points agree within 2 sigma — which is the practical form
-  of "have I traced enough rays?".
+  efficiency — measured across sixteen independent scrambles of the sampling
+  sequence, because a low-discrepancy sequence is not a set of independent
+  samples and its ray-to-ray spread would report the error a *random* run of the
+  same size would have had. The convergence sweep traces the same scene at
+  geometrically spaced ray counts and says whether the last two points agree
+  within 2 sigma — the practical form of "have I traced enough rays?".
+- **Image quality.** MTF from the line spread function the arrivals already
+  describe, with the diffraction limit of a given aperture drawn beside it; and,
+  from the optical path each arrival carries, an OPD map, an RMS wavefront error
+  and a Strehl figure — flagged as not meaningful past the quarter wave where
+  Marechal's approximation stops holding, rather than reported as an underflowed
+  zero.
+- **Yield, not just performance.** A tolerance study perturbs every dimension by
+  its limit, traces the ensemble and reports what fraction of production passes —
+  and ranks the dimensions by how much of the spread each one causes, so the
+  answer is which one to tighten rather than only that the design is fragile. The
+  same seed reproduces the same production run, which tolerancing tools rarely
+  manage.
 - **Through focus** is a post-process, not a re-trace. Every receiver arrival is
   recorded with the direction it came in on, so the arrivals can be propagated
   analytically to any nearby plane and the spot size read off. One trace answers
   every plane; the minimum is refined by a parabolic fit rather than quantised to
   the sweep step.
+- **A report, not a folder.** One HTML document with the scene, its parameters,
+  the quantities they imply, the energy budget, every plot, the metrics, any
+  studies that were run, and the seed stamped on it — so the numbers in it can be
+  regenerated exactly rather than merely read.
 
 ## Performance
 
@@ -191,13 +252,40 @@ What changed: a SAH **BVH** over the flattened triangles, **multithreading** ove
 rays with dynamic 512-ray chunks, a **cached** geometry/mesh/BVH per (scene,
 parameters) pair, and **bounded** ray-path recording for the diagram.
 
-Tessellation is a separate lever on accuracy. The mesh used to be built at OCCT's
-usual 0.5 rad angular deflection, which caps how sharply any scene can focus: a
-facet normal is off by up to half that, and a mirror doubles it into the
-reflected ray. Tightening it to 0.06 rad halved the elliptical reflector's RMS
-spot radius (22.1 mm to 10.8 mm) for 20 % more triangles. Optics built from many
-small repeated bodies carry their own coarser hint — the microlens array would
-otherwise be half a million triangles and a three-second build.
+Since then the work has moved from the intersection kernel to the estimator,
+which is where it was always going to pay. **Owen-scrambled Sobol** emission with
+replicated scrambling, **emission aiming** at the scene, **next-event estimation**
+at diffuse bounces, **Russian roulette** in place of the old hard cutoff and
+**branch collapsing** at interfaces together buy this, at the same ray count:
+
+| Scene | Error bar before | after | tighter by |
+|---|---|---|---|
+| Elliptical Reflector | ±0.312 % | ±0.011 % | **28x** |
+| Parabolic Reflector | ±0.208 % | ±0.013 % | **16x** |
+| Conical Concentrator | ±0.227 % | ±0.025 % | **9x** |
+| Biconvex Lens | ±0.227 % | ±0.049 % | **4.6x** |
+| Integrating Sphere | ±0.221 % | ±0.087 % | **2.5x** |
+
+An error bar 16x tighter is 256x fewer rays for the same answer. The figures are
+honest rather than optimistic: a low-discrepancy sequence is deliberately *not* a
+set of independent samples, so the ray-to-ray spread no longer measures the error
+of the mean — the budget is split into sixteen independent scrambles and the
+spread *across* them is what gets reported. A test checks that number against the
+actual spread over twelve independent seeds.
+
+Tessellation used to be the other lever on accuracy, and mostly is not any more.
+The normals are now read off the exact B-Rep surface and interpolated across the
+facet, so what a coarse mesh costs is hit *position* rather than surface
+*direction* — a far weaker constraint. The elliptical reflector's spot went from
+10.8 mm RMS to 0.99 mm on the same mesh, and its best focus from 22 mm off the
+analytic answer to 1.5 mm. Repeated bodies are **instanced**: the microlens array
+is one lenslet, one hierarchy and twenty-five transforms, so it now carries the
+same fine mesh as every other optic instead of a hand-coarsened one, at a third
+of the triangles it used to store.
+
+A four-wide BVH and float bounding boxes were both built and benchmarked against
+the current binary/double hierarchy. Neither paid on this workload, and both were
+removed — the measurements are in the comment on `TraceScene::BvhNode`.
 
 ## Build
 
@@ -223,11 +311,50 @@ exe, and run `windeployqt` for the Qt DLLs/plugins.
 cd build && ctest -C Release
 ```
 
-108 tests in 22 suites, no external framework. Beyond the original coverage
+216 tests in 35 suites, no external framework. Beyond the original coverage
 (Moller-Trumbore branches, BVH vs brute force, energy conservation, TIR critical
 angle, edge cases, sampling statistics, detector binning, the async worker, and
 the irradiance patterns each scene claims to produce), the physics and analysis
 are pinned against arithmetic rather than against another simulation:
+
+- **validation** — the same seven closed forms `--validate` prints, run in CI.
+  This is the suite that says the physics is right rather than merely
+  self-consistent.
+- **media** — exact surface normals against the analytic ones, outward winding on
+  every facet of a closed solid, a nested solid refracting against its host
+  rather than against air, priority resolving overlap, and optical path length.
+- **estimator** — that Sobol sampling beats random at the same ray count, that
+  aiming and next-event estimation do not move the answer, and — the one that
+  matters — that the reported error bar matches the spread measured over twelve
+  independent seeds. An error bar makes exactly one claim, and this is it.
+- **material / coating** — published n_d and Abbe numbers reproduced from the
+  Sellmeier coefficients, monotonic dispersion, complex-index metal reflectance
+  against its closed form at normal incidence and its pseudo-Brewster dip at
+  grazing, a quarter-wave stack solved against its own analytic result, and that
+  no coating can defeat total internal reflection.
+- **bsdf** — a Lambertian lobe against `sin^2(theta)`, a microfacet lobe
+  conserving energy at three roughnesses and three angles, an ABg lobe with the
+  power-law slope it claims, and the Henyey-Greenstein phase function
+  integrating to one.
+- **polarised** — Brewster's angle reflecting no p, crossed polarisers passing
+  nothing, Malus's law at 45 degrees, a quarter-wave plate making circular light,
+  the phase of total internal reflection, and that no interaction ever produces a
+  Stokes vector that light could not be in.
+- **units** — that a photometric run delivers the lumens it was asked for, and
+  that the two units agree only where the optics are colourless.
+- **instances** — a hierarchy over placements agreeing with brute force, and an
+  instanced array tracing the same optic as a copied one.
+- **cad** — a STEP file round-tripping into traceable geometry, an assembly
+  splitting into parts, unit conversion, a bad file reported rather than thrown,
+  and — the one that matters most — that an imported file is what gets traced
+  rather than whichever scene happens to be selected, with its receiver and its
+  source placed around the part on whichever axis it is lit from.
+- **sweep / optimise / tolerancing** — that a sweep finds the ellipse's focus,
+  that both searches improve on their starting design, and that the same seed
+  reproduces the same simulated production run.
+- **imagequality** — that a tighter spot carries contrast to higher frequencies,
+  that nothing beats the diffraction limit, and that Strehl is flagged as
+  meaningless past the quarter wave where Marechal's approximation stops holding.
 
 - **fresnel** — checked against Rs and Rp recomputed in the test over the whole
   angular range and three indices; the 4 % closed form at normal incidence;
@@ -237,14 +364,18 @@ are pinned against arithmetic rather than against another simulation:
 - **scatter / roughness** — cosine-weighted re-emission (E[cos] = 2/3, which
   distinguishes it from a uniform hemisphere), slope error RMS, and that a
   diffusing mirror collapses an ellipsoid's focus.
-- **spectral** — Cauchy exact at the reference line, blue bending more than red,
-  the three bands summing to the whole pattern, and a prism separating them.
+- **spectral** — dispersion exact at the reference line, blue bending more than
+  red, the three colour bands summing to the whole pattern, and a prism
+  separating them.
 - **intensity** — an isotropic source reading flat per steradian, and the far
   field accounting for exactly `escaped + detector`.
 - **metrics / focus** — a synthetic uniform disc whose RMS radius is `R/sqrt(2)`
   and whose encircled-energy radius is `R sqrt(f)`; a synthetic converging cone
   whose waist the sweep has to find to within a millimetre.
-- **convergence** — error bars shrinking as `1/sqrt(N)` across a 64x range.
+- **convergence** — error bars shrinking at least as fast as `1/sqrt(N)` across a
+  64x range. At least, because a low-discrepancy sequence converges faster than
+  that and the sweep is expected to beat it; converging more slowly would be the
+  bug.
 - **params / config** — every scene's parameter block, clamping and NaN
   rejection, geometry staying alive while a run holds it, and a JSON round trip
   that identifies scenes by name rather than by registry index.
@@ -256,15 +387,28 @@ and press **Run**. The trace runs on a worker thread: the inputs freeze for the
 duration, a progress bar tracks it, and **Cancel** stops it within milliseconds
 while keeping the rays that already finished.
 
-Five tabs over a metrics panel:
+The image forms while the trace runs — a snapshot arrives every couple of hundred
+milliseconds, so the heatmap fills in and the error bar visibly shrinks, and a run
+can be stopped as soon as the answer is good enough.
+
+Seven tabs over a metrics panel, with a live strip of derived quantities under
+the parameters (f-number, numerical aperture, acceptance angle, concentration,
+etendue, where the paraxial focus lands) that updates as the spin boxes move,
+before anything is traced:
 
 | Tab | Shows |
 |---|---|
-| **3D View** | The OCCT viewport: B-Rep geometry and traced ray paths, coloured by energy, bounce count or wavelength; a receiver-paths-only filter; a clipping plane to slice the optic open |
+| **3D View** | The OCCT viewport: B-Rep geometry and traced ray paths, coloured by energy, bounce count or wavelength; a receiver-paths-only filter; a clipping plane to slice the optic open. Clicking a surface opens its optics for editing — roughness, scatter, reflectance and absorption — which costs a re-trace and not a rebuild |
 | **Ray Diagram (X-Z)** | The flat projection, where a whole ray fan reads at once |
-| **Irradiance** | The heatmap with five colour maps and linear/log/sqrt scaling, a click-to-move cross-section cut, and the encircled-energy curve |
+| **Irradiance** | The heatmap with five colour maps and linear/log/sqrt scaling, a click-to-move cross-section cut, and the encircled-energy curve. With a run pinned it shows the difference between the two |
 | **Intensity** | The far-field polar diagram (with C0 and C90 meridians) or the angular map |
 | **Studies** | Convergence with error bars, and the through-focus sweep |
+| **Design** | A metric against any of the optic's own dimensions, with the error bars that say whether a bump is the design or the noise; and a Nelder-Mead or CMA-ES search for the design that makes it best, which can be adopted into the parameter boxes |
+| **Tolerance** | A simulated production run: the yield against a specification, and the ranking that says which dimension to tighten first. Beside it, the modulation transfer curve with its diffraction limit |
+
+**Compare → Pin this run** keeps a result to measure the next one against: the
+plots overlay it, the map shows the difference, and the metrics carry the deltas
+with a note on whether each one is real against the error bars.
 
 Viewport navigation:
 
@@ -302,6 +446,34 @@ LuxTrace.exe --bench 100000
 LuxTrace.exe --meshcheck
 ```
 
+```bash
+LuxTrace.exe --validate
+```
+
+```bash
+LuxTrace.exe --materials
+```
+
+```bash
+LuxTrace.exe --sweep 1 0 1
+```
+
+```bash
+LuxTrace.exe --optimise 11 1 12000 70
+```
+
+```bash
+LuxTrace.exe --tolerance 1 1 3.0
+```
+
+```bash
+LuxTrace.exe --imagequality 1
+```
+
+```bash
+LuxTrace.exe --cad part.step 1 50000 +z
+```
+
 `--smoke` traces every scene with efficiency, error bar, spot radius, uniformity,
 beam FWHM and bulk-absorption share. `--study <scene> <rays>` prints the full
 analysis for one scene: its parameters, the energy budget, the spot metrics, the
@@ -310,19 +482,47 @@ compares 1-thread against all-threads on every scene/source combination and
 asserts determinism. `--meshcheck` dumps mesh/BVH stats with a BVH-vs-brute-force
 spot check.
 
+`--validate` is the one worth reading first: it checks the tracer against seven
+results derived entirely outside it — the lensmaker's equation, the
+integrating-sphere multiplier, the inverse-square cosine law, the flux a square
+receiver subtends, the concentration limit of a CPC, a prism's minimum deviation
+and Lambert's cosine law — and prints the residual on each. They currently land
+between 0.00 % and 0.35 %.
+
+`--cad <file> [scale] [rays] [axis]` reads a STEP or IGES file and traces it
+through the same path the Import CAD menu item and the Run button take: it
+prints the part's own bounds, the receiver and source it places around it, and
+its energy budget. "The rays are going through the wrong shape" is a claim about
+which geometry reached the tracer, and this answers it without a window.
+
+`--materials` prints the glass catalogue with indices, Abbe numbers and, for the
+metals, reflectance at three angles. `--sweep <scene> <param> <metric>` walks one
+dimension and prints the metric with error bars. `--optimise <scene> <metric>`
+searches for the best design. `--tolerance <scene> <metric> <criterion>` runs a
+simulated production batch and prints the yield and what dominates it.
+`--imagequality <scene>` prints the MTF and the wavefront error.
+
 ## Project layout
 
 ```
 src/
-  main.cpp              entry point + --smoke / --study / --bench / --meshcheck
+  main.cpp              entry point + the headless diagnostics
   core/
     SurfaceOptics       the optical properties, shared by all three surface forms
-    Optics              Fresnel, Cauchy, cosine hemisphere, slope error, RNG
+    Optics              Fresnel, cosine hemisphere, slope error, RNG
+    Material            glass catalogue, Sellmeier/Cauchy/tables, metal Fresnel
+    Coating             ideal / measured / characteristic-matrix thin films
+    Bsdf                GGX, ABg, measured BSDF, Henyey-Greenstein volume scatter
+    Polarisation        Stokes vectors and Mueller matrices
+    Spectrum            SPDs, CIE colour matching, V(lambda), sampling
+    Sampling            Owen-scrambled Sobol
     GeometryProvider    scene registry: 25 parametric OCCT scenes + their sources
-    MeshBuilder         BRepMesh tessellation -> triangle meshes
-    TraceScene          flattened triangles + SAH BVH + intersection
+    CadImport           STEP / IGES reading, and optics assigned per part or face
+    MeshBuilder         BRepMesh tessellation -> triangle meshes + exact normals
+    TraceScene          flattened triangles, SAH BVH, instancing, intersection
     RayTracer           Monte Carlo tracing, threaded and deterministic
     SimulationResult    irradiance grid, far field, arrivals, energy accounting
+    Report              the one-click HTML document
     Simulation          facade: geometry -> mesh -> BVH (cached) -> trace
     Analysis            spot metrics, profiles, encircled energy, CSV export
     Studies             convergence and through-focus sweeps
@@ -367,21 +567,35 @@ python resources/make_icon.py
 ```
 
 ## Notes / limits
-- Ray-surface intersection uses tessellated meshes (Moller-Trumbore against a
-  BVH), not exact B-Rep surface intersection. The angular deflection of that
-  tessellation, not the ray tracer, is what limits how sharply a scene can focus.
-- Scattering uses a Russian-roulette choice between specular and diffuse rather
-  than splitting the branch. It is unbiased, but a single ray's path is one
-  outcome, not an average over both.
-- Fresnel is unpolarised: rays carry no polarisation state, so Brewster's angle
-  shows in the reflectance but not as a polarising effect.
-- Dispersion is three bands, not a continuous spectrum. A prism separates them
-  into three beams rather than a smooth rainbow.
+- Ray-surface intersection is against the tessellation, not the exact B-Rep. The
+  *normals* are exact — read off the surface at each node and interpolated across
+  the facet — so what the mesh still limits is the hit *position*, which is a far
+  weaker constraint. Coarsening the mesh now costs far less than it used to.
+- The estimator is unbiased rather than exact per ray: Russian roulette, branch
+  collapsing, emission aiming and next-event estimation each replace a sampled
+  quantity with an estimate of it. Every one books its difference into a
+  residual bucket, so the energy budget still closes to the last bit and the
+  residual averages to nothing. A single ray's path is one outcome, not an
+  average over both branches; the single-ray path used by the tests turns all of
+  it off and follows the whole tree.
+- Polarisation is behind a switch. It costs roughly four times the per-ray state
+  and most illumination work does not need it, so the unpolarised fast path is
+  the default.
+- Volume scattering models a filled medium with a scattering coefficient and a
+  Henyey-Greenstein phase function. It does not model dependent scattering at
+  high particle densities.
 - The through-focus sweep propagates recorded arrivals in a straight line, so it
   is only valid where nothing stands between the planes — near the receiver,
   which is the interesting region.
-- "Detector arrivals" counts path branches, not rays — one ray can arrive more
-  than once after splitting. It is a heavy-tailed statistic, so judge a run by
-  flux, not by that count.
+- Strehl uses Marechal's approximation, which holds to about a quarter wave. Past
+  that the reported figure is flagged as not meaningful and the wavefront error
+  itself is the number to read.
+- "Detector arrivals" counts path branches and next-event connections, not rays.
+  It is a heavy-tailed statistic, so judge a run by flux, not by that count.
 - The 3D viewport shows at most ~6 000 ray legs; a denser bundle draws as a solid
   tube that hides the optic. The physics always uses every ray.
+- A four-wide BVH and float bounding boxes were both built and benchmarked
+  against the current binary/double hierarchy. Neither paid on this workload —
+  the measurements and the reasoning are in the comment on `TraceScene::BvhNode`.
+  A performance claim that does not survive its own benchmark is not an
+  optimisation.

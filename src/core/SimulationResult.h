@@ -3,7 +3,17 @@
 #include <cstdint>
 #include <vector>
 #include <QMetaType>
+#include <QString>
 #include "Vec3.h"
+
+// The unit a run's flux figures carry. Radiometric watts, or photometric
+// lumens weighted by the CIE V(lambda) curve -- which needs a real spectrum
+// underneath it, not three fixed lines.
+enum class FluxUnit : int { Watt = 0, Lumen = 1 };
+
+inline const char* fluxUnitName(FluxUnit u)       { return u == FluxUnit::Lumen ? "lm"    : "W"; }
+inline const char* irradianceUnitName(FluxUnit u) { return u == FluxUnit::Lumen ? "lx"    : "W/m^2"; }
+inline const char* intensityUnitName(FluxUnit u)  { return u == FluxUnit::Lumen ? "cd"    : "W/sr"; }
 
 // One straight leg of a ray path, in world space. Kept in 3D so the OCCT viewer
 // can draw the real path; the 2D diagram projects it to (x, z).
@@ -37,6 +47,33 @@ struct DetectorArrival {
     Vec3   d;                 // unit direction of travel on arrival
     float  energy       = 0.0f;
     float  wavelengthNm = 0.0f;
+    // Accumulated optical path length, sum of n * distance over every leg. The
+    // spread of this across the arrivals is the wavefront error, which is what
+    // an OPD map, a Strehl-style figure and a diffraction reference are built
+    // from -- and it is one double per branch to carry.
+    float  opl          = 0.0f;
+    int    detector     = 0;  // index into SimulationResult::detectors
+};
+
+// Where a receiver sits and how it is binned, carried on the result so the
+// analysis and the UI can map a bin back to world millimetres without asking
+// the scene. Stored as a frame rather than as "assume +Z" so a tilted or
+// off-axis receiver describes itself.
+struct DetectorFrame {
+    QString label;
+    Vec3    center;
+    Vec3    u{1, 0, 0};
+    Vec3    v{0, 1, 0};
+    Vec3    normal{0, 0, 1};
+    double  w = 0.0, h = 0.0;
+    int     nx = 0, ny = 0;
+    double  acceptanceDeg = 180.0;
+
+    // Flux per bin on this receiver, nx * ny. detectors[0].grid is mirrored into
+    // SimulationResult::irradiance, which is what the plots read.
+    std::vector<double> grid;
+    double      flux     = 0.0;
+    std::size_t arrivals = 0;
 };
 
 // Far-field intensity distribution: flux binned by the direction rays leave the
@@ -70,10 +107,22 @@ struct IntensityGrid {
 struct SimulationResult {
     int nx = 0, ny = 0;
     double detW = 0.0, detH = 0.0;
-    // Centre of the receiver rectangle in world space. The grid indexes from
+    // Centre of the receiver rectangle, in the receiver's own in-plane axes:
+    // detCX along `detU`, detCY along `detV`. The grid indexes from
     // (detCX - detW/2, detCY - detH/2), so an off-axis receiver still maps back
-    // to world millimetres correctly.
+    // to millimetres correctly.
+    //
+    // For the ordinary receiver -- a plane facing +Z, whose axes are world +X
+    // and +Y -- these are exactly the world x and y they always were. Stating
+    // the frame is what makes a receiver facing any other way report against
+    // itself rather than against a world plane it does not lie in, which is
+    // what a part illuminated from its side needs.
     double detCX = 0.0, detCY = 0.0, detZ = 0.0;
+
+    // The in-plane axes those coordinates are measured along, and the normal.
+    Vec3 detU{1, 0, 0};
+    Vec3 detV{0, 1, 0};
+    Vec3 detN{0, 0, 1};
 
     // Accumulated flux per bin (physical-energy weighted counts).
     std::vector<double> irradiance;
@@ -85,10 +134,22 @@ struct SimulationResult {
 
     IntensityGrid intensity;
 
+    // Every receiver in the scene, in surface order. The irradiance grid above
+    // belongs to detectors[0]; the rest are recorded so a second receiver is a
+    // reported surface rather than a silent mis-binning.
+    std::vector<DetectorFrame> detectors;
+
     double fluxDetector  = 0.0;   // reached the receiver
     double fluxAbsorbed  = 0.0;   // lost to surface absorption and bulk attenuation
     double fluxEscaped   = 0.0;   // left the scene without hitting anything
-    double fluxTruncated = 0.0;   // dropped at the energy cutoff or the depth limit
+    double fluxTruncated = 0.0;   // dropped at the depth limit or a degenerate branch
+
+    // Bookkeeping residual of the Russian-roulette estimator: the energy a
+    // killed branch took with it, less the energy handed to the survivors that
+    // replaced it. Its expectation is exactly zero -- it is not a loss channel,
+    // it is the estimator's noise made visible -- and including it is what keeps
+    // the four physical buckets closed to the last bit.
+    double fluxRoulette  = 0.0;
 
     // Bulk (Beer-Lambert) share of fluxAbsorbed. Reported separately because it
     // is the term that scales with path length rather than with hit count, so
@@ -108,12 +169,43 @@ struct SimulationResult {
     double      efficiencyStdErr = 0.0;
     double      sourcePower     = 1.0;
 
+    // The unit `sourcePower` and every flux, irradiance and intensity figure on
+    // this result is expressed in.
+    FluxUnit    unit = FluxUnit::Watt;
+    // Luminous efficacy of the source spectrum, lm/W. Multiplying a radiometric
+    // result by this gives the photometric one, so a run reports both from one
+    // trace: watts and lumens, W/m^2 and lux, W/sr and candela.
+    double      luminousEfficacy = 0.0;
+    // Mean wavelength of the emitted spectrum, nm.
+    double      meanWavelengthNm = 0.0;
+
+    // Flux-weighted polarisation of what reached the receiver. Only filled on a
+    // polarised trace; `polarised` says whether to believe it.
+    bool   polarised        = false;
+    double degreeOfPolarisation = 0.0;   // 0 unpolarised, 1 fully polarised
+    double degreeLinear     = 0.0;
+    double polarisationAngleDeg = 0.0;   // of the linear part, from the s axis
+
+    // Same flux in the other unit, for the readouts that name both.
+    double fluxDetectorIn(FluxUnit u) const {
+        if (u == unit) return fluxDetector;
+        if (u == FluxUnit::Lumen) return fluxDetector * luminousEfficacy;
+        return luminousEfficacy > 0.0 ? fluxDetector / luminousEfficacy : 0.0;
+    }
+
     // Wall-clock time of the trace itself (geometry/meshing excluded).
     double traceSeconds = 0.0;
     // Wall-clock time spent building geometry + mesh + BVH (0 when cached).
     double buildSeconds = 0.0;
     // True when the run stopped early because cancellation was requested.
     bool   cancelled = false;
+
+    // True for a progressive snapshot: a consistent view of the work finished so
+    // far, normalised by that work, delivered while the trace is still running.
+    // Its scalars reduce in thread order rather than chunk order, so its last
+    // digits depend on scheduling in a way the final result never does.
+    bool        partial       = false;
+    std::size_t raysRequested = 0;
 
     // Sampled ray path legs, for the 3D viewer and the 2D diagram.
     std::vector<RaySegment> raySegments;
@@ -122,10 +214,16 @@ struct SimulationResult {
 
     // Sum of every energy bucket; equals sourcePower for a conserving run.
     double fluxAccounted() const {
-        return fluxDetector + fluxAbsorbed + fluxEscaped + fluxTruncated;
+        return fluxDetector + fluxAbsorbed + fluxEscaped + fluxTruncated + fluxRoulette;
     }
 
-    // World-space centre of irradiance bin (ix, iy).
+    // Where a point on the receiver falls in the frame the bins are indexed in.
+    // A ray's arrival point is in world space; these are what put it on the grid
+    // however the receiver is oriented.
+    double detu(const Vec3& p) const { return p.dot(detU); }
+    double detv(const Vec3& p) const { return p.dot(detV); }
+
+    // Centre of irradiance bin (ix, iy), in the receiver's own axes.
     double binX(int ix) const { return detCX - 0.5 * detW + (double(ix) + 0.5) * detW / double(nx > 0 ? nx : 1); }
     double binY(int iy) const { return detCY - 0.5 * detH + (double(iy) + 0.5) * detH / double(ny > 0 ? ny : 1); }
     double binArea() const {

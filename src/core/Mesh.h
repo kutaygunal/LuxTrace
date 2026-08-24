@@ -3,6 +3,7 @@
 #include <QString>
 #include <gp_Pnt.hxx>
 #include <gp_Dir.hxx>
+#include <gp_Trsf.hxx>
 #include "SurfaceOptics.h"
 
 // A triangle in the flattened mesh with a face normal.
@@ -17,13 +18,34 @@ struct MeshSurface : SurfaceOptics {
     std::vector<gp_Pnt> verts;
     std::vector<Triangle> tris;
 
-    // Detector receiver frame. The receiver is assumed planar and axis-aligned
-    // (facing +Z); detCenter is the true centre of the detW x detH rectangle,
-    // and detNX x detNY is the binning grid the tracer accumulates into.
+    // Per-vertex normals, parallel to `verts`. Read off the exact B-Rep surface
+    // at each node's UV parameters where the tessellation carries them, and
+    // area-weighted from the adjacent facets where it does not.
+    //
+    // Interpolating these across a facet is what removes the tessellation from
+    // the accuracy budget: a flat facet normal sits up to half the angular
+    // deflection away from the true surface normal, and a mirror doubles that
+    // into the reflected ray. Empty means "no shading normals" -- the tracer
+    // then falls back to the facet normal, which is what a hand-built test mesh
+    // wants.
+    std::vector<gp_Dir> vnorm;
+
+    // Where this mesh is placed. Empty or one entry is the ordinary case: the
+    // triangles are already in world space. More than one makes it an instanced
+    // part -- tessellated once, placed many times -- and the vertices above are
+    // then in the part's own frame.
+    std::vector<gp_Trsf> placements;
+
+    // Detector receiver frame. detCenter is the true centre of the receiver
+    // rectangle, `detU`/`detV` span it (their lengths are the half-extents) and
+    // detNormal faces the side rays are counted from. detNX x detNY is the
+    // binning grid the tracer accumulates into.
     // Meaningless unless isDetector is true.
     gp_Pnt detCenter;
+    gp_Dir detU{1, 0, 0};
+    gp_Dir detV{0, 1, 0};
+    gp_Dir detNormal{0, 0, 1};
     double detW = 0.0, detH = 0.0;
-    int    detNX = 0, detNY = 0;
 };
 
 using MeshList = std::vector<MeshSurface>;

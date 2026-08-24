@@ -37,5 +37,10 @@ void SimulationWorker::run() {
         }
     };
 
+    if (m_partialMs > 0) {
+        ctl.partialIntervalMs = m_partialMs;
+        ctl.partial = [this](const SimulationResult& snap) { emit partialReady(snap); };
+    }
+
     emit resultReady(Simulation::run(m_cfg, ctl));
 }

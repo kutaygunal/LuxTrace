@@ -13,7 +13,7 @@ set(CMAKE_AUTOUIC ON)
 find_package(OpenCASCADE CONFIG REQUIRED)
 
 # Qt 6 (MSVC 2022 kit at C:/Qt/6.8.2/msvc2022_64)
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets OpenGL OpenGLWidgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets)
 
 find_package(Threads REQUIRED)
 
@@ -27,8 +27,15 @@ add_library(optics_core STATIC
     src/core/Vec3.h
     src/core/Optics.h
     src/core/SurfaceOptics.h
+    src/core/Sampling.h src/core/Sampling.cpp
+    src/core/Material.h src/core/Material.cpp
+    src/core/Bsdf.h src/core/Bsdf.cpp
+    src/core/Coating.h src/core/Coating.cpp
+    src/core/Polarisation.h src/core/Polarisation.cpp
+    src/core/Spectrum.h src/core/Spectrum.cpp
     src/core/Mesh.h src/core/Mesh.cpp
     src/core/GeometryProvider.h src/core/GeometryProvider.cpp
+    src/core/CadImport.h src/core/CadImport.cpp
     src/core/MeshBuilder.h src/core/MeshBuilder.cpp
     src/core/TraceScene.h src/core/TraceScene.cpp
     src/core/RayTracer.h src/core/RayTracer.cpp
@@ -38,6 +45,7 @@ add_library(optics_core STATIC
     src/core/Analysis.h src/core/Analysis.cpp
     src/core/ConfigIO.h src/core/ConfigIO.cpp
     src/core/Studies.h src/core/Studies.cpp
+    src/core/Report.h src/core/Report.cpp
     src/core/StudyWorker.h src/core/StudyWorker.cpp
 )
 
@@ -45,6 +53,9 @@ target_include_directories(optics_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 target_link_libraries(optics_core PUBLIC
     Qt6::Core
+    # QImage, for the figures a report embeds. Gui only -- no widgets, so the
+    # tests still link the core without a window system.
+    Qt6::Gui
     Threads::Threads
     # OpenCASCADE toolkits
     TKernel TKMath TKService
@@ -53,6 +64,10 @@ target_link_libraries(optics_core PUBLIC
     TKG2d TKG3d TKBRep TKGeomBase TKGeomAlgo
     TKPrim TKBO TKBool TKMesh TKTopAlgo
     TKFillet TKHLR TKShHealing
+    # Data exchange: reading a customer's CAD. These ship with OCCT and were
+    # simply never linked, which is the whole reason the app could only open its
+    # own twenty-five demonstration scenes.
+    TKDESTEP TKDEIGES TKDESTL TKXSBase
 )
 
 # ---------------------------------------------------------------------------

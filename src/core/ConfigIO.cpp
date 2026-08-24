@@ -1,5 +1,6 @@
 #include "ConfigIO.h"
 
+#include <algorithm>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -11,7 +12,9 @@ namespace {
 
 const char* kSourceType[]  = {"point", "lambertian", "collimated"};
 const char* kSourceShape[] = {"point", "disc", "rect", "sphere"};
-const char* kSpectrum[]    = {"monochrome", "rgb"};
+const char* kSpectrum[]    = {"monochrome", "rgb", "blackbody", "led", "d65", "table"};
+const char* kFluxUnit[]    = {"watt", "lumen"};
+const char* kPolState[]    = {"unpolarised", "linear-s", "linear-p", "circular"};
 
 template <std::size_t N>
 int indexOf(const char* const (&names)[N], const QString& s, int fallback) {
@@ -64,12 +67,17 @@ QString toJson(const SimConfig& cfg) {
     QJsonObject src;
     src[QStringLiteral("type")]         = QLatin1String(kSourceType[int(cfg.source)]);
     src[QStringLiteral("shape")]        = QLatin1String(kSourceShape[int(cfg.shape)]);
-    src[QStringLiteral("spectrum")]     = QLatin1String(kSpectrum[int(cfg.spectrum)]);
+    src[QStringLiteral("spectrum")]     = QLatin1String(kSpectrum[int(cfg.spectrum.kind)]);
     src[QStringLiteral("halfAngleDeg")] = cfg.halfAngleDeg;
     src[QStringLiteral("sizeA")]        = cfg.sizeA;
     src[QStringLiteral("sizeB")]        = cfg.sizeB;
     src[QStringLiteral("beamRadius")]   = cfg.beamRadius;
-    src[QStringLiteral("wavelengthNm")] = cfg.wavelengthNm;
+    src[QStringLiteral("wavelengthNm")] = cfg.spectrum.wavelengthNm;
+    src[QStringLiteral("cct")]          = cfg.spectrum.cct;
+    src[QStringLiteral("power")]        = cfg.power;
+    src[QStringLiteral("powerUnit")]    = QLatin1String(kFluxUnit[int(cfg.fluxUnit)]);
+    src[QStringLiteral("polarisation")] = QLatin1String(kPolState[
+        std::clamp(cfg.polarisationState, 0, 3)]);
     root[QStringLiteral("source")] = src;
 
     QJsonObject phys;
@@ -78,6 +86,9 @@ QString toJson(const SimConfig& cfg) {
     phys[QStringLiteral("scattering")]        = cfg.physics.scattering;
     phys[QStringLiteral("roughness")]         = cfg.physics.roughness;
     phys[QStringLiteral("dispersion")]        = cfg.physics.dispersion;
+    phys[QStringLiteral("coatings")]         = cfg.physics.coatings;
+    phys[QStringLiteral("volumeScattering")] = cfg.physics.volumeScattering;
+    phys[QStringLiteral("polarised")]        = cfg.physics.polarised;
     phys[QStringLiteral("roughnessOverride")] = cfg.physics.roughnessOverride;
     phys[QStringLiteral("scatterOverride")]   = cfg.physics.scatterOverride;
     phys[QStringLiteral("absorptionScale")]   = cfg.physics.absorptionScale;
@@ -89,6 +100,7 @@ QString toJson(const SimConfig& cfg) {
     run[QStringLiteral("seed")]    = double(cfg.seed);
     run[QStringLiteral("nTheta")]  = cfg.nTheta;
     run[QStringLiteral("nPhi")]    = cfg.nPhi;
+    run[QStringLiteral("detectorBins")] = cfg.detectorBins;
     root[QStringLiteral("run")] = run;
 
     return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Indented));
@@ -122,13 +134,23 @@ bool fromJson(const QString& json, SimConfig& out, QString* errorOut) {
         indexOf(kSourceType, src.value(QStringLiteral("type")).toString(), int(cfg.source)));
     cfg.shape = SourceConfig::Shape(
         indexOf(kSourceShape, src.value(QStringLiteral("shape")).toString(), int(cfg.shape)));
-    cfg.spectrum = SourceConfig::Spectrum(
-        indexOf(kSpectrum, src.value(QStringLiteral("spectrum")).toString(), int(cfg.spectrum)));
+    cfg.spectrum.kind = SpectrumConfig::Kind(
+        indexOf(kSpectrum, src.value(QStringLiteral("spectrum")).toString(),
+                int(cfg.spectrum.kind)));
     cfg.halfAngleDeg = std::clamp(num(src, "halfAngleDeg", cfg.halfAngleDeg), 0.0, 180.0);
     cfg.sizeA        = std::max(0.0, num(src, "sizeA", cfg.sizeA));
     cfg.sizeB        = std::max(0.0, num(src, "sizeB", cfg.sizeB));
     cfg.beamRadius   = std::max(0.0, num(src, "beamRadius", cfg.beamRadius));
-    cfg.wavelengthNm = std::clamp(num(src, "wavelengthNm", cfg.wavelengthNm), 200.0, 2000.0);
+    cfg.spectrum.wavelengthNm =
+        std::clamp(num(src, "wavelengthNm", cfg.spectrum.wavelengthNm), 200.0, 2000.0);
+    cfg.spectrum.cct = std::clamp(num(src, "cct", cfg.spectrum.cct), 1000.0, 20000.0);
+    cfg.power        = std::max(0.0, num(src, "power", cfg.power));
+    cfg.fluxUnit     = FluxUnit(
+        indexOf(kFluxUnit, src.value(QStringLiteral("powerUnit")).toString(),
+                int(cfg.fluxUnit)));
+    cfg.polarisationState = indexOf(kPolState,
+                                    src.value(QStringLiteral("polarisation")).toString(),
+                                    cfg.polarisationState);
 
     const QJsonObject phys = root.value(QStringLiteral("physics")).toObject();
     cfg.physics.fresnel    = flag(phys, "fresnel",    cfg.physics.fresnel);
@@ -136,6 +158,9 @@ bool fromJson(const QString& json, SimConfig& out, QString* errorOut) {
     cfg.physics.scattering = flag(phys, "scattering", cfg.physics.scattering);
     cfg.physics.roughness  = flag(phys, "roughness",  cfg.physics.roughness);
     cfg.physics.dispersion = flag(phys, "dispersion", cfg.physics.dispersion);
+    cfg.physics.coatings         = flag(phys, "coatings", cfg.physics.coatings);
+    cfg.physics.volumeScattering = flag(phys, "volumeScattering", cfg.physics.volumeScattering);
+    cfg.physics.polarised        = flag(phys, "polarised", cfg.physics.polarised);
     cfg.physics.roughnessOverride =
         std::min(num(phys, "roughnessOverride", cfg.physics.roughnessOverride), 1.0);
     cfg.physics.scatterOverride =
@@ -149,6 +174,7 @@ bool fromJson(const QString& json, SimConfig& out, QString* errorOut) {
     cfg.seed    = std::uint64_t(std::max(0.0, num(run, "seed", double(cfg.seed))));
     cfg.nTheta  = std::clamp(int(num(run, "nTheta", cfg.nTheta)), 0, 720);
     cfg.nPhi    = std::clamp(int(num(run, "nPhi", cfg.nPhi)), 1, 720);
+    cfg.detectorBins = std::clamp(int(num(run, "detectorBins", cfg.detectorBins)), 0, 4096);
 
     out = cfg;
     return true;

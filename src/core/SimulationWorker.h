@@ -25,8 +25,17 @@ public:
     void cancel();
     bool cancelRequested() const { return m_cancel.load(std::memory_order_relaxed); }
 
+    // How often a partial result is emitted while a run is in flight. 0 turns
+    // progressive reporting off, which is what a headless or scripted caller
+    // wants: a snapshot costs a copy of every per-thread accumulator.
+    void setPartialIntervalMs(int ms) { m_partialMs = ms; }
+
 signals:
     void progress(int percent);
+    // A snapshot of the run in flight: the same quantities as the final result,
+    // over the rays finished so far. The heatmap fills in and the error bar
+    // shrinks while the user watches, instead of a progress bar and a wait.
+    void partialReady(const SimulationResult& partial);
     void resultReady(const SimulationResult& result);
 
 protected:
@@ -35,4 +44,5 @@ protected:
 private:
     SimConfig         m_cfg;      // written before start(), read by run()
     std::atomic<bool> m_cancel{false};
+    int               m_partialMs = 200;
 };

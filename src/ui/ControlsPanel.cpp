@@ -4,6 +4,7 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QHBoxLayout>
 #include <QGroupBox>
 #include <QLabel>
 #include <QProgressBar>
@@ -82,6 +83,14 @@ ControlsPanel::ControlsPanel(QWidget* parent) : QWidget(parent) {
     sceneForm->addRow(QStringLiteral("Scene:"), m_scene);
     layout->addLayout(sceneForm);
 
+    // Names the file when one stands in for the scene above, so the two are
+    // never both silently in play.
+    m_importNote = new QLabel(body);
+    m_importNote->setWordWrap(true);
+    m_importNote->setStyleSheet(QStringLiteral("color:#d0a040;"));
+    m_importNote->setVisible(false);
+    layout->addWidget(m_importNote);
+
     // ---- geometry parameters ----------------------------------------------
     m_paramBox = group(QStringLiteral("Geometry"), body);
     auto* paramLayout = new QVBoxLayout(m_paramBox);
@@ -134,16 +143,54 @@ ControlsPanel::ControlsPanel(QWidget* parent) : QWidget(parent) {
     m_beamRadius = dspin(srcBox, 0.1, 300.0, 2.5, 2, 25.0, QStringLiteral(" mm"));
 
     m_spectrum = new QComboBox(srcBox);
-    m_spectrum->addItem(QStringLiteral("Monochromatic"));
-    m_spectrum->addItem(QStringLiteral("RGB (3 bands)"));
-    m_spectrum->setItemData(1, QStringLiteral(
-        "Splits the rays into 620 / 546 / 460 nm and traces each through the "
-        "Cauchy index of the glass. The heatmap then shows real colour, and a "
-        "prism actually splits the beam."), Qt::ToolTipRole);
+    for (int i = 0; i < SpectrumConfig::kKindCount; ++i)
+        m_spectrum->addItem(SpectrumConfig::kindName(SpectrumConfig::Kind(i)));
+    m_spectrum->setItemData(int(SpectrumConfig::Kind::Rgb), QStringLiteral(
+        "Three fixed lines at 620 / 546 / 460 nm, one ray in three. Fast, and "
+        "enough to show a prism splitting a beam."), Qt::ToolTipRole);
+    m_spectrum->setItemData(int(SpectrumConfig::Kind::Blackbody), QStringLiteral(
+        "Planck's law at the colour temperature below. One wavelength is sampled "
+        "per ray from it, so the spectrum resolves to whatever the ray budget "
+        "supports -- at the price of a monochromatic trace."), Qt::ToolTipRole);
+    m_spectrum->setItemData(int(SpectrumConfig::Kind::LedPhosphor), QStringLiteral(
+        "A blue pump near 450 nm plus a phosphor hump, the shape every white LED "
+        "has. This is what makes colour-over-angle mean anything."), Qt::ToolTipRole);
+    m_spectrum->setItemData(int(SpectrumConfig::Kind::D65), QStringLiteral(
+        "CIE standard daylight, the reference illuminant most colour work is "
+        "specified against."), Qt::ToolTipRole);
+    m_spectrum->setItemData(int(SpectrumConfig::Kind::Table), QStringLiteral(
+        "A measured spectral power distribution loaded from a CSV of "
+        "wavelength,power rows."), Qt::ToolTipRole);
     m_spectrum->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     m_spectrum->setMinimumContentsLength(14);
 
     m_wavelength = dspin(srcBox, 300.0, 1600.0, 10.0, 1, 587.6, QStringLiteral(" nm"));
+    m_cct = dspin(srcBox, 1500.0, 12000.0, 250.0, 0, 5000.0, QStringLiteral(" K"));
+    m_cct->setToolTip(QStringLiteral(
+        "Colour temperature of the blackbody or the white LED. It sets the shape "
+        "of the spectrum, and therefore the luminous efficacy the lumen figures "
+        "are derived through."));
+
+    // Absolute flux. Without it every number the app reports is a fraction of an
+    // unnamed unit, which is not something an engineer can put in a spec.
+    m_power = dspin(srcBox, 0.0, 1000000.0, 1.0, 3, 1.0, QString());
+    m_power->setToolTip(QStringLiteral(
+        "Total emitted flux. Everything downstream is reported in this unit: the "
+        "receiver in W/m^2 or lux, the far field in W/sr or candela."));
+    m_powerUnit = new QComboBox(srcBox);
+    m_powerUnit->addItem(QStringLiteral("W (radiometric)"));
+    m_powerUnit->addItem(QStringLiteral("lm (photometric)"));
+    m_powerUnit->setItemData(1, QStringLiteral(
+        "Lumens are watts weighted by the CIE V(lambda) curve, so a photometric "
+        "run needs a real spectrum: each ray is emitted carrying how much of it "
+        "the eye sees."), Qt::ToolTipRole);
+    m_powerUnit->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_powerUnit->setMinimumContentsLength(14);
+
+    auto* powerRow = new QHBoxLayout;
+    powerRow->setContentsMargins(0, 0, 0, 0);
+    powerRow->addWidget(m_power, 1);
+    powerRow->addWidget(m_powerUnit, 1);
 
     srcForm->addRow(QStringLiteral("Type:"), m_source);
     srcForm->addRow(QStringLiteral("Cone half-angle:"), m_halfAngle);
@@ -151,8 +198,10 @@ ControlsPanel::ControlsPanel(QWidget* parent) : QWidget(parent) {
     srcForm->addRow(QStringLiteral("Emitter:"), m_shape);
     srcForm->addRow(QStringLiteral("Size A:"), m_sizeA);
     srcForm->addRow(QStringLiteral("Size B:"), m_sizeB);
+    srcForm->addRow(QStringLiteral("Total flux:"), powerRow);
     srcForm->addRow(QStringLiteral("Spectrum:"), m_spectrum);
     srcForm->addRow(QStringLiteral("Wavelength:"), m_wavelength);
+    srcForm->addRow(QStringLiteral("Colour temp:"), m_cct);
     layout->addWidget(srcBox);
 
     // ---- physics -----------------------------------------------------------
@@ -171,6 +220,30 @@ ControlsPanel::ControlsPanel(QWidget* parent) : QWidget(parent) {
     m_absorption->setToolTip(QStringLiteral(
         "exp(-alpha x path length) inside a refractive solid. This is the loss "
         "that makes a long light guide dimmer than a short one."));
+
+    m_coatings = new QCheckBox(QStringLiteral("Coatings"), physBox);
+    m_coatings->setChecked(true);
+    m_coatings->setToolTip(QStringLiteral(
+        "Thin films on refractive surfaces. Without them every surface pays bare "
+        "Fresnel, so a multi-element system overstates its loss by roughly 3.5 % "
+        "per surface against any real lens -- all of which are coated. Switch it "
+        "off to see what the bare glass would have done."));
+
+    m_volume = new QCheckBox(QStringLiteral("Volume scattering"), physBox);
+    m_volume->setChecked(true);
+    m_volume->setToolTip(QStringLiteral(
+        "Scattering inside a medium rather than at its boundary. Every white "
+        "diffusing plastic in every luminaire is a volume scatterer, and a "
+        "surface model has no way to say so."));
+
+    m_polarised = new QCheckBox(QStringLiteral("Polarisation (Stokes / Mueller)"), physBox);
+    m_polarised->setChecked(false);
+    m_polarised->setToolTip(QStringLiteral(
+        "Carries a Stokes vector on every branch and applies a Mueller matrix at "
+        "every interaction. It costs roughly four times the per-ray state and "
+        "most illumination work does not need it, so the unpolarised fast path "
+        "is the default -- but it is what makes Brewster's angle, a polariser "
+        "and the phase of total internal reflection expressible at all."));
 
     m_scattering = new QCheckBox(QStringLiteral("Diffuse scattering"), physBox);
     m_scattering->setChecked(true);
@@ -206,9 +279,24 @@ ControlsPanel::ControlsPanel(QWidget* parent) : QWidget(parent) {
     m_absorptionScale->setToolTip(QStringLiteral(
         "Multiplies every medium's attenuation coefficient. 1 is ordinary optical "
         "glass; 20 is roughly a cheap plastic light pipe."));
+    m_polState = new QComboBox(physBox);
+    m_polState->addItem(QStringLiteral("Unpolarised"));
+    m_polState->addItem(QStringLiteral("Linear, s"));
+    m_polState->addItem(QStringLiteral("Linear, p"));
+    m_polState->addItem(QStringLiteral("Circular"));
+    m_polState->setEnabled(false);
+    m_polState->setToolTip(QStringLiteral(
+        "What the source emits. s and p are measured against the plane of "
+        "incidence of the first surface the ray meets."));
+    m_polState->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+
+    physForm->addRow(QStringLiteral("Source state:"), m_polState);
     physForm->addRow(QStringLiteral("Roughness:"), m_roughOverride);
     physForm->addRow(QStringLiteral("Scatter:"), m_scatterOverride);
     physForm->addRow(QStringLiteral("Absorption:"), m_absorptionScale);
+    physLayout->addWidget(m_coatings);
+    physLayout->addWidget(m_volume);
+    physLayout->addWidget(m_polarised);
     physLayout->addLayout(physForm);
     layout->addWidget(physBox);
 
@@ -238,7 +326,18 @@ ControlsPanel::ControlsPanel(QWidget* parent) : QWidget(parent) {
     m_threads->setSpecialValueText(QStringLiteral("all cores"));
     m_threads->setKeyboardTracking(false);
 
+    m_detBins = new QComboBox(runBox);
+    for (int n : {32, 64, 128, 256, 512, 1024})
+        m_detBins->addItem(QStringLiteral("%1 x %1").arg(n), n);
+    m_detBins->setCurrentIndex(1);            // 64 x 64, the long-standing default
+    m_detBins->setToolTip(QStringLiteral(
+        "Receiver grid. A finer grid resolves a tight spot but puts fewer rays in "
+        "each bin, so the uniformity figures get noisier -- trace more rays with "
+        "it. Changing it rebuilds the scene."));
+    m_detBins->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+
     runForm->addRow(QStringLiteral("Rays:"), m_rays);
+    runForm->addRow(QStringLiteral("Receiver grid:"), m_detBins);
     runForm->addRow(QStringLiteral("Seed:"), m_seed);
     runForm->addRow(QStringLiteral("Threads:"), m_threads);
     layout->addWidget(runBox);
@@ -281,6 +380,14 @@ ControlsPanel::ControlsPanel(QWidget* parent) : QWidget(parent) {
     connect(m_source,   &QComboBox::currentIndexChanged, this, settings);
     connect(m_shape,    &QComboBox::currentIndexChanged, this, settings);
     connect(m_spectrum, &QComboBox::currentIndexChanged, this, settings);
+    connect(m_coatings, &QCheckBox::toggled, this, settings);
+    connect(m_volume, &QCheckBox::toggled, this, settings);
+    connect(m_polarised, &QCheckBox::toggled, this, settings);
+    connect(m_polState, &QComboBox::currentIndexChanged, this, settings);
+    connect(m_powerUnit, &QComboBox::currentIndexChanged, this, settings);
+    connect(m_detBins, &QComboBox::currentIndexChanged, this, settings);
+    connect(m_cct, &QDoubleSpinBox::valueChanged, this, settings);
+    connect(m_power, &QDoubleSpinBox::valueChanged, this, settings);
     for (QDoubleSpinBox* s : {m_halfAngle, m_sizeA, m_sizeB, m_beamRadius, m_wavelength,
                               m_roughOverride, m_scatterOverride, m_absorptionScale})
         connect(s, &QDoubleSpinBox::valueChanged, this, settings);
@@ -328,7 +435,17 @@ void ControlsPanel::syncEnabledState() {
     m_beamRadius->setEnabled(collimated);
     m_sizeA->setEnabled(shape != SourceConfig::Shape::PointLike);
     m_sizeB->setEnabled(shape == SourceConfig::Shape::Rect);
-    m_wavelength->setEnabled(m_spectrum->currentIndex() == 0);
+    const auto kind = SpectrumConfig::Kind(m_spectrum->currentIndex());
+    m_wavelength->setEnabled(kind == SpectrumConfig::Kind::Monochromatic);
+    m_cct->setEnabled(kind == SpectrumConfig::Kind::Blackbody ||
+                      kind == SpectrumConfig::Kind::LedPhosphor);
+    // Lumens are watts through V(lambda); with a single line that is still a
+    // well-defined conversion, so the unit is never disabled -- but a line
+    // outside the visible band converts to nothing, and the readouts say so.
+    m_power->setSuffix(m_powerUnit->currentIndex() == 1 ? QStringLiteral(" lm")
+                                                        : QStringLiteral(" W"));
+    // The emitted state means nothing unless the state is being carried.
+    m_polState->setEnabled(m_polarised->isChecked());
 
     // The cone means different things to the two angular laws, and 180 on a
     // Lambertian source is silently the same as 90 -- showing that in the box
@@ -356,18 +473,26 @@ SimConfig ControlsPanel::config() const {
 
     cfg.source       = SourceConfig::Type(m_source->currentIndex());
     cfg.shape        = SourceConfig::Shape(m_shape->currentIndex());
-    cfg.spectrum     = SourceConfig::Spectrum(m_spectrum->currentIndex());
+    cfg.spectrum.kind         = SpectrumConfig::Kind(m_spectrum->currentIndex());
+    cfg.spectrum.wavelengthNm = m_wavelength->value();
+    cfg.spectrum.cct          = m_cct->value();
     cfg.halfAngleDeg = m_halfAngle->value();
     cfg.sizeA        = m_sizeA->value();
     cfg.sizeB        = m_sizeB->value();
     cfg.beamRadius   = m_beamRadius->value();
-    cfg.wavelengthNm = m_wavelength->value();
+    cfg.power        = m_power->value();
+    cfg.fluxUnit     = FluxUnit(m_powerUnit->currentIndex());
+    cfg.detectorBins = m_detBins->currentData().toInt();
 
     cfg.physics.fresnel    = m_fresnel->isChecked();
     cfg.physics.absorption = m_absorption->isChecked();
     cfg.physics.scattering = m_scattering->isChecked();
     cfg.physics.roughness  = m_roughness->isChecked();
     cfg.physics.dispersion = m_dispersion->isChecked();
+    cfg.physics.coatings        = m_coatings->isChecked();
+    cfg.physics.volumeScattering = m_volume->isChecked();
+    cfg.physics.polarised       = m_polarised->isChecked();
+    cfg.polarisationState       = m_polState->currentIndex();
     // The spin boxes park at their minimum to mean "leave each surface alone",
     // which is what the negative sentinel in PhysicsOptions expects.
     cfg.physics.roughnessOverride = m_roughOverride->value() < 0.0 ? -1.0 : m_roughOverride->value();
@@ -390,7 +515,12 @@ void ControlsPanel::setConfig(const SimConfig& cfg) {
 
     m_source->setCurrentIndex(int(cfg.source));
     m_shape->setCurrentIndex(int(cfg.shape));
-    m_spectrum->setCurrentIndex(int(cfg.spectrum));
+    m_spectrum->setCurrentIndex(int(cfg.spectrum.kind));
+    m_powerUnit->setCurrentIndex(int(cfg.fluxUnit));
+    {
+        const int idx = m_detBins->findData(cfg.detectorBins > 0 ? cfg.detectorBins : 64);
+        m_detBins->setCurrentIndex(idx >= 0 ? idx : 1);
+    }
     // Set the maximum before the value, or a 180-degree cone loaded onto a
     // Lambertian source would be clipped to the old limit instead of to 90.
     syncEnabledState();
@@ -398,13 +528,19 @@ void ControlsPanel::setConfig(const SimConfig& cfg) {
     m_sizeA->setValue(cfg.sizeA);
     m_sizeB->setValue(cfg.sizeB);
     m_beamRadius->setValue(cfg.beamRadius);
-    m_wavelength->setValue(cfg.wavelengthNm);
+    m_wavelength->setValue(cfg.spectrum.wavelengthNm);
+    m_cct->setValue(cfg.spectrum.cct);
+    m_power->setValue(cfg.power);
 
     m_fresnel->setChecked(cfg.physics.fresnel);
     m_absorption->setChecked(cfg.physics.absorption);
     m_scattering->setChecked(cfg.physics.scattering);
     m_roughness->setChecked(cfg.physics.roughness);
     m_dispersion->setChecked(cfg.physics.dispersion);
+    m_coatings->setChecked(cfg.physics.coatings);
+    m_volume->setChecked(cfg.physics.volumeScattering);
+    m_polarised->setChecked(cfg.physics.polarised);
+    m_polState->setCurrentIndex(std::clamp(cfg.polarisationState, 0, 3));
     m_roughOverride->setValue(cfg.physics.roughnessOverride < 0.0
                                   ? m_roughOverride->minimum() : cfg.physics.roughnessOverride);
     m_scatterOverride->setValue(cfg.physics.scatterOverride < 0.0
@@ -420,12 +556,33 @@ void ControlsPanel::setConfig(const SimConfig& cfg) {
     emit sceneChanged();
 }
 
+void ControlsPanel::setImportedGeometry(const QString& label) {
+    m_importedGeometry = !label.isEmpty();
+    m_importNote->setVisible(m_importedGeometry);
+    if (m_importedGeometry) {
+        m_importNote->setText(
+            QStringLiteral("Tracing imported geometry: %1.\n"
+                           "The scene above and the dimensions below are not in use — "
+                           "picking a scene replaces the imported part.").arg(label));
+        m_importNote->setToolTip(
+            QStringLiteral("A run traces the file, not the selected scene. Surface "
+                           "optics, the source, the physics and the ray budget all "
+                           "still apply to it."));
+    }
+    // The parameters describe the scene, and the scene is not what will be
+    // traced.
+    m_paramBox->setEnabled(!m_importedGeometry);
+}
+
 void ControlsPanel::setRunning(bool running) {
     m_scene->setEnabled(!running);
-    m_paramBox->setEnabled(!running);
+    m_paramBox->setEnabled(!running && !m_importedGeometry);
     m_run->setEnabled(!running);
     m_cancel->setEnabled(running);
-    for (QWidget* w : std::initializer_list<QWidget*>{m_source, m_shape, m_spectrum,
+    for (QWidget* w : std::initializer_list<QWidget*>{m_coatings, m_volume, m_polarised,
+                                                     m_polState,
+                                                     m_cct, m_power, m_powerUnit, m_detBins,
+                                                     m_source, m_shape, m_spectrum,
                                                       m_rays, m_seed, m_threads})
         w->setEnabled(!running);
 

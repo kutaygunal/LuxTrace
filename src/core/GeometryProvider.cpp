@@ -1,4 +1,6 @@
 #include "GeometryProvider.h"
+#include "Coating.h"
+#include "Material.h"
 
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
@@ -30,16 +32,38 @@ namespace {
 constexpr double kPi = 3.14159265358979323846;
 
 // Optical property presets, so a scene reads as intent rather than numbers.
-constexpr double kMirrorR = 0.95;    // good front-surface mirror
-constexpr double kGlassN  = 1.5;     // BK7-ish
-constexpr double kGlassT  = 0.96;    // the fixed split, used only when Fresnel is off
+// The fixed splits below are the fallbacks used when the Fresnel model is
+// switched off; with it on -- the default -- the numbers come from the material.
+constexpr double kMirrorR = 0.95;    // fallback for a front-surface mirror
+constexpr double kGlassT  = 0.96;
 constexpr double kGlassR  = 0.04;
-// Cauchy B for a crown glass of Abbe number ~64: n_F - n_C = B * 1.91 um^-2.
-constexpr double kGlassB  = 0.00420;
-// Internal attenuation, 1/mm. 0.998 transmittance per 10 mm, which is ordinary
-// for optical glass -- and enough to matter over the metre of zig-zag a light
-// guide actually makes a ray travel.
-constexpr double kGlassA  = 2.0e-4;
+
+// The catalogue names the scenes are built from. Naming them here rather than
+// spelling out coefficients is the whole point of having a catalogue: a scene
+// says "N-SF11" the way a drawing does.
+const char* const kDefaultGlass  = "N-BK7";
+const char* const kFlintGlass    = "N-SF11";
+const char* const kPolymer       = "PMMA (acrylic)";
+const char* const kDefaultMirror = "Aluminium";
+
+// The coating a catalogue lens is sold with. A guide or a prism that works by
+// total internal reflection is left bare, because that is how they are made.
+const char* const kDefaultCoating = "Broadband AR";
+
+// Applies a catalogue material to a surface: the reference index, the internal
+// attenuation and the dispersion model all come from one name.
+void applyMaterial(OpticalSurface& o, const char* name) {
+    const OpticalMaterial m = materials::byName(QLatin1String(name));
+    if (!m.valid()) return;
+    o.material = m;
+    if (m.isMetal()) {
+        // A metal is opaque: what its material supplies is the complex index the
+        // angle- and wavelength-dependent reflectance is computed from.
+        return;
+    }
+    o.index      = m.nd;
+    o.absorption = m.alpha;
+}
 
 OpticalSurface surf(TopoDS_Shape s, const QString& label,
                     double refl, double trans, double index, bool det = false) {
@@ -53,8 +77,15 @@ OpticalSurface surf(TopoDS_Shape s, const QString& label,
     return o;
 }
 
-OpticalSurface mirror(TopoDS_Shape s, const QString& label, double refl = kMirrorR) {
-    return surf(s, label, refl, 0.0, 0.0);
+// A front-surface mirror. With the Fresnel model on it reflects what the metal
+// actually reflects -- angle- and wavelength-dependent, roughly 92 % for
+// aluminium at normal incidence and rising toward grazing -- and falls back to
+// the flat number when the model is off.
+OpticalSurface mirror(TopoDS_Shape s, const QString& label, double refl = kMirrorR,
+                      const char* material = kDefaultMirror) {
+    OpticalSurface o = surf(s, label, refl, 0.0, 0.0);
+    if (material) applyMaterial(o, material);
+    return o;
 }
 
 // A refractive solid. `guide` surfaces describe a pure light pipe: when the
@@ -62,12 +93,22 @@ OpticalSurface mirror(TopoDS_Shape s, const QString& label, double refl = kMirro
 // a 4 % surface reflection. With Fresnel on -- the default -- the split comes
 // from the angle of incidence either way, so the flag only sets the fallback.
 OpticalSurface glass(TopoDS_Shape s, const QString& label, bool guide = false,
-                     double index = kGlassN) {
-    OpticalSurface o = guide ? surf(s, label, 0.0, 1.0, index)
-                             : surf(s, label, kGlassR, kGlassT, index);
-    o.fresnel     = true;
-    o.dispersionB = kGlassB;
-    o.absorption  = kGlassA;
+                     const char* material = kDefaultGlass,
+                     const char* coating = nullptr) {
+    OpticalSurface o = guide ? surf(s, label, 0.0, 1.0, 1.5)
+                             : surf(s, label, kGlassR, kGlassT, 1.5);
+    o.fresnel = true;
+    applyMaterial(o, material);
+    // Every real lens is coated, and leaving them bare made a multi-element
+    // system overstate its loss by roughly 3.5 % per surface -- which anybody
+    // who knows optics notices at once.
+    //
+    // A light pipe is the exception and not an oversight: its walls and its end
+    // faces are one surface, and a coating on the wall is precisely what a part
+    // that works by total internal reflection must not have. So `guide` gets no
+    // coating unless one is asked for by name.
+    const char* film = coating ? coating : (guide ? nullptr : kDefaultCoating);
+    if (film) o.coating = coating::byName(QLatin1String(film));
     return o;
 }
 
@@ -225,17 +266,24 @@ TopoDS_Shape cornerCube(double side) {
     return compound;
 }
 
-TopoDS_Shape microlensArray(int nx, int ny, double radius, double pitch) {
-    TopoDS_Compound compound;
-    BRep_Builder builder;
-    builder.MakeCompound(compound);
+// Where the lenslets of an nx x ny array sit, as translations about the origin.
+// One lenslet plus these is the whole array: it is tessellated once, its
+// hierarchy is built once, and the placements are what put it in nx * ny
+// places. Meshing twenty-five copies instead meant twenty-five tessellations
+// and a hierarchy over all of their triangles, which is why the array used to
+// need a hand-coarsened mesh to build in reasonable time.
+std::vector<gp_Trsf> gridPlacements(int nx, int ny, double pitch) {
+    std::vector<gp_Trsf> out;
+    out.reserve(std::size_t(nx) * std::size_t(ny));
     const double x0 = -0.5 * pitch * (nx - 1);
     const double y0 = -0.5 * pitch * (ny - 1);
     for (int i = 0; i < nx; ++i)
-        for (int j = 0; j < ny; ++j)
-            builder.Add(compound, BRepPrimAPI_MakeSphere(
-                gp_Pnt(x0 + i * pitch, y0 + j * pitch, 0.0), radius).Shape());
-    return compound;
+        for (int j = 0; j < ny; ++j) {
+            gp_Trsf t;
+            t.SetTranslation(gp_Vec(x0 + i * pitch, y0 + j * pitch, 0.0));
+            out.push_back(t);
+        }
+    return out;
 }
 
 // ---- the scene registry ----------------------------------------------------
@@ -506,6 +554,407 @@ SceneParams GeometryProvider::sanitise(Scene scene, const SceneParams& params) {
     return p;
 }
 
+
+namespace {
+
+DerivedQuantity dq(const QString& name, double value, int decimals,
+                   const QString& unit, const QString& tip) {
+    DerivedQuantity q;
+    q.name  = name;
+    q.value = QString::number(value, 'f', decimals);
+    q.unit  = unit;
+    q.tip   = tip;
+    return q;
+}
+
+DerivedQuantity dqText(const QString& name, const QString& value,
+                       const QString& unit, const QString& tip) {
+    DerivedQuantity q;
+    q.name  = name;
+    q.value = value;
+    q.unit  = unit;
+    q.tip   = tip;
+    return q;
+}
+
+// f/# and NA for an optic of focal length f and clear semi-aperture r. The two
+// are the same fact stated twice, and different people reach for different ones.
+void addFNumberAndNa(std::vector<DerivedQuantity>& out, double f, double r) {
+    if (f <= 0.0 || r <= 0.0) return;
+    out.push_back(dq(QStringLiteral("f-number"), f / (2.0 * r), 2, QStringLiteral("f/"),
+                     QStringLiteral("Focal length over clear aperture diameter. Smaller "
+                                    "collects more light and aberrates harder.")));
+    const double na = std::sin(std::atan2(r, f));
+    out.push_back(dq(QStringLiteral("Numerical aperture"), na, 3, QString(),
+                     QStringLiteral("sin of the marginal ray angle, n = 1 outside the optic. "
+                                    "The same fact as the f-number, in the units a fibre or "
+                                    "an objective is specified in.")));
+}
+
+// Etendue of a circular aperture radius r filled to half-angle theta: the
+// conserved quantity that says what a concentrator cannot beat.
+void addEtendue(std::vector<DerivedQuantity>& out, double r, double thetaRad) {
+    if (r <= 0.0 || thetaRad <= 0.0) return;
+    const double s = std::sin(thetaRad);
+    out.push_back(dq(QStringLiteral("Etendue"), kPi * kPi * r * r * s * s, 1,
+                     QStringLiteral("mm^2 sr"),
+                     QStringLiteral("Area times projected solid angle. No passive optic can "
+                                    "reduce it, which is why a concentrator has a limit at all.")));
+}
+
+} // namespace
+
+std::vector<DerivedQuantity> GeometryProvider::derived(Scene scene, const SceneParams& raw) {
+    const SceneParams P = sanitise(scene, raw);
+    std::vector<DerivedQuantity> out;
+    const double detZ = [&] {
+        const auto& infos = paramInfo(scene);
+        return infos.empty() ? 0.0 : P.v[infos.size() - 1];
+    }();
+
+    // n at the d line for the glasses the library is built from, so the paraxial
+    // numbers below match what the tracer will actually do.
+    constexpr double nCrown  = 1.5168;   // N-BK7
+    constexpr double nFlint  = 1.7847;   // N-SF11
+    constexpr double nPolymr = 1.4906;   // PMMA
+
+    switch (scene) {
+    case Scene::Reflector: {
+        const double f = P.v[0], r = P.v[1];
+        addFNumberAndNa(out, f, r);
+        out.push_back(dq(QStringLiteral("Rim angle"),
+                         2.0 * std::atan2(r, f - r * r / (4.0 * f)) / kPi * 180.0, 1,
+                         QStringLiteral("deg"),
+                         QStringLiteral("Full angle the dish subtends from its focus. Past "
+                                        "about 90 degrees the rim starts shadowing itself.")));
+        out.push_back(dq(QStringLiteral("Rim depth"), r * r / (4.0 * f), 1, QStringLiteral("mm"),
+                         QStringLiteral("How far the rim stands proud of the vertex.")));
+        out.push_back(dq(QStringLiteral("Collected solid angle"),
+                         2.0 * kPi * (1.0 - std::cos(std::atan2(r, f))) , 2,
+                         QStringLiteral("sr"),
+                         QStringLiteral("Of the 4 pi a point source radiates into, this is the "
+                                        "share the dish sees.")));
+        break;
+    }
+    case Scene::EllipticalReflector: {
+        const double a = P.v[0], b = P.v[1];
+        if (a > b) {
+            const double c = std::sqrt(a * a - b * b);
+            out.push_back(dq(QStringLiteral("Foci at z"), c, 1, QStringLiteral("+/- mm"),
+                             QStringLiteral("An ellipse images one focus onto the other exactly, "
+                                            "so the source belongs at one and the receiver at the other.")));
+            out.push_back(dq(QStringLiteral("Focus separation"), 2.0 * c, 1, QStringLiteral("mm"),
+                             QStringLiteral("Distance between the two foci.")));
+            out.push_back(dq(QStringLiteral("Eccentricity"), c / a, 3, QString(),
+                             QStringLiteral("0 is a sphere, 1 is a parabola.")));
+            out.push_back(dqText(QStringLiteral("Receiver vs far focus"),
+                                 QString::number(detZ - c, 'f', 1), QStringLiteral("mm"),
+                                 QStringLiteral("Zero puts the receiver exactly at the image "
+                                                "of the source.")));
+        }
+        break;
+    }
+    case Scene::SphericalReflector: {
+        const double R = P.v[0], half = P.v[1] * kPi / 180.0;
+        out.push_back(dq(QStringLiteral("Paraxial focus"), 0.5 * R, 1, QStringLiteral("mm"),
+                         QStringLiteral("R/2 from the vertex. Only the paraxial rays meet there, "
+                                        "which is exactly what this scene shows.")));
+        const double r = R * std::sin(half);
+        addFNumberAndNa(out, 0.5 * R, r);
+        // Longitudinal spherical aberration of a mirror, marginal against paraxial.
+        const double lsa = 0.5 * R * (1.0 / std::cos(half) - 1.0);
+        out.push_back(dq(QStringLiteral("Marginal focus shift"), lsa, 2, QStringLiteral("mm"),
+                         QStringLiteral("How far short of the paraxial focus the rim rays cross. "
+                                        "This is the spherical aberration, in closed form.")));
+        break;
+    }
+    case Scene::OffAxisParabola: {
+        const double f = P.v[0], off = P.v[1];
+        out.push_back(dq(QStringLiteral("Off-axis angle"),
+                         2.0 * std::atan2(off, 2.0 * f) / kPi * 180.0, 1, QStringLiteral("deg"),
+                         QStringLiteral("How far the segment's centre sits off the parent axis.")));
+        out.push_back(dq(QStringLiteral("Parent focal length"), f, 1, QStringLiteral("mm"),
+                         QStringLiteral("Of the full paraboloid the segment was cut from.")));
+        break;
+    }
+    case Scene::ParabolicTrough: {
+        const double f = P.v[0], w = P.v[1];
+        out.push_back(dq(QStringLiteral("Rim angle"), 2.0 * std::atan2(w, f) / kPi * 180.0, 1,
+                         QStringLiteral("deg"), QStringLiteral("In the focusing plane only.")));
+        out.push_back(dq(QStringLiteral("Geometric concentration"), w / std::max(1.0, 0.05 * w), 1,
+                         QStringLiteral("x"),
+                         QStringLiteral("Aperture width over an absorber a twentieth as wide -- "
+                                        "the ratio a trough is usually quoted at.")));
+        break;
+    }
+    case Scene::Cpc: {
+        const double aOut = P.v[0], th = P.v[1] * kPi / 180.0;
+        const double s = std::sin(th);
+        if (s > 1e-6) {
+            out.push_back(dq(QStringLiteral("Entrance radius"), aOut / s, 1, QStringLiteral("mm"),
+                             QStringLiteral("a_in = a_out / sin(theta_max), which is what makes "
+                                            "the concentration what it is.")));
+            out.push_back(dq(QStringLiteral("Concentration"), 1.0 / (s * s), 1, QStringLiteral("x"),
+                             QStringLiteral("1 / sin^2(theta_max): the thermodynamic limit, which "
+                                            "is exactly what a CPC reaches and nothing beats.")));
+            out.push_back(dq(QStringLiteral("Height"), (aOut / s + aOut) / std::tan(th), 1,
+                             QStringLiteral("mm"),
+                             QStringLiteral("A tight acceptance angle buys concentration and "
+                                            "pays for it in length.")));
+            addEtendue(out, aOut / s, th);
+        }
+        break;
+    }
+    case Scene::ConicalConcentrator: {
+        const double rIn = P.v[0], rOut = P.v[1];
+        if (rOut > 0.0) {
+            out.push_back(dq(QStringLiteral("Area ratio"), (rIn * rIn) / (rOut * rOut), 2,
+                             QStringLiteral("x"),
+                             QStringLiteral("What a funnel would concentrate by if none of the "
+                                            "light turned back. It always does, which is the "
+                                            "point of comparing it with a CPC.")));
+            out.push_back(dq(QStringLiteral("Ideal acceptance"),
+                             std::asin(std::min(1.0, rOut / rIn)) / kPi * 180.0, 1,
+                             QStringLiteral("deg"),
+                             QStringLiteral("The half-angle a CPC of the same area ratio would "
+                                            "accept.")));
+        }
+        break;
+    }
+    case Scene::Cassegrain: {
+        const double f1 = P.v[0], d = P.v[1];
+        out.push_back(dq(QStringLiteral("Primary focus"), f1, 1, QStringLiteral("mm"), QString()));
+        out.push_back(dq(QStringLiteral("Back focal distance"), detZ - d, 1, QStringLiteral("mm"),
+                         QStringLiteral("From the secondary's vertex to the receiver.")));
+        break;
+    }
+    case Scene::Lens: {
+        const double R = P.v[0], s = P.v[1];
+        // A ball lens: f measured from its centre.
+        const double f = nCrown * R / (2.0 * (nCrown - 1.0));
+        out.push_back(dq(QStringLiteral("Effective focal length"), f, 1, QStringLiteral("mm"),
+                         QStringLiteral("nR / 2(n-1) from the centre of the ball.")));
+        out.push_back(dq(QStringLiteral("Back focal distance"), f - R, 1, QStringLiteral("mm"),
+                         QStringLiteral("From the far surface. On a ball lens this is short, "
+                                        "which is why they are used against a fibre face.")));
+        addFNumberAndNa(out, f, R);
+        if (s > f) out.push_back(dq(QStringLiteral("Paraxial image at"),
+                                    1.0 / (1.0 / f - 1.0 / s), 1, QStringLiteral("mm"),
+                                    QStringLiteral("From the lens centre, by the thin-lens "
+                                                   "equation at the d line.")));
+        break;
+    }
+    case Scene::PlanoConvexLens:
+    case Scene::BiconvexLens: {
+        const double R = P.v[0], s = P.v[1];
+        const double f = (scene == Scene::BiconvexLens) ? R / (2.0 * (nCrown - 1.0))
+                                                        : R / (nCrown - 1.0);
+        out.push_back(dq(QStringLiteral("Focal length"), f, 1, QStringLiteral("mm"),
+                         (scene == Scene::BiconvexLens)
+                             ? QStringLiteral("1/f = (n-1)(1/R1 - 1/R2) with both radii equal, "
+                                              "so R/2(n-1) at n = 1.5168.")
+                             : QStringLiteral("f = R / (n - 1), the lensmaker's equation with "
+                                              "one flat surface, at n = 1.5168.")));
+        addFNumberAndNa(out, f, 0.35 * R);
+        if (s > f)
+            out.push_back(dq(QStringLiteral("Paraxial image at"), 1.0 / (1.0 / f - 1.0 / s), 1,
+                             QStringLiteral("mm"),
+                             QStringLiteral("Where the thin-lens equation puts the image of the "
+                                            "source. Compare it with the receiver position.")));
+        else
+            out.push_back(dqText(QStringLiteral("Paraxial image at"), QStringLiteral("virtual"),
+                                 QString(),
+                                 QStringLiteral("The source is inside the focal length, so the "
+                                                "image is on the same side and the beam diverges.")));
+        out.push_back(dq(QStringLiteral("Receiver vs image"),
+                         (s > f) ? detZ - 1.0 / (1.0 / f - 1.0 / s) : 0.0, 1,
+                         QStringLiteral("mm"),
+                         QStringLiteral("Zero means the receiver is at the paraxial focus, where "
+                                        "the residual spot is aberration alone.")));
+        break;
+    }
+    case Scene::PlanoConcaveLens: {
+        const double R = P.v[0];
+        out.push_back(dq(QStringLiteral("Focal length"), -R / (nCrown - 1.0), 1,
+                         QStringLiteral("mm"),
+                         QStringLiteral("Negative: a diverging lens has a virtual focus on the "
+                                        "source side.")));
+        break;
+    }
+    case Scene::HalfBallLens: {
+        const double R = P.v[0];
+        out.push_back(dq(QStringLiteral("Escape cone half-angle"),
+                         std::asin(1.0 / nCrown) / kPi * 180.0, 1, QStringLiteral("deg"),
+                         QStringLiteral("Inside the dome, only rays within this of the local "
+                                        "normal get out. A hemisphere over the die makes every "
+                                        "ray normal to the surface, which is the trick.")));
+        out.push_back(dq(QStringLiteral("Dome radius"), R, 1, QStringLiteral("mm"), QString()));
+        break;
+    }
+    case Scene::CylindricalLens: {
+        const double R = P.v[0];
+        out.push_back(dq(QStringLiteral("Focal length"), nCrown * R / (2.0 * (nCrown - 1.0)), 1,
+                         QStringLiteral("mm"),
+                         QStringLiteral("nR / 2(n-1) from the rod axis. It focuses one axis and "
+                                        "leaves the other alone, which is what makes a line.")));
+        break;
+    }
+    case Scene::FresnelLens: {
+        const double r = P.v[0], zones = P.v[1], s = P.v[2];
+        out.push_back(dq(QStringLiteral("Zone width"), r / std::max(1.0, zones), 1,
+                         QStringLiteral("mm"),
+                         QStringLiteral("Narrower zones approximate the curve better and lose "
+                                        "more light to the risers between them.")));
+        addFNumberAndNa(out, s, r);
+        break;
+    }
+    case Scene::Axicon: {
+        const double r = P.v[0], h = P.v[1];
+        const double alpha = std::atan2(h, r);            // base angle of the cone
+        const double deviation = (nPolymr - 1.0) * alpha; // small-angle deviation
+        out.push_back(dq(QStringLiteral("Cone half-angle"), 90.0 - alpha / kPi * 180.0, 1,
+                         QStringLiteral("deg"), QStringLiteral("Measured from the axis.")));
+        out.push_back(dq(QStringLiteral("Ray deviation"), deviation / kPi * 180.0, 2,
+                         QStringLiteral("deg"),
+                         QStringLiteral("(n-1) times the base angle: the angle every ray is bent "
+                                        "by, which is what turns a beam into a ring.")));
+        if (deviation > 1e-9)
+            out.push_back(dq(QStringLiteral("Ring radius at receiver"),
+                             std::max(0.0, detZ) * std::tan(deviation), 1, QStringLiteral("mm"),
+                             QStringLiteral("The deviation times the throw. A ring, not a spot.")));
+        break;
+    }
+    case Scene::MicrolensArray: {
+        const double R = P.v[0], pitch = P.v[1];
+        out.push_back(dq(QStringLiteral("Lenslet focal length"),
+                         nPolymr * R / (2.0 * (nPolymr - 1.0)), 1, QStringLiteral("mm"),
+                         QStringLiteral("Each ball is its own lens.")));
+        out.push_back(dq(QStringLiteral("Fill factor"),
+                         kPi * R * R / std::max(1e-9, pitch * pitch), 3, QString(),
+                         QStringLiteral("Lenslet area over cell area. Above about 0.79 the balls "
+                                        "have started to overlap.")));
+        out.push_back(dq(QStringLiteral("Array width"), 5.0 * pitch, 1, QStringLiteral("mm"),
+                         QStringLiteral("Five lenslets across.")));
+        break;
+    }
+    case Scene::Prism: {
+        const double w = P.v[0], h = P.v[1];
+        const double apex = 2.0 * std::atan2(w, h);
+        out.push_back(dq(QStringLiteral("Apex angle"), apex / kPi * 180.0, 1, QStringLiteral("deg"),
+                         QString()));
+        const double arg = nFlint * std::sin(0.5 * apex);
+        if (arg <= 1.0) {
+            const double dev = 2.0 * std::asin(arg) - apex;
+            out.push_back(dq(QStringLiteral("Minimum deviation"), dev / kPi * 180.0, 2,
+                             QStringLiteral("deg"),
+                             QStringLiteral("2 asin(n sin(A/2)) - A at the d line, for the "
+                                            "symmetric passage. The smallest bend this prism "
+                                            "can give.")));
+            const double devF = 2.0 * std::asin(std::min(1.0, materials::byName(
+                                    QStringLiteral("N-SF11")).indexAt(486.1) *
+                                    std::sin(0.5 * apex))) - apex;
+            const double devC = 2.0 * std::asin(std::min(1.0, materials::byName(
+                                    QStringLiteral("N-SF11")).indexAt(656.3) *
+                                    std::sin(0.5 * apex))) - apex;
+            out.push_back(dq(QStringLiteral("Angular dispersion"),
+                             (devF - devC) / kPi * 180.0, 3, QStringLiteral("deg"),
+                             QStringLiteral("Blue minus red, F to C line. This is the spread the "
+                                            "prism was built for.")));
+        } else {
+            out.push_back(dqText(QStringLiteral("Minimum deviation"),
+                                 QStringLiteral("total internal reflection"), QString(),
+                                 QStringLiteral("The apex is too steep for light to leave the "
+                                                "second face at all.")));
+        }
+        break;
+    }
+    case Scene::LightGuide:
+    case Scene::SquareLightGuide: {
+        const double r = P.v[0], len = P.v[1];
+        const double crit = std::asin(1.0 / nCrown);
+        out.push_back(dq(QStringLiteral("Critical angle"), crit / kPi * 180.0, 1,
+                         QStringLiteral("deg"),
+                         QStringLiteral("From the wall normal. Steeper than this and the ray "
+                                        "leaves instead of bouncing.")));
+        out.push_back(dq(QStringLiteral("Acceptance half-angle"),
+                         std::asin(std::min(1.0, std::sqrt(nCrown * nCrown - 1.0))) / kPi * 180.0,
+                         1, QStringLiteral("deg"),
+                         QStringLiteral("In air, at the entrance face: the numerical aperture of "
+                                        "the guide, sqrt(n^2 - 1).")));
+        out.push_back(dq(QStringLiteral("Aspect ratio"), len / std::max(1e-9, 2.0 * r), 1,
+                         QStringLiteral("x"),
+                         QStringLiteral("Length over width. It sets how many bounces an off-axis "
+                                        "ray makes, and therefore how much the walls cost.")));
+        break;
+    }
+    case Scene::TaperedLightGuide: {
+        const double rIn = P.v[0], rOut = P.v[1], len = P.v[2];
+        out.push_back(dq(QStringLiteral("Taper half-angle"),
+                         std::atan2(rIn - rOut, len) / kPi * 180.0, 2, QStringLiteral("deg"),
+                         QStringLiteral("Every bounce steepens a ray by twice this, which is "
+                                        "what eventually pushes it past the critical angle.")));
+        if (rOut > 0.0)
+            out.push_back(dq(QStringLiteral("Area ratio"), (rIn * rIn) / (rOut * rOut), 2,
+                             QStringLiteral("x"),
+                             QStringLiteral("What it would concentrate by if nothing leaked. "
+                                            "Etendue says something always does.")));
+        break;
+    }
+    case Scene::PorroPrism: {
+        const double w = P.v[0], h = P.v[1];
+        out.push_back(dq(QStringLiteral("Roof angle"), std::atan2(h, w) / kPi * 180.0, 1,
+                         QStringLiteral("deg"),
+                         QStringLiteral("45 degrees is the retroreflecting case: height equal to "
+                                        "half width.")));
+        out.push_back(dq(QStringLiteral("Critical angle"),
+                         std::asin(1.0 / nCrown) / kPi * 180.0, 1, QStringLiteral("deg"),
+                         QStringLiteral("The roof faces work by total internal reflection alone, "
+                                        "with no coating at all.")));
+        break;
+    }
+    case Scene::IntegratingSphere: {
+        const double R = P.v[0], rho = P.v[1], port = P.v[2];
+        const double sphereArea = 4.0 * kPi * R * R;
+        const double f = (port * port) / sphereArea;
+        out.push_back(dq(QStringLiteral("Port fraction"), f, 4, QString(),
+                         QStringLiteral("Port area over sphere area. Everything about a sphere's "
+                                        "throughput follows from this and the wall reflectance.")));
+        const double denom = 1.0 - rho * (1.0 - f);
+        if (denom > 1e-9)
+            out.push_back(dq(QStringLiteral("Sphere multiplier"), rho / denom, 1,
+                             QStringLiteral("x"),
+                             QStringLiteral("M = rho / (1 - rho(1-f)). How many times the light "
+                                            "goes round before it finds the port.")));
+        out.push_back(dq(QStringLiteral("Expected throughput"),
+                         100.0 * (f + (1.0 - f) * f * rho / std::max(1e-9, denom)), 2,
+                         QStringLiteral("%"),
+                         QStringLiteral("Straight out through the port, plus everything that "
+                                        "comes back round. The trace should land on this.")));
+        break;
+    }
+    case Scene::DiffuserPlate: {
+        const double size = P.v[0], diffusion = P.v[1];
+        out.push_back(dq(QStringLiteral("Diffuse fraction"), diffusion, 2, QString(),
+                         QStringLiteral("How much of what leaves the far face is cosine-weighted "
+                                        "rather than refracted straight on.")));
+        out.push_back(dq(QStringLiteral("Throw ratio"), std::max(0.0, detZ) / std::max(1e-9, size),
+                         2, QStringLiteral("x"),
+                         QStringLiteral("Receiver distance over plate width. A Lambertian plate "
+                                        "spreads over roughly this much.")));
+        break;
+    }
+    case Scene::CornerCube:
+    case Scene::Count:
+        break;
+    }
+
+    if (!out.empty() || scene == Scene::CornerCube)
+        out.push_back(dq(QStringLiteral("Receiver at z"), detZ, 1, QStringLiteral("mm"),
+                         QStringLiteral("Where the measurement plane sits. Moving it is a "
+                                        "parameter change, not a special case.")));
+    return out;
+}
+
 std::vector<OpticalSurface> GeometryProvider::buildScene(Scene scene) {
     return build(scene, defaultParams(scene)).surfaces;
 }
@@ -721,12 +1170,13 @@ GeometryProvider::SceneSetup GeometryProvider::build(Scene scene, const ScenePar
 
     case Scene::MicrolensArray: {
         const double R = P.v[0], pitch = P.v[1];
-        OpticalSurface array = glass(microlensArray(5, 5, R, pitch),
-                                     QStringLiteral("Microlens Array"));
-        // Twenty-five bodies at the default angular deflection is half a million
-        // triangles and a three-second build. An array is a beam homogeniser
-        // rather than an imaging optic, so the facet error costs it little.
-        array.meshAngle = 0.16;
+        // One moulded acrylic lenslet, placed twenty-five times. Because only
+        // one is ever tessellated, it can carry the same fine mesh every other
+        // optic in the library does rather than the coarsened one twenty-five
+        // copies used to need.
+        OpticalSurface array = glass(BRepPrimAPI_MakeSphere(gp_Pnt(0, 0, 0), R).Shape(),
+                                     QStringLiteral("Microlens Array"), false, kPolymer);
+        array.placements = gridPlacements(5, 5, pitch);
         s.push_back(array);
         s.push_back(detector(std::max(200.0, 8.0 * pitch), dz));
         break;
@@ -734,9 +1184,11 @@ GeometryProvider::SceneSetup GeometryProvider::build(Scene scene, const ScenePar
 
     case Scene::Prism: {
         const double halfW = P.v[0], apex = P.v[1];
+        // A dense flint: four times the dispersion of a crown, which is what a
+        // dispersing prism is actually made of and what makes the spread visible.
         s.push_back(glass(extrudeAlongY({gp_Pnt(-halfW, 0, 0.0), gp_Pnt(halfW, 0, 0.0),
                                          gp_Pnt(0.0, 0, apex)}, 120.0, true),
-                          QStringLiteral("Glass Prism")));
+                          QStringLiteral("Glass Prism"), false, kFlintGlass));
         s.push_back(detector(600.0, dz));
         break;
     }
@@ -797,8 +1249,13 @@ GeometryProvider::SceneSetup GeometryProvider::build(Scene scene, const ScenePar
         const double size = P.v[0], diffusion = P.v[1];
         OpticalSurface plate = glass(
             BRepPrimAPI_MakeBox(gp_Pnt(-0.5 * size, -0.5 * size, 0.0), size, size, 6.0).Shape(),
-            QStringLiteral("Diffuser Plate"));
+            QStringLiteral("Diffuser Plate"), false, kPolymer, nullptr);
         plate.scatter = std::clamp(diffusion, 0.0, 1.0);
+        // A filled polymer diffuses in its bulk, not at its faces: the particles
+        // are through the whole thickness. The surface fraction above stays as
+        // the etched-face part of the same plate.
+        plate.volume.coefficient = 0.02 * std::clamp(diffusion, 0.0, 1.0);
+        plate.volume.anisotropy  = 0.6;      // forward scattering, as a filler is
         s.push_back(plate);
         s.push_back(detector(std::max(300.0, 3.2 * size), dz));
         break;

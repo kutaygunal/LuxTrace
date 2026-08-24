@@ -1,6 +1,8 @@
 #pragma once
 #include "Mesh.h"
 #include "SimulationResult.h"
+#include "Polarisation.h"
+#include "Spectrum.h"
 #include "TraceScene.h"
 #include <atomic>
 #include <cstdint>
@@ -25,14 +27,22 @@ struct SourceConfig {
     // which is what stops a concentrator from reporting an impossible gain.
     enum class Shape { PointLike, Disc, Rect, Sphere };
 
-    enum class Spectrum { Monochrome, Rgb };
+    // The spectrum is a distribution now, not a choice of three lines; the old
+    // enum survives as its Kind so existing call sites keep reading.
+    using Spectrum = SpectrumConfig::Kind;
 
     Type   type   = Type::Point;
     Shape  shape  = Shape::PointLike;
     gp_Pnt origin{0, 0, 0};
     gp_Dir axis{0, 0, 1};   // emission axis (hemisphere normal for Lambertian)
     int    rays   = 100000;
-    double power  = 1.0;
+
+    // Total emitted flux, in `fluxUnit`. Every quantity the run reports is in
+    // that unit: the irradiance grid in W/m^2 or lux, the far field in W/sr or
+    // candela, the encircled energy in real flux. A dimensionless fraction of an
+    // unnamed unit is not a number an engineer can put in a specification.
+    double   power    = 1.0;
+    FluxUnit fluxUnit = FluxUnit::Watt;
 
     // Emission cone half-angle about `axis`, degrees. Clamped to 180 for Point
     // and to 90 for Lambertian, so the defaults reproduce the full sphere and
@@ -46,8 +56,17 @@ struct SourceConfig {
     // Radius of the parallel bundle, mm. Collimated only.
     double beamRadius = 25.0;
 
-    Spectrum spectrum     = Spectrum::Monochrome;
-    double   wavelengthNm = 587.6;   // d line; also the line the indices are quoted at
+    // Emission spectrum. One wavelength is sampled per ray from it, so a
+    // spectral trace costs what a monochromatic one costs and resolves the
+    // spectrum to whatever the ray budget supports.
+    SpectrumConfig spectrum;
+
+    // The polarisation state the source emits, used only on a polarised trace.
+    //   0  unpolarised
+    //   1  linear, s (perpendicular to the first plane of incidence)
+    //   2  linear, p
+    //   3  circular
+    int polarisationState = 0;
 };
 
 // One emitted ray: where it starts, where it goes, and what colour it is.
@@ -55,6 +74,26 @@ struct EmittedRay {
     Vec3   origin;
     Vec3   dir;
     double wavelengthNm = 587.6;
+    // Share of the source's flux this ray carries, relative to the mean. It is
+    // 1 for a radiometric run; for a photometric one it is V(lambda) normalised
+    // over the spectrum, which is what makes every downstream quantity read in
+    // lumens without a second accumulator anywhere.
+    double weight = 1.0;
+
+    // Share of the source's angular distribution this sample represents, when
+    // emission was aimed at the scene. 1 means "not aimed"; anything less means
+    // the complementary share points where nothing can be hit, and its energy
+    // belongs in the escaped bucket without being traced.
+    double aimWeight = 1.0;
+
+    // A second, untraced draw from the source's own angular law, used only when
+    // aiming is active. The energy aimed away still has to appear in the far
+    // field with the distribution the source would have given it -- otherwise
+    // aiming would quietly delete the part of the beam that misses the optic,
+    // which is exactly the part a luminaire designer cares about. `missed` says
+    // the draw fell outside the aiming cone, so this ray stands for that share.
+    Vec3 missDir;
+    bool missed = false;
 };
 
 // Global switches over the per-surface optical properties, so the same scene can
@@ -67,6 +106,13 @@ struct PhysicsOptions {
     bool scattering = true;   // diffuse scatter fraction
     bool roughness  = true;   // surface slope error
     bool dispersion = true;   // Cauchy n(lambda); only bites on a spectral run
+    bool coatings   = true;   // thin films on refractive surfaces
+    bool volumeScattering = true;   // scattering inside a medium, not at it
+
+    // Carry a Stokes vector on every branch and apply a Mueller matrix at every
+    // interaction. Roughly four times the per-ray state, and most illumination
+    // work does not need it, so the unpolarised fast path stays the default.
+    bool polarised  = false;
 
     // Scene-wide overrides, so roughness and scatter can be explored without
     // rebuilding geometry -- they are ray-time properties, and re-tessellating
@@ -75,6 +121,59 @@ struct PhysicsOptions {
     double roughnessOverride = -1.0;   // radians
     double scatterOverride   = -1.0;   // 0..1
     double absorptionScale   = 1.0;    // multiplies every medium's alpha
+
+    // Estimator switches, not physics. Russian roulette and branch collapsing
+    // are unbiased over a run but turn a single ray's answer into a draw rather
+    // than the whole path tree, so anything reading one interaction (the
+    // single-ray path, a validation case) turns them off.
+    bool varianceReduction = true;
+};
+
+// Variance reduction. None of these change what a run converges to; they change
+// how many rays it takes to get there.
+struct EstimatorOptions {
+    // Owen-scrambled Sobol instead of independent uniforms for the emission
+    // stream. Indexed by ray number, so determinism is untouched.
+    bool lowDiscrepancy = true;
+
+    // Emit only into the cone the scene actually occupies, weighting each ray by
+    // the share of the source's own distribution that lands in it. A direction
+    // outside that cone cannot hit anything, so the energy it would have carried
+    // is booked straight to "escaped" -- this is exact, not merely unbiased, and
+    // it is the largest win on a source that radiates in every direction at an
+    // optic that fills a fraction of the sky.
+    bool aimAtScene = true;
+
+    // Connect every diffuse bounce to the receiver analytically instead of
+    // hoping a random walk finds it. Order-of-magnitude variance reduction on an
+    // integrating sphere or a diffuser; nothing at all on a purely specular
+    // scene, where there are no diffuse bounces to connect.
+    bool nextEventEstimation = true;
+
+    // Independent Owen scrambles the ray budget is split between. A Sobol
+    // sequence is not a set of independent samples, so the ray-to-ray spread no
+    // longer measures the error of the mean -- it would report the error a plain
+    // Monte Carlo run of the same size would have had, which is the whole gain
+    // thrown away in the reporting. Replicating the scramble and taking the
+    // spread across replicas measures what the estimator actually achieved.
+    // Ignored when `lowDiscrepancy` is off.
+    int replicas = 16;
+};
+
+// A change to one surface's optics, applied for the length of a run.
+//
+// Roughness, scatter and absorption used to be adjustable only as blunt
+// scene-wide multipliers -- a decision that made sense while every property was
+// hardcoded per scene, and stops making sense the moment somebody wants one
+// matte mirror in a polished system.
+//
+// None of these are geometry, so applying one costs a trace and not a rebuild:
+// the tessellation and the hierarchy are untouched and the geometry cache stays
+// warm. That is what makes editing the surface you just clicked on feel
+// immediate.
+struct SurfaceOverride {
+    int           surface = -1;   // index into TraceScene::surfaces()
+    SurfaceOptics optics;
 };
 
 // Knobs that trade run time against fidelity of the diagram overlay.
@@ -95,14 +194,31 @@ struct TraceOptions {
     int nTheta = 90;
     int nPhi   = 72;
 
-    PhysicsOptions physics;
+    PhysicsOptions   physics;
+    EstimatorOptions estimator;
+
+    // Per-surface optical edits, applied over the scene's own values for this
+    // run only. The scene itself is shared between runs and never modified.
+    std::vector<SurfaceOverride> surfaceOverrides;
 };
 
-// Progress reporting and cooperative cancellation. `cancel` is polled at chunk
-// boundaries; `progress` is invoked from the calling thread only.
+// Progress reporting, partial results and cooperative cancellation. `cancel` is
+// polled at chunk boundaries; the callbacks are invoked from the calling thread
+// only.
 struct TraceControl {
     std::atomic<bool>* cancel = nullptr;
     std::function<void(std::size_t raysDone, std::size_t raysTotal)> progress;
+
+    // A snapshot of the run so far, delivered every `partialIntervalMs`. The
+    // image forms while the trace runs and the error bar visibly shrinks,
+    // instead of a progress bar and then an answer.
+    //
+    // A snapshot reduces the per-thread accumulators in thread order rather than
+    // in chunk order, so its last few digits depend on scheduling in a way the
+    // final result never does. It is a preview; the result the run returns is
+    // the bit-reproducible one.
+    std::function<void(const SimulationResult& partial)> partial;
+    int partialIntervalMs = 200;
 };
 
 // Monte Carlo ray tracer. Intersects rays against the BVH of a TraceScene using
@@ -131,6 +247,11 @@ public:
     // The full emitted ray for index `index`, exposed for the sampling tests.
     static EmittedRay sampleRay(const SourceConfig& src, std::size_t index,
                                 std::uint64_t seed);
+    // The same, against an already-resolved spectrum -- which is what the run
+    // uses, so a test can reproduce a run's emission exactly.
+    static EmittedRay sampleRay(const SourceConfig& src, const SampledSpectrum& spec,
+                                std::size_t index, std::uint64_t seed,
+                                bool lowDiscrepancy = false);
     // Emission direction only, for the tests that predate extended emitters.
     static Vec3 sampleDirection(const SourceConfig& src, std::size_t index,
                                 std::uint64_t seed);

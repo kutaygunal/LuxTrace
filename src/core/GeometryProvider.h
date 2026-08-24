@@ -4,6 +4,7 @@
 #include <TopoDS_Shape.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Trsf.hxx>
 #include "SurfaceOptics.h"
 
 // A B-Rep shape together with its assigned optical behaviour.
@@ -24,6 +25,15 @@ struct OpticalSurface : SurfaceOptics {
     // takes seconds.
     double meshDeflection = 0.30;
     double meshAngle      = 0.06;
+
+    // Where this part sits. Empty means "once, where the shape already is".
+    // More than one entry makes it an instanced part: `shape` is tessellated
+    // once about its own origin and placed at each transform, so an array of
+    // twenty-five identical lenslets is one mesh and one hierarchy rather than
+    // twenty-five of each. The transforms must be rigid -- rotation and
+    // translation only -- because a scaled placement would change what a
+    // distance means inside it.
+    std::vector<gp_Trsf> placements;
 };
 
 // The numbers a scene exposes for editing. Fixed-size and trivially copyable so
@@ -53,6 +63,21 @@ struct SceneParamInfo {
     double  def      = 0.0;
     double  step     = 1.0;
     int     decimals = 1;
+    QString tip;
+};
+
+// A number a user reasons about, computed from the numbers they typed.
+//
+// Somebody editing "focal length" and "aperture" is really thinking in f-number,
+// numerical aperture, acceptance angle, concentration ratio, etendue and where
+// the paraxial focus lands. All of those follow from the parameters already on
+// screen, and none of them used to be shown -- which is the difference between
+// a form and an instrument.
+struct DerivedQuantity {
+    QString name;
+    QString value;      // already formatted, because the sensible precision
+                        // differs from one quantity to the next
+    QString unit;
     QString tip;
 };
 
@@ -114,6 +139,12 @@ public:
         std::vector<OpticalSurface> surfaces;
         gp_Pnt sourceOrigin{0, 0, 0};
         gp_Dir sourceAxis{0, 0, 1};
+        // What to call this geometry, where it did not come from the registry.
+        // A scene built by `build` leaves it empty and is named by its enum;
+        // one assembled around an imported file carries the file's name here,
+        // because there is no enum that describes it.
+        QString label;
+        QString description;
     };
 
     static int  count() { return int(Scene::Count); }
@@ -133,4 +164,10 @@ public:
 
     // Convenience: the scene at its default parameters.
     static std::vector<OpticalSurface> buildScene(Scene scene);
+
+    // What the current parameters imply, without tracing anything. Computed
+    // from closed-form optics, so it updates as a spin box moves rather than
+    // waiting for a run -- which is what makes it teach the tool while the user
+    // drives it.
+    static std::vector<DerivedQuantity> derived(Scene scene, const SceneParams& params);
 };

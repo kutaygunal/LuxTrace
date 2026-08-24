@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<!-- saved from url=(0257)https://d4c7f40a-0c2c-480f-a07e-e73e07e84e42.frame.claudeusercontent.com/_f/1787335841-ba0b/?__frame_t=y1nySx6lfm2ov78-eodaMyNL.d45b9bde-5531-4f7f-b1da-15fd3973b501.2466ffd0-67d9-42fe-afa2-b3c09292e8fb.1787340654&__frame_v=manifest.1aacbc157a58dcca.json#map -->
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"><!-- frame-runtime --><!--<base href="/_f/1787335841-ba0b/">--><base href="."><script>window.__FRAME_PREAMBLE={"capabilities":{"artifact":"artifact.CPjnkS1k.js","assets":"assets.BkxVItX2.js","comments":"comments.GLuHR3zP.js","db":"db.CRhVHzSt.js","downloads":"downloads.C3GSvEDP.js","embed":"embed.CZsbekoQ.js","mcp":"mcp.D3B2EyQu.js","permissions":"permissions.BNySkLV5.js","room":"room.BgXZkiYR.js","sample":"sample.C7z_6W62.js","self":"artifact.CPjnkS1k.js","user":"user.BpKav-Rf.js"},"transforms":"_transforms.h3_8GSUa.js","comments":"_comments.kok9hxlq.js","translate":"_translate.5HCW4BJh.js"}</script><script>(function(){"use strict";var Y=["light","dark","system"],X=/^[A-Za-z0-9_-]{1,64}$/,x=/^[a-zA-Z_:][a-zA-Z0-9_:.-]{0,127}$/,G=new Set(["class","hidden","value","checked"]);function V(e){const t=e.toLowerCase();return t.startsWith("data-")||t.startsWith("aria-")||G.has(t)}var Z="http://www.w3.org/1999/xhtml",J="http://www.w3.org/2000/svg",Q=new Set(["script","style","iframe","noscript","noframes","noembed","xmp","plaintext","template","title","textarea","object","embed"]),ee=new Set(["script","style"]);function te(e){const t=e.localName.toLowerCase();return e.namespaceURI===Z?!Q.has(t):e.namespaceURI===J?!ee.has(t):!1}function re(e){if(e===null||typeof e!="object")return!1;const t=e.__frame_patch;if(t===null||typeof t!="object")return!1;const{seq:n,elements:a}=t;if(typeof n!="number"||!Number.isSafeInteger(n)||!Array.isArray(a)||a.length===0||a.length>64)return!1;for(const l of a){if(l===null||typeof l!="object")return!1;const s=l;if(typeof s.target!="string"||!X.test(s.target)||s.text!==void 0&&typeof s.text!="string")return!1;if(s.attrsSet!==void 0){if(s.attrsSet===null||typeof s.attrsSet!="object")return!1;for(const[c,u]of Object.entries(s.attrsSet))if(!x.test(c)||typeof u!="string")return!1}if(s.attrsRemoved!==void 0){if(!Array.isArray(s.attrsRemoved))return!1;for(const c of s.attrsRemoved)if(typeof c!="string"||!x.test(c))return!1}}return!0}function ne(e){if(e===null||typeof e!="object")return!1;const t=e.__frame_init;return t!==null&&typeof t=="object"}function se(e){return e!==null&&typeof e=="object"&&e.__frame_size_poke===!0}function ae(e){if(e===null||typeof e!="object")return!1;const t=e.__frame_theme;if(t===null||typeof t!="object")return!1;const n=t.theme;return typeof n=="string"&&Y.includes(n)}var j="__frame_scroll",oe=150,ie=310,le=160,ce=3e4;function ue(){let e=0,t=!1,n=!1,a=!1,l=0,s=null;const c=i=>{try{sessionStorage.setItem(j,JSON.stringify({y:i}))}catch{}},u=()=>{if(clearTimeout(e),s===null)return;const i=s;s=null,c(i)},S=()=>{if(t){t=!1;return}n=!0,s=scrollY,clearTimeout(e),e=setTimeout(u,oe)};try{addEventListener("scroll",S,{passive:!0}),addEventListener("pagehide",u)}catch{}const v=()=>{let i;try{i=sessionStorage.getItem(j)}catch{return null}if(i===null)return null;let d;try{d=JSON.parse(i)}catch{d=null}const f=d?.y;if(!(typeof f=="number"&&Number.isFinite(f)&&f>=0)){try{sessionStorage.removeItem(j)}catch{}return null}return f};let w=!1;const m=i=>{try{const d=scrollY;scrollTo({top:i,left:0,behavior:"instant"}),l=i,a=!0,clearTimeout(e),s=null,c(i);const f=scrollY;f!==d&&(t=!0),f!==i&&!w&&(w=!0,addEventListener("load",()=>{try{if(scrollY===f){const _=v();m(_!==null?_:l)}}catch{}},{once:!0}))}catch{}},y=()=>{try{return!!location.hash}catch{return!0}};let g=!1;const E=()=>{try{if(g||innerWidth>ie||innerHeight>le)return;g=!0;const i=Date.now(),d=()=>{try{removeEventListener("resize",d)}catch{}if(Date.now()-i>ce||n||y())return;const f=v();m(f!==null?f:l)};addEventListener("resize",d)}catch{}};let r=!1,p=!1;return{restore(){if(r||(r=!0,y()))return;const i=v();i!==null&&(m(i),E())},promoted(){if(p||(p=!0,y()))return;const i=v();i!==null?(m(i),E()):a&&m(l)}}}var ye="modulepreload",ge=function(e){return"/"+e},be={},fe=function(t,n,a){let l=Promise.resolve();function s(c){const u=new Event("vite:preloadError",{cancelable:!0});if(u.payload=c,window.dispatchEvent(u),!u.defaultPrevented)throw c}return l.then(c=>{for(const u of c||[])u.status==="rejected"&&s(u.reason);return t().catch(s)})};(function(){const e=Object.defineProperty,t=globalThis,n=["RTCPeerConnection","webkitRTCPeerConnection","RTCDataChannel","RTCIceCandidate","RTCSessionDescription","RTCRtpSender","RTCRtpReceiver"];let a=0;for(let l=0;l<n.length;l++){const s=n[l];try{e(t,s,{value:void 0,writable:!1,configurable:!1})}catch{try{delete t[s]}catch{}try{e(t,s,{value:void 0,writable:!1,configurable:!0})}catch{}}typeof t[s]=="function"&&a++}if(a&&window!==top)try{parent.postMessage({__frame_rtc_lockdown_failed:a},"*")}catch{}})();var pe=1e4,de=Object.freeze([...window.__FRAME_PREAMBLE?.origins??["https://claude.ai","https://preview.claude.ai"]]);function D(e){for(const t of de)if(t.endsWith(":*"))try{const n=new URL(e);if(`${n.protocol}//${n.hostname}:*`===t)return!0}catch{}else if(e===t)return!0;return!1}var M=Object.freeze({...window.__FRAME_PREAMBLE?.capabilities}),O=window.__FRAME_PREAMBLE?.transforms,N=window.__FRAME_PREAMBLE?.comments,B=window.__FRAME_PREAMBLE?.translate,L=/^[\w.-]+\.js$/;function T(e){return fe(()=>import("/_runtime/"+e),void 0)}function z(e,t){return{contract:e.contract,changes:new Set(e.changes??[]),flags:new Set(e.flags??[]),capabilities:e.capabilities??{},capBudgets:e.capBudgets??{},transforms:new Map,shellOrigin:t,mount:W,pipe:()=>({wrap:(n,a)=>(...l)=>{try{return a(...l)}catch(s){return Promise.reject(s)}}})}}var P=null,b=null;function q(e,t,n){try{Object.defineProperty(e,t,{value:n,writable:!1,configurable:!1,enumerable:!0})}catch{try{Object.defineProperty(e,t,{value:n,writable:!1,configurable:!0,enumerable:!0})}catch{}}}var I=!1;function me(e,t){const n=[];for(const a of e.elements){const l=document.querySelector(`[data-id="${a.target}"]`);if(!l){parent.postMessage({__frame_patch_miss:{seq:e.seq}},t);return}if([...Object.keys(a.attrsSet??{}),...a.attrsRemoved??[]].some(s=>!V(s))){parent.postMessage({__frame_patch_miss:{seq:e.seq}},t);return}if(a.text!==void 0&&!te(l)){parent.postMessage({__frame_patch_miss:{seq:e.seq}},t);return}for(const[s,c]of Object.entries(a.attrsSet??{}))if(!$(l,s)){try{l.setAttribute(s,c)}catch{}H(l,s,c)}for(const s of a.attrsRemoved??[])$(l,s)||(l.removeAttribute(s),H(l,s,null));typeof a.text=="string"&&(l.textContent=a.text),n.push(a.target)}try{document.dispatchEvent(new CustomEvent("claude:edit",{detail:{seq:e.seq,targets:n}}))}catch{}}function H(e,t,n){if(!(e instanceof HTMLInputElement))return;const a=t.toLowerCase();a==="checked"?e.checked=n!==null:a==="value"&&e.type!=="file"&&(e.value=n??"")}function $(e,t){const n=t.toLowerCase(),a=e;return n==="data-id"||(n==="value"||n==="checked")&&(a.__artifactSecret===!0||/^(password|hidden|file)$/.test(a.type??"")||/(^|\s)(cc-|one-time-code|current-password|new-password)/i.test(`${e.getAttribute("autocomplete")??""} ${a.autocomplete??""}`))}function K(e){const t=document.documentElement;e==="light"||e==="dark"?(t.dataset.theme=e,t.style.colorScheme=e,I=!0):I&&(delete t.dataset.theme,t.style.colorScheme="",I=!1)}var R=new Map;function _e(){let e;const t={u:new Promise(n=>{e=n}),r:n=>{t.done=!0,e(n)},done:!1,nulled:!1};return t}var he=Object.freeze(Object.assign(Object.create(null),{call:Function.prototype.call,apply:Function.prototype.apply,bind:Function.prototype.bind})),W=(e,t)=>{const n=R.get(e);if(!n||n.done){n?.nulled&&b&&parent.postMessage({__frame_cap_telemetry:{kind:"cap-load-error",cap:e}},b);return}const a=typeof t=="function"?Object.setPrototypeOf(t,he):Object.assign(Object.create(null),t);typeof a.then=="function"&&delete a.then,n.r(Object.freeze(a))},U=Object.getOwnPropertyDescriptor(window,"claude");if(window!==top&&!(U&&U.writable===!1)){const e=O&&L.test(O)?T(O).catch(()=>{}):Promise.resolve(void 0),t=r=>{if(r.type==="auxclick"&&r.button!==1)return;const p=r.target,i=p&&p.closest?p.closest("a[href],area[href]"):null;if(!i)return;const d=i.getAttribute("href");if(!d)return;let f,_;try{f=new URL(d,document.baseURI),_=new URL(document.baseURI).origin}catch{return}if((f.protocol==="http:"||f.protocol==="https:")&&f.origin!==_){r.preventDefault();const h=(i.getAttribute("target")??"").toLowerCase(),C=r.type==="auxclick"||r.metaKey||r.ctrlKey||r.shiftKey||r.altKey||!["","_self","_top","_parent"].includes(h);parent.postMessage({__frame_nav:!0,url:f.href,newTab:C},"*")}};addEventListener("click",t,!0),addEventListener("auxclick",t,!0);const n={},a=r=>{r.isTrusted&&(n.pointer=!0)},l=r=>{r.isTrusted&&(n.click=!0)};addEventListener("pointermove",a,{capture:!0,passive:!0}),addEventListener("click",l,{capture:!0,passive:!0}),e.then(r=>{r?.wireNav&&(r.wireNav(),removeEventListener("click",t,!0),removeEventListener("auxclick",t,!0),removeEventListener("pointermove",a,!0),removeEventListener("click",l,!0),r.wireEngagement?.(n))});let s=null;try{s=ue()}catch{}const c=U?.value??{};q(window,"claude",c);for(const r of Object.keys(M)){if(c[r]!==void 0){q(c,r,c[r]);continue}R.set(r,_e())}if(c.use===void 0){const r=p=>{if(typeof p!="string"||!Object.hasOwn(M,p))return Promise.resolve(null);const i=R.get(p);return i?i.u:Promise.resolve(c[p]??null)};try{Object.defineProperty(c,"use",{value:r,writable:!0,configurable:!0,enumerable:!1})}catch{}}let u=null,S=null,v=0;const w=r=>{r.source!==parent||!D(r.origin)||ne(r.data)&&(u=r.data.__frame_init,b=r.origin,removeEventListener("message",w),clearTimeout(v),S?.())};addEventListener("message",w),parent.postMessage({__frame_connect:!0},"*");const m=new Promise(r=>{S=r,v=setTimeout(()=>{removeEventListener("message",w),r()},pe)}),y=document.readyState==="loading"?new Promise(r=>document.addEventListener("DOMContentLoaded",()=>r(),{once:!0})):Promise.resolve();y.then(()=>{try{s?.restore()}catch{}});const g={cb:null},E=r=>{if(!(r.source!==parent||!D(r.origin))&&se(r.data)){try{s?.promoted()}catch{}g.cb?.()}};addEventListener("message",E),m.then(async()=>{if(!u||!b){for(const o of R.values())o.nulled=!0,o.r(null);return}K(u.theme);const r=b;let p=!1,i=!1;addEventListener("message",o=>{if(o.source!==parent||o.origin!==r)return;ae(o.data)&&K(o.data.__frame_theme.theme),re(o.data)&&me(o.data.__frame_patch,r);const k=o.data?.__fc_mode;k&&typeof k=="object"&&!p&&N&&L.test(N)&&(p=!0,T(N).then(F=>F.install?.(r,k.on===!0)).catch(()=>{}));const A=o.data?.__ft_cmd;A&&typeof A=="object"&&!i&&B&&L.test(B)&&(i=!0,T(B).then(F=>F.install?.(r,A)).catch(()=>{}))});const d=Object.keys(u.capabilities??{}).filter(o=>Object.hasOwn(M,o)).map(o=>[o,M[o]]).filter(o=>typeof o[1]=="string"&&L.test(o[1])),f=await Promise.allSettled(d.map(([,o])=>T(o))),_=await e,h=b;if(_?.buildBoot||parent.postMessage({__frame_cap_telemetry:{kind:"cap-load-error",cap:"_transforms"}},h),_?.buildBoot)try{P=_.buildBoot(u,_.TRANSFORMS??{},{shellOrigin:h,mount:W},o=>parent.postMessage({__frame_cap_telemetry:o},h))}catch{parent.postMessage({__frame_cap_telemetry:{kind:"cap-load-error",cap:"_transforms"}},h),P=z(u,h)}else P=z(u,h);const C=o=>parent.postMessage({__frame_cap_telemetry:{kind:"cap-load-error",cap:o}},h),ve=P;f.forEach((o,k)=>{const A=d[k][0];if(o.status!=="fulfilled"){C(A);return}try{o.value?.install?.(ve)}catch{C(A)}});for(const o of R.values())o.done||(o.nulled=!0,o.r(null));await y,parent.postMessage({__frame_ready:!0},b),e.then(o=>o?.installSizeReporter?.(h,g))})}})();</script><!-- /frame-runtime --><meta name="viewport" content="width=device-width,initial-scale=1"><style>:root{color-scheme:light}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}</style></head><body>
+<title>LuxTrace Engine Review</title>
+<link rel="preconnect" href="https://fonts.googleapis.com/">
+<link rel="preconnect" href="https://fonts.gstatic.com/" crossorigin="">
+<link rel="stylesheet" href="./css2">
+
+<style>
+:root{
+  --bg:#F4F6F8; --surface:#FFFFFF; --surface-2:#EBEEF3; --surface-3:#E1E6ED;
+  --border:#D6DCE5; --border-strong:#BEC7D4;
+  --text:#12171F; --text-mid:#3C4552; --text-muted:#5C6675;
+  --accent:#B0650A; --accent-line:#D9942F; --accent-soft:#FBEFDC;
+  --perf:#146E6D; --perf-soft:#DCEFEE;
+  --robust:#A3324A; --robust-soft:#F8E2E6;
+  --ui:#54499E; --ui-soft:#E8E5F6;
+  --chip-ink:#12171F;
+  --shadow:0 1px 2px rgba(18,23,31,.06), 0 8px 24px -16px rgba(18,23,31,.28);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0B0E13; --surface:#131820; --surface-2:#191F29; --surface-3:#212936;
+    --border:#252D3A; --border-strong:#36404F;
+    --text:#E4E9F1; --text-mid:#B4BDCB; --text-muted:#828D9E;
+    --accent:#F2A03D; --accent-line:#F2A03D; --accent-soft:#2B2011;
+    --perf:#4FB3B1; --perf-soft:#102827;
+    --robust:#E0788C; --robust-soft:#2C161C;
+    --ui:#A79AF0; --ui-soft:#1E1A33;
+    --chip-ink:#0B0E13;
+    --shadow:0 1px 2px rgba(0,0,0,.5), 0 12px 32px -20px rgba(0,0,0,.9);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0B0E13; --surface:#131820; --surface-2:#191F29; --surface-3:#212936;
+  --border:#252D3A; --border-strong:#36404F;
+  --text:#E4E9F1; --text-mid:#B4BDCB; --text-muted:#828D9E;
+  --accent:#F2A03D; --accent-line:#F2A03D; --accent-soft:#2B2011;
+  --perf:#4FB3B1; --perf-soft:#102827;
+  --robust:#E0788C; --robust-soft:#2C161C;
+  --ui:#A79AF0; --ui-soft:#1E1A33;
+  --chip-ink:#0B0E13;
+  --shadow:0 1px 2px rgba(0,0,0,.5), 0 12px 32px -20px rgba(0,0,0,.9);
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--text);
+  font-family:"Source Serif 4", Georgia, "Times New Roman", serif;
+  font-size:16.5px; line-height:1.62;
+  -webkit-font-smoothing:antialiased;
+}
+h1,h2,h3,h4{font-family:Chivo, "Helvetica Neue", Arial, sans-serif; text-wrap:balance; margin:0}
+code,kbd,.mono{font-family:"IBM Plex Mono", ui-monospace, "SFMono-Regular", Consolas, monospace}
+a:focus-visible, .rail a:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+
+.wrap{max-width:1220px; margin:0 auto; padding:0 28px}
+.grid{display:grid; grid-template-columns:1fr; gap:0}
+@media(min-width:1080px){
+  .grid{grid-template-columns:224px minmax(0,1fr); gap:56px; align-items:start}
+}
+
+header.top{border-bottom:1px solid var(--border); background:var(--surface)}
+.mast{padding:56px 0 40px; display:flex; flex-direction:column; gap:22px}
+.eyebrow{
+  font-family:"IBM Plex Mono", monospace; font-size:11.5px; letter-spacing:.16em;
+  text-transform:uppercase; color:var(--accent); font-weight:600;
+  display:flex; align-items:center; gap:10px;
+}
+.eyebrow::before{content:""; width:26px; height:2px; background:var(--accent-line); display:block}
+h1{font-size:clamp(34px, 5.4vw, 54px); font-weight:800; letter-spacing:-.022em; line-height:1.04}
+.dek{font-size:19px; color:var(--text-mid); max-width:66ch; margin:0}
+.facts{
+  display:flex; flex-wrap:wrap; gap:0; border:1px solid var(--border);
+  border-radius:3px; overflow:hidden; margin-top:6px; background:var(--surface-2);
+}
+.fact{padding:12px 20px; border-right:1px solid var(--border); flex:1 1 auto; min-width:132px}
+.fact:last-child{border-right:0}
+.fact dt{
+  font-family:"IBM Plex Mono", monospace; font-size:10.5px; letter-spacing:.13em;
+  text-transform:uppercase; color:var(--text-muted); margin:0 0 3px;
+}
+.fact dd{margin:0; font-family:Chivo, sans-serif; font-weight:700; font-size:17px; font-variant-numeric:tabular-nums}
+
+nav.rail{display:none}
+@media(min-width:1080px){
+  nav.rail{display:block; position:sticky; top:0; padding:44px 0; max-height:100vh; overflow-y:auto}
+}
+.rail h4{
+  font-family:"IBM Plex Mono", monospace; font-size:10.5px; letter-spacing:.14em;
+  text-transform:uppercase; color:var(--text-muted); font-weight:600;
+  padding-bottom:10px; border-bottom:1px solid var(--border); margin-bottom:12px;
+}
+.rail ol{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:2px}
+.rail a{
+  display:flex; gap:9px; text-decoration:none; color:var(--text-mid);
+  font-family:Chivo, sans-serif; font-size:13.5px; font-weight:600;
+  padding:5px 8px; border-radius:3px; border-left:2px solid transparent;
+}
+.rail a:hover{background:var(--surface-2); color:var(--text); border-left-color:var(--accent-line)}
+.rail .n{font-family:"IBM Plex Mono", monospace; font-size:11px; color:var(--text-muted); padding-top:1px}
+
+main{padding:44px 0 96px; min-width:0}
+section{scroll-margin-top:24px; margin-bottom:56px}
+.sec-head{border-top:2px solid var(--text); padding-top:14px; margin-bottom:22px}
+.sec-num{
+  font-family:"IBM Plex Mono", monospace; font-size:11px; letter-spacing:.14em;
+  color:var(--text-muted); text-transform:uppercase; display:block; margin-bottom:7px;
+}
+h2{font-size:clamp(23px,3vw,30px); font-weight:700; letter-spacing:-.015em}
+.lede{color:var(--text-mid); max-width:72ch; margin:12px 0 0}
+p{max-width:72ch; margin:0 0 15px}
+
+.map{display:grid; grid-template-columns:repeat(auto-fill,minmax(215px,1fr)); gap:10px; margin:20px 0}
+.mapcard{
+  background:var(--surface); border:1px solid var(--border); border-radius:3px;
+  padding:13px 15px 14px; display:flex; flex-direction:column; gap:5px;
+}
+.mapcard .t{font-family:Chivo,sans-serif; font-weight:700; font-size:14.5px; line-height:1.25}
+.mapcard .d{font-size:13.5px; color:var(--text-muted); line-height:1.45}
+.mapcard .f{font-family:"IBM Plex Mono",monospace; font-size:10.5px; color:var(--text-muted); opacity:.85}
+.bar{display:flex; gap:3px; margin-top:4px}
+.bar i{height:3px; flex:1; background:var(--surface-3); border-radius:2px}
+.bar i.on{background:var(--accent-line)}
+
+.finding{
+  background:var(--surface); border:1px solid var(--border); border-radius:3px;
+  padding:0; margin:0 0 12px; box-shadow:var(--shadow); overflow:hidden;
+}
+.finding > .hd{
+  display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;
+  padding:14px 18px 10px; border-bottom:1px solid var(--border); background:var(--surface-2);
+}
+.finding > .bd{padding:14px 18px 6px}
+.finding > .bd > p:last-child{margin-bottom:9px}
+.fid{font-family:"IBM Plex Mono",monospace; font-size:11px; font-weight:600; color:var(--text-muted); letter-spacing:.06em}
+.ftitle{font-family:Chivo,sans-serif; font-weight:700; font-size:16.5px; flex:1 1 260px; line-height:1.3}
+.tags{display:flex; gap:6px; flex-wrap:wrap}
+.tag{
+  font-family:"IBM Plex Mono",monospace; font-size:10px; font-weight:600;
+  letter-spacing:.1em; text-transform:uppercase; padding:3px 7px; border-radius:2px;
+  white-space:nowrap; border:1px solid transparent;
+}
+.t-phys{background:var(--accent-soft); color:var(--accent); border-color:var(--accent-line)}
+.t-perf{background:var(--perf-soft); color:var(--perf); border-color:var(--perf)}
+.t-rob{background:var(--robust-soft); color:var(--robust); border-color:var(--robust)}
+.t-ui{background:var(--ui-soft); color:var(--ui); border-color:var(--ui)}
+.p1{background:var(--accent); color:var(--chip-ink); border-color:var(--accent)}
+.p2{background:var(--surface-3); color:var(--text-mid); border-color:var(--border-strong)}
+.p3{background:transparent; color:var(--text-muted); border-color:var(--border-strong)}
+
+.where{
+  font-family:"IBM Plex Mono",monospace; font-size:12px; color:var(--text-muted);
+  background:var(--surface-2); border-top:1px solid var(--border);
+  padding:8px 18px; display:block;
+}
+.where b{color:var(--text-mid); font-weight:500}
+code{
+  font-size:.87em; background:var(--surface-2); border:1px solid var(--border);
+  padding:1px 5px; border-radius:2px; color:var(--text-mid); white-space:nowrap;
+}
+.fix{margin:0 0 12px; padding-left:16px; border-left:2px solid var(--accent-line); font-size:15.5px; color:var(--text-mid)}
+.fix strong{color:var(--text); font-weight:600}
+ul.pts{margin:0 0 14px; padding-left:20px; max-width:72ch}
+ul.pts li{margin-bottom:5px}
+
+.scroll{overflow-x:auto; margin:18px 0; border:1px solid var(--border); border-radius:3px}
+table{border-collapse:collapse; width:100%; font-size:14.5px; background:var(--surface)}
+th,td{text-align:left; padding:9px 14px; border-bottom:1px solid var(--border); vertical-align:top}
+th{
+  font-family:"IBM Plex Mono",monospace; font-size:10.5px; letter-spacing:.11em;
+  text-transform:uppercase; color:var(--text-muted); font-weight:600;
+  background:var(--surface-2); white-space:nowrap;
+}
+tbody tr:last-child td{border-bottom:0}
+td.name{font-family:Chivo,sans-serif; font-weight:600}
+.gap{color:var(--robust); font-weight:600}
+.ok{color:var(--perf); font-weight:600}
+.part{color:var(--text-muted)}
+
+.call{border:1px solid var(--accent-line); background:var(--accent-soft); border-radius:3px; padding:16px 20px; margin:22px 0}
+.call h4{font-size:13px; font-family:"IBM Plex Mono",monospace; letter-spacing:.12em; text-transform:uppercase; color:var(--accent); margin-bottom:7px}
+.call p{margin-bottom:0; color:var(--text-mid)}
+
+.phase{border-left:2px solid var(--border-strong); padding:0 0 4px 22px; margin-bottom:30px; position:relative}
+.phase::before{content:""; position:absolute; left:-6px; top:5px; width:10px; height:10px; background:var(--bg); border:2px solid var(--accent-line); border-radius:50%}
+.phase h3{margin:0 0 3px; font-size:18px}
+.phase .when{font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--text-muted); margin-bottom:10px; display:block}
+footer{border-top:1px solid var(--border); padding:26px 0 40px; color:var(--text-muted); font-size:14px}
+</style>
+
+<header class="top">
+  <div class="wrap">
+    <div class="mast">
+      <span class="eyebrow">Engineering review · Ray-trace core</span>
+      <h1>LuxTrace Engine Review</h1>
+      <p class="dek">A feature-by-feature read of the current build, and what each one needs to hold up next to LightTools, TracePro and OpticStudio. Ordered by what actually moves the core.</p>
+      <dl class="facts">
+        <div class="fact"><dt>Source</dt><dd>8,029 lines</dd></div>
+        <div class="fact"><dt>Core / UI</dt><dd>4,244 / 3,469</dd></div>
+        <div class="fact"><dt>Scenes</dt><dd>25</dd></div>
+        <div class="fact"><dt>Tests</dt><dd>108 in 22</dd></div>
+        <div class="fact"><dt>Stack</dt><dd>C++20 · Qt6 · OCCT</dd></div>
+      </dl>
+    </div>
+  </div>
+</header>
+
+<div class="wrap grid">
+  <nav class="rail" aria-label="Sections">
+    <h4>Contents</h4>
+    <ol>
+      <li><a href="https://d4c7f40a-0c2c-480f-a07e-e73e07e84e42.frame.claudeusercontent.com/_f/1787335841-ba0b/#map"><span class="n">01</span> Feature map</a></li>
+      <li><a href="https://d4c7f40a-0c2c-480f-a07e-e73e07e84e42.frame.claudeusercontent.com/_f/1787335841-ba0b/#stands"><span class="n">02</span> Where it stands</a></li>
+      <li><a href="https://d4c7f40a-0c2c-480f-a07e-e73e07e84e42.frame.claudeusercontent.com/_f/1787335841-ba0b/#geometry"><span class="n">03</span> Geometry &amp; meshing</a></li>
+      <li><a href="https://d4c7f40a-0c2c-480f-a07e-e73e07e84e42.frame.claudeusercontent.com/_f/1787335841-ba0b/#materials"><span class="n">04</span> Materials &amp; surfaces</a></li>
+      <li><a href="https://d4c7f40a-0c2c-480f-a07e-e73e07e84e42.frame.claudeusercontent.com/_f/1787335841-ba0b/#sources"><span class="n">05</span> Sources &amp; spectrum</a></li>
+      <li><a href="https://d4c7f40a-0c2c-480f-a07e-e73e07e84e42.frame.claudeusercontent.com/_f/1787335841-ba0b/#estimator"><span class="n">06</span> The estimator</a></li>
+      <li><a href="https://d4c7f40a-0c2c-480f-a07e-e73e07e84e42.frame.claudeusercontent.com/_f/1787335841-ba0b/#detector"><span class="n">07</span> Detectors &amp; far field</a></li>
+      <li><a href="https://d4c7f40a-0c2c-480f-a07e-e73e07e84e42.frame.claudeusercontent.com/_f/1787335841-ba0b/#analysis"><span class="n">08</span> Analysis &amp; studies</a></li>
+      <li><a href="https://d4c7f40a-0c2c-480f-a07e-e73e07e84e42.frame.claudeusercontent.com/_f/1787335841-ba0b/#perf"><span class="n">09</span> Performance</a></li>
+      <li><a href="https://d4c7f40a-0c2c-480f-a07e-e73e07e84e42.frame.claudeusercontent.com/_f/1787335841-ba0b/#robust"><span class="n">10</span> Robustness</a></li>
+      <li><a href="https://d4c7f40a-0c2c-480f-a07e-e73e07e84e42.frame.claudeusercontent.com/_f/1787335841-ba0b/#ux"><span class="n">11</span> Interface</a></li>
+      <li><a href="https://d4c7f40a-0c2c-480f-a07e-e73e07e84e42.frame.claudeusercontent.com/_f/1787335841-ba0b/#roadmap"><span class="n">12</span> Sequence</a></li>
+    </ol>
+  </nav>
+
+  <main>
+
+<section id="map">
+  <div class="sec-head"><span class="sec-num">01 / Inventory</span><h2>What is actually in the build</h2></div>
+  <p class="lede">Eighteen distinct features across a core library and a Qt front end. The bars show how complete each is against what an engineer evaluating a commercial tool would expect — not against nothing.</p>
+
+  <div class="map">
+    <div class="mapcard"><span class="t">Parametric scene library</span><span class="d">25 OCCT B-Rep scenes, 2–4 editable dimensions each, driven from one registry.</span><span class="bar"><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="f">GeometryProvider.cpp</span></div>
+    <div class="mapcard"><span class="t">Tessellation</span><span class="d">BRepMesh at 0.06 rad angular deflection; flat per-facet normals.</span><span class="bar"><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="f">MeshBuilder.cpp</span></div>
+    <div class="mapcard"><span class="t">Intersection</span><span class="d">Möller–Trumbore against a binned-SAH BVH, two-sided, double precision.</span><span class="bar"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="f">TraceScene.cpp</span></div>
+    <div class="mapcard"><span class="t">Sources</span><span class="d">Point / Lambertian / collimated × point, disc, rect, sphere emitter.</span><span class="bar"><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="f">RayTracer.cpp</span></div>
+    <div class="mapcard"><span class="t">Fresnel &amp; Snell</span><span class="d">Unpolarised R(θ), refraction, TIR past the critical angle.</span><span class="bar"><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="f">Optics.h</span></div>
+    <div class="mapcard"><span class="t">Bulk absorption</span><span class="d">Beer–Lambert over the real path length, charged to the medium travelled.</span><span class="bar"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="f">RayTracer.cpp</span></div>
+    <div class="mapcard"><span class="t">Scatter &amp; roughness</span><span class="d">Cosine re-emission by roulette; Gaussian normal jitter for polish error.</span><span class="bar"><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="f">Optics.h</span></div>
+    <div class="mapcard"><span class="t">Dispersion</span><span class="d">Two-term Cauchy, three fixed RGB bands, painted as real colour.</span><span class="bar"><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="f">Optics.h</span></div>
+    <div class="mapcard"><span class="t">Monte Carlo path tree</span><span class="d">Explicit stack, both branches at each interface, depth 160, energy cutoff.</span><span class="bar"><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="f">RayTracer.cpp</span></div>
+    <div class="mapcard"><span class="t">Determinism</span><span class="d">Counter-based RNG per ray index; chunk-order reduction. Bit-identical at any thread count.</span><span class="bar"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="f">Optics.h · RayTracer.cpp</span></div>
+    <div class="mapcard"><span class="t">Energy budget</span><span class="d">Detected + absorbed + escaped + truncated == emitted to 1e−9.</span><span class="bar"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="f">SimulationResult.h</span></div>
+    <div class="mapcard"><span class="t">Irradiance detector</span><span class="d">One planar +Z receiver, 64×64 fixed grid, normalised flux per bin.</span><span class="bar"><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="f">MeshBuilder.cpp</span></div>
+    <div class="mapcard"><span class="t">Far-field intensity</span><span class="d">θ/φ binning to flux per steradian, 90×72, polar and angular map.</span><span class="bar"><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="f">RayTracer.cpp</span></div>
+    <div class="mapcard"><span class="t">Spot metrics</span><span class="d">Peak, uniformity, centroid, RMS radius, D50/D86, FWHM — all as densities.</span><span class="bar"><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="f">Analysis.cpp</span></div>
+    <div class="mapcard"><span class="t">Through focus</span><span class="d">Analytic propagation of recorded arrivals; parabolic refinement of the waist.</span><span class="bar"><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="f">Analysis.cpp</span></div>
+    <div class="mapcard"><span class="t">Convergence study</span><span class="d">Geometric ray-count sweep with independent seeds and 1σ error bars.</span><span class="bar"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="f">Studies.cpp</span></div>
+    <div class="mapcard"><span class="t">3D viewport</span><span class="d">OCCT V3d view, orbit/pan/walk, ray colouring, clip plane, surface picking.</span><span class="bar"><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="f">OcctViewWidget.cpp</span></div>
+    <div class="mapcard"><span class="t">I/O</span><span class="d">JSON config round trip, CSV for grid / intensity / metrics, PNG per view.</span><span class="bar"><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="f">ConfigIO.cpp</span></div>
+  </div>
+</section>
+
+<section id="stands">
+  <div class="sec-head"><span class="sec-num">02 / Position</span><h2>Where it stands, honestly</h2></div>
+  <p class="lede">The architecture is better than the physics. Determinism, energy accounting, the shared <code>SurfaceOptics</code> struct, the caching layer, the worker threading, the error bars — those are things commercial tools do and many hobby tracers do not. What is missing is depth in three specific places, and those three are what an evaluator would find in the first hour.</p>
+
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Capability</th><th>LuxTrace today</th><th>What the market expects</th><th style="width:88px">Verdict</th></tr></thead>
+      <tbody>
+        <tr><td class="name">Geometry source</td><td>25 built-in parametric scenes</td><td>Import customer CAD (STEP/IGES), assign optics per face</td><td class="gap">Gap</td></tr>
+        <tr><td class="name">Surface normal</td><td>Flat facet, 0.06 rad deflection</td><td>Exact analytic surface, or interpolated to it</td><td class="gap">Gap</td></tr>
+        <tr><td class="name">Media</td><td>One index, single-level tracking</td><td>Nested / immersed / cemented, priority resolution</td><td class="gap">Gap</td></tr>
+        <tr><td class="name">Dispersion</td><td>2-term Cauchy, 3 bands</td><td>Sellmeier + glass catalogue, arbitrary spectrum</td><td class="gap">Gap</td></tr>
+        <tr><td class="name">Scatter</td><td>Lambertian fraction + Gaussian jitter</td><td>ABg / Harvey–Shack, measured BSDF import, volume scatter</td><td class="gap">Gap</td></tr>
+        <tr><td class="name">Coatings</td><td>None</td><td>AR/HR stacks, R(λ,θ) tables</td><td class="gap">Gap</td></tr>
+        <tr><td class="name">Units</td><td>Normalised fractions</td><td>Watts, lumens, lux, candela</td><td class="gap">Gap</td></tr>
+        <tr><td class="name">Variance reduction</td><td>None (brute force)</td><td>Importance sampling, aiming, splitting control</td><td class="gap">Gap</td></tr>
+        <tr><td class="name">Polarisation</td><td>None</td><td>Stokes / Mueller per ray</td><td class="part">Behind</td></tr>
+        <tr><td class="name">Optimisation &amp; tolerancing</td><td>None</td><td>Merit-function optimisation, Monte Carlo yield</td><td class="part">Behind</td></tr>
+        <tr><td class="name">Intersection accelerator</td><td>Binned-SAH BVH, multithreaded</td><td>Same, often with SIMD / GPU</td><td class="ok">Par</td></tr>
+        <tr><td class="name">Determinism</td><td>Bit-identical at any thread count</td><td>Rarely guaranteed</td><td class="ok">Ahead</td></tr>
+        <tr><td class="name">Energy accounting</td><td>Closed to 1e−9, four buckets</td><td>Usually reported, rarely closed</td><td class="ok">Ahead</td></tr>
+        <tr><td class="name">MC uncertainty</td><td>Standard error on every run</td><td>Present in the good ones</td><td class="ok">Par</td></tr>
+        <tr><td class="name">Reporting</td><td>CSV + PNG per view</td><td>One-click report document</td><td class="part">Behind</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="call">
+    <h4>The one-line read</h4>
+    <p>Three items decide whether this competes: <strong>exact surface normals</strong> (the accuracy ceiling), <strong>a real material and BSDF model</strong> (the credibility ceiling), and <strong>absolute photometric units</strong> (the “is this a toy” test). Everything else on this page is refinement on top of those.</p>
+  </div>
+</section>
+
+<section id="geometry">
+  <div class="sec-head"><span class="sec-num">03 / Core</span><h2>Geometry and meshing</h2></div>
+  <p class="lede">The tracer intersects triangles and shades with the triangle’s own flat normal. That single decision sets the accuracy ceiling for every imaging scene in the library, and the code already computes — then discards — exactly what is needed to lift it.</p>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">G-1</span><h4 class="ftitle">Interpolate the surface normal instead of using the facet normal</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-phys">Physics</span></span></div>
+    <div class="bd">
+      <p>Every triangle carries one flat normal built from a cross product of its edges. A facet normal is off the true surface normal by up to half the angular deflection, and a mirror doubles that into the reflected ray — which is precisely why the elliptical reflector still lands its best focus 22&nbsp;mm short of the analytic one, and why tightening the mesh from 0.5&nbsp;rad to 0.06&nbsp;rad halved the RMS spot. Refining the mesh further buys accuracy at quadratic triangle cost; interpolating the normal buys it for free.</p>
+      <p class="fix"><strong>Do this:</strong> keep the <code>Poly_Triangulation</code> UV nodes alongside the vertices, and use the barycentric <code>u,v</code> that Möller–Trumbore already returns to interpolate a smooth normal — or, better, evaluate the exact <code>BRepAdaptor_Surface</code> normal at the interpolated UV. <code>intersectTriangle</code> computes <code>u</code> and <code>v</code> and <code>nearestHit</code> throws them away; plumbing them into <code>RayHit</code> is a two-line change that unlocks the largest single accuracy win available.</p>
+      <p class="fix">Shade with the interpolated normal, offset and epsilon-test against the geometric one, and fall back to the geometric normal when the outgoing ray would go back into the surface. This is standard renderer practice and it is what turns a tessellated approximation into a smooth optic.</p>
+      <p>Expected effect: the tessellation stops being the limiting term, so the mesh can be <em>coarsened</em> for speed while focus quality improves. Both levers move the right way at once.</p>
+    </div>
+    <span class="where"><b>MeshBuilder.cpp:57</b> normal from cross product · <b>TraceScene.cpp:24</b> u,v computed · <b>TraceScene.h:30</b> RayHit drops them</span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">G-2</span><h4 class="ftitle">Face orientation is ignored, so nothing knows inside from outside</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-phys">Physics</span><span class="tag t-rob">Robustness</span></span></div>
+    <div class="bd">
+      <p>The mesher never checks <code>TopAbs_REVERSED</code> on the face, so triangle winding — and therefore normal direction — is inconsistent across a shape. The tracer papers over it by flipping the normal toward the incident ray on every hit. That works for a single-surface optic and makes correct medium tracking impossible, which is the root of finding M-3.</p>
+      <p class="fix"><strong>Do this:</strong> flip the winding when the face orientation is reversed, so normals point consistently outward from every solid. Then <code>d·n &gt; 0</code> genuinely means “leaving” and the tracer can stop guessing.</p>
+    </div>
+    <span class="where"><b>MeshBuilder.cpp:47–68</b> — no <code>face.Orientation()</code> check</span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">G-3</span><h4 class="ftitle">Import STEP/IGES and assign optics per face</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-rob">Robustness</span><span class="tag t-ui">Interface</span></span></div>
+    <div class="bd">
+      <p>This is the single biggest competitive gap and among the cheapest to close. Illumination tools are bought to be run on a customer’s CAD, not on 25 demo scenes. OCCT already ships the data-exchange toolkits — <code>TKDESTEP</code>, <code>TKDEIGES</code>, <code>TKDESTL</code> are all in the deploy directory — and the CMake target list simply does not link them.</p>
+      <p class="fix"><strong>Do this:</strong> link the DE toolkits, add a STEP/IGES reader that yields <code>TopoDS_Shape</code>s, and give each imported face an <code>OpticalSurface</code> whose properties are set from a material library in the UI. The whole downstream pipeline — mesh, BVH, trace, analysis — already works on <code>std::vector&lt;OpticalSurface&gt;</code> and needs no change.</p>
+      <p>The built-in scenes stay valuable as a validation suite and a tutorial library; they stop being the only thing the app can open.</p>
+    </div>
+    <span class="where"><b>CMakeLists.txt:50–57</b> — DE toolkits absent from <code>target_link_libraries</code></span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">G-4</span><h4 class="ftitle">Adaptive tessellation on optically active faces only</h4><span class="tags"><span class="tag p2">P2</span><span class="tag t-perf">Performance</span><span class="tag t-phys">Physics</span></span></div>
+    <div class="bd">
+      <p>One deflection setting applies to a whole shape. A parabolic mirror’s reflecting face needs a tight mesh; its rim, its back and the mounting boss do not. The microlens array already needs a hand-tuned coarser hint to avoid half a million triangles.</p>
+      <p class="fix"><strong>Do this:</strong> set deflection per face from curvature and from whether the face is optically active. Pair it with G-1 and the triangle count for a given spot quality drops by a large factor.</p>
+    </div>
+    <span class="where"><b>GeometryProvider.h:25</b> per-shape <code>meshDeflection</code>/<code>meshAngle</code></span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">G-5</span><h4 class="ftitle">Scene parameters are capped at four doubles</h4><span class="tags"><span class="tag p3">P3</span><span class="tag t-rob">Robustness</span></span></div>
+    <div class="bd">
+      <p><code>SceneParams::kMax = 4</code> is a hard ceiling on how complex any scene can be. It was the right call for a trivially copyable cache key, but a doublet with two radii, two thicknesses, a spacing and a receiver is already six.</p>
+      <p class="fix"><strong>Do this:</strong> raise to a small fixed-capacity vector (16) that stays trivially copyable and comparable, or key the cache on a hash and keep the parameters in a <code>std::vector&lt;double&gt;</code>.</p>
+    </div>
+    <span class="where"><b>GeometryProvider.h:35</b></span>
+  </article>
+</section>
+
+<section id="materials">
+  <div class="sec-head"><span class="sec-num">04 / Core</span><h2>Materials and surface response</h2></div>
+  <p class="lede">Optical properties are seven loose fields on a struct, filled from four hardcoded constants. This is where the app most visibly reads as a demonstrator rather than an instrument — and where the fix is well-trodden, since every model below has a standard reference implementation.</p>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">M-1</span><h4 class="ftitle">A material type with real dispersion models and a glass catalogue</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-phys">Physics</span></span></div>
+    <div class="bd">
+      <p>Every glass in the library is <code>n = 1.5</code> with a single Cauchy <em>B</em> of 0.0042 and one absorption coefficient. Two-term Cauchy is a visible-band fit; it diverges outside it and cannot represent an SF-series flint or a polymer. Nobody specifying an optic works in Cauchy coefficients — they work in catalogue names.</p>
+      <p class="fix"><strong>Do this:</strong> introduce a <code>Material</code> with a dispersion model — Constant, Cauchy, Sellmeier (3-term), tabulated <code>n(λ)</code>, and complex <code>n−ik</code> for metals — plus internal transmittance <code>τ(λ)</code>. Ship a small catalogue: N-BK7, N-SF11, fused silica, PMMA, polycarbonate, and Al / Ag / Au. Reference indices at the d line and Abbe numbers come along for free.</p>
+      <p>Two things fall out immediately. <strong>Metal mirrors get complex-index Fresnel</strong> instead of a flat 0.95 — an aluminium mirror at 45° is not the same as at normal incidence, and is not the same at 460&nbsp;nm as at 620. And <strong>bulk loss becomes catalogue-derived</strong> rather than one number the whole library shares.</p>
+    </div>
+    <span class="where"><b>SurfaceOptics.h</b> · <b>GeometryProvider.cpp:33–42</b> <code>kGlassN</code>, <code>kGlassB</code>, <code>kGlassA</code>, <code>kMirrorR</code></span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">M-2</span><h4 class="ftitle">Replace Gaussian normal jitter with a real BSDF</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-phys">Physics</span></span></div>
+    <div class="bd">
+      <p>Roughness is modelled by tilting the normal by <code>tan()</code> of a Gaussian and, when the tilt flips past the incident ray, silently keeping the smooth normal instead. That rejection is a bias toward specular that grows with sigma, and the model has no shadowing–masking term and no normalisation — so it is not an energy-conserving BSDF and it cannot be fitted to measured data.</p>
+      <p class="fix"><strong>Do this, in order:</strong></p>
+      <ul class="pts">
+        <li><strong>Microfacet</strong> (GGX or Beckmann) with Smith shadowing–masking and the correct sampling weight, for a polished-but-imperfect surface. Drop-in replacement for the current jitter, same one parameter.</li>
+        <li><strong>ABg / Harvey–Shack</strong> scatter — the model both TracePro and LightTools expose, whose A, B, g map directly onto measured BSDF and onto total integrated scatter. This is what lets a user reproduce a scatter spec sheet.</li>
+        <li><strong>Tabulated BSDF import</strong>, so measured data can be used as-is.</li>
+        <li><strong>Volume scattering</strong> — a scattering coefficient plus a Henyey–Greenstein phase function inside a medium. Absent entirely, and it is among the most-used features in LED luminaire design: every white diffusing plastic in every fixture is a volume scatterer, not a surface one.</li>
+      </ul>
+      <p>Keep pure Lambertian as a special case so the integrating sphere and the matte reflector scenes are unaffected.</p>
+    </div>
+    <span class="where"><b>Optics.h</b> <code>perturbNormal</code> · <b>RayTracer.cpp:355–360</b> the rejection branch</span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">M-3</span><h4 class="ftitle">Nested and immersed media — a medium stack, not a single index</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-phys">Physics</span></span></div>
+    <div class="bd">
+      <p>The tracer carries one <code>medium</code> integer and treats <em>any</em> transmission while inside something as an exit to vacuum. The comment in the source is candid about the trade. The consequence is that a cemented doublet, a lens in immersion fluid, a clad light guide, an LED die under encapsulant, or a bubble in glass all trace wrongly — and those are ordinary parts, not exotica.</p>
+      <p class="fix"><strong>Do this:</strong> give each branch a small medium stack (depth 8 is plenty), pushed on entry and popped on exit, so <code>n1</code> is the top of the stack and <code>n2</code> is the material of the surface being crossed. For overlapping geometry, add a per-material <em>priority</em> the way FRED and TracePro do, so the higher-priority solid wins where two overlap — this also lets index-matched interfaces (glass→glass) refract correctly instead of always assuming glass→air.</p>
+    </div>
+    <span class="where"><b>RayTracer.cpp:379</b> <code>leaving = (s.medium &gt;= 0)</code> · <b>RayTracer.cpp:189</b> <code>PathState::medium</code></span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">M-4</span><h4 class="ftitle">Coatings</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-phys">Physics</span></span></div>
+    <div class="bd">
+      <p>There are none. Every refractive surface pays bare-glass Fresnel, so a multi-element system overstates loss by roughly 3.5&nbsp;% per surface against any real lens, which all have coatings. The efficiency figures in the scene table are therefore pessimistic in a way that a user who knows optics will notice at once.</p>
+      <p class="fix"><strong>Do this:</strong> start with an ideal coating — a specified residual R at normal incidence with the correct angular roll-off — then add an <code>R(λ,θ)</code> table for measured coatings, then a characteristic-matrix thin-film solver for a handful of layers if you want to design them rather than just apply them. The first tier is an afternoon and closes most of the gap.</p>
+    </div>
+    <span class="where"><b>SurfaceOptics.h</b> · <b>Optics.h</b> <code>fresnelReflectance</code></span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">M-5</span><h4 class="ftitle">Polarisation via Stokes vectors</h4><span class="tags"><span class="tag p2">P2</span><span class="tag t-phys">Physics</span></span></div>
+    <div class="bd">
+      <p>Fresnel is the unpolarised average, so Brewster’s angle appears in the reflectance curve but a polariser cannot be modelled, TIR carries no phase, and stress birefringence is out of reach.</p>
+      <p class="fix"><strong>Do this:</strong> attach a Stokes vector to each branch and apply a Mueller matrix at each interaction. Put it behind a “polarised trace” switch so the unpolarised fast path stays the default — polarised tracing costs roughly 4× the per-ray state and most illumination work does not need it.</p>
+      <p>This is a genuine lift and it belongs after M-1 through M-4. Ordered here because it is the item that most often appears on a commercial feature matrix.</p>
+    </div>
+    <span class="where"><b>RayTracer.cpp</b> <code>PathState</code> · <b>Optics.h</b></span>
+  </article>
+</section>
+
+<section id="sources">
+  <div class="sec-head"><span class="sec-num">05 / Core</span><h2>Sources, spectrum, and units</h2></div>
+  <p class="lede">The source model is well factored — three independent axes, real emitting areas, correct étendue. What is missing is everything downstream of “how much light”: the app called LuxTrace does not currently compute lux.</p>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">S-1</span><h4 class="ftitle">Absolute radiometric and photometric units</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-phys">Physics</span><span class="tag t-ui">Interface</span></span></div>
+    <div class="bd">
+      <p><code>SourceConfig::power</code> exists and defaults to 1.0, and the controls panel has no field for it — so every result is a dimensionless fraction of an unnamed unit. The heatmap axis says “flux per mm²”; the far field says “per steradian”. Neither is a number an engineer can put in a specification.</p>
+      <p class="fix"><strong>Do this:</strong> add a source flux field with a unit — watts or lumens — and carry it through. Then the irradiance map reads in W/m² or lux, the far field in W/sr or candela, and the encircled-energy curve in real flux. This is a small change with a disproportionate effect on how the tool is perceived.</p>
+      <p>Photometric output needs S-2 underneath it: lumens are watts weighted by the CIE V(λ) curve, so it requires a spectrum rather than three fixed bands.</p>
+    </div>
+    <span class="where"><b>RayTracer.h:44</b> <code>power</code> · <b>ControlsPanel.cpp:218–240</b> — no power widget</span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">S-2</span><h4 class="ftitle">A real spectrum, not three bands</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-phys">Physics</span></span></div>
+    <div class="bd">
+      <p><code>Spectrum::Rgb</code> splits rays across 620 / 546 / 460&nbsp;nm and keeps a separate grid per band. A prism therefore produces three beams rather than a spectrum, and there is no way to weight the bands by a source’s actual emission.</p>
+      <p class="fix"><strong>Do this:</strong> replace the enum with a spectral power distribution — monochromatic, blackbody at a colour temperature, a built-in LED/phosphor SPD, CIE D65, or a user CSV. Sample one wavelength per ray from the SPD (hero-wavelength sampling), which keeps the per-ray cost identical to a monochromatic trace while resolving the spectrum to whatever the ray budget supports.</p>
+      <p>What this unlocks: <strong>lumens and lux</strong> via V(λ); <strong>CIE xy and CCT</strong> of the spot as reportable metrics; and <strong>colour-over-angle</strong>, the plot LED luminaire designers specifically buy LightTools for. It also makes the RGB heatmap a true colour rendering rather than a three-sample approximation.</p>
+    </div>
+    <span class="where"><b>RayTracer.h:29</b> <code>Spectrum</code> · <b>Optics.h:23</b> <code>kBandNm</code> · <b>RayTracer.cpp:86</b> band assignment by <code>index % 3</code></span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">S-3</span><h4 class="ftitle">Measured source data and source presets</h4><span class="tags"><span class="tag p2">P2</span><span class="tag t-phys">Physics</span><span class="tag t-ui">Interface</span></span></div>
+    <div class="bd">
+      <p>Three analytic angular laws cover the textbook cases and none of the real ones. A real LED is not Lambertian — it has a measured intensity distribution, and manufacturers publish it.</p>
+      <p class="fix"><strong>Do this:</strong> import an IES LM-63 or ray-file source and sample from it; add named presets (a 1&nbsp;mm² Lambertian die, a HeNe beam, a fibre with a given NA) so a user picks a source instead of typing four numbers into unlabelled boxes.</p>
+    </div>
+    <span class="where"><b>RayTracer.h:16–51</b> <code>SourceConfig</code></span>
+  </article>
+</section>
+
+<section id="estimator">
+  <div class="sec-head"><span class="sec-num">06 / Core</span><h2>The Monte Carlo estimator</h2></div>
+  <p class="lede">This is where accuracy and speed are the same problem. The current estimator is brute force with a hard energy cutoff — correct in structure, biased at the edge, and paying full price for every answer. Fixing it is the highest-leverage performance work in the codebase, and it improves the physics at the same time.</p>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">E-1</span><h4 class="ftitle">Russian roulette instead of the hard energy cutoff</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-phys">Physics</span><span class="tag t-perf">Performance</span></span></div>
+    <div class="bd">
+      <p>Energy below <code>kCut = 1e-4</code> is discarded and booked into <code>fluxTruncated</code>. That is a systematic bias, not a rounding error: it always removes energy and never adds it, so every efficiency figure is low by the truncated share. It is also why refractive scenes are an order of magnitude slower than reflective ones — every hit spawns both branches, so a path is a tree that only the cutoff prunes.</p>
+      <p class="fix"><strong>Do this:</strong> terminate low-energy branches by Russian roulette — kill with probability <code>1−p</code>, scale survivors by <code>1/p</code>. Unbiased, and it flattens the tree. Then add <strong>splitting control</strong>: split into both branches only when R and T are both above a threshold; otherwise pick one branch by roulette weighted by its share. On a ball lens that turns a binary tree into a single path for the overwhelming majority of rays.</p>
+      <p>Keep <code>fluxTruncated</code> as a diagnostic that should read near zero, rather than as a physical loss channel that quietly absorbs the estimator’s error.</p>
+      <p>Expected effect: refractive scenes speed up several-fold, and the reported efficiency stops being biased low.</p>
+    </div>
+    <span class="where"><b>RayTracer.cpp:16</b> <code>kCut</code> · <b>RayTracer.cpp:409–445</b> both branches always pushed</span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">E-2</span><h4 class="ftitle">Variance reduction: aiming and next-event estimation</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-perf">Performance</span><span class="tag t-phys">Physics</span></span></div>
+    <div class="bd">
+      <p>Nothing steers rays toward the answer. On a Cassegrain at 9.9&nbsp;% efficiency, ninety percent of the compute produces no signal, and the error bar is set by the rays that miss. Commercial tools solve this with importance sampling, and it is the difference between a ten-second answer and a ten-minute one.</p>
+      <p class="fix"><strong>Do this, in order of payoff:</strong></p>
+      <ul class="pts">
+        <li><strong>Low-discrepancy sampling.</strong> Replace independent uniforms with an Owen-scrambled Sobol sequence indexed by ray number. Your counter-based RNG design already gives you the indexing; determinism is preserved exactly. Typical result on smooth integrands: the same error bar from several times fewer rays, for a day of work.</li>
+        <li><strong>Emission aiming.</strong> Importance-sample the source solid angle toward the entrance aperture with a compensating weight. Standard in TracePro and LightTools, and the largest win on concentrators and collimators.</li>
+        <li><strong>Next-event estimation at diffuse bounces.</strong> Connect each scatter event analytically to the receiver with a visibility test. Order-of-magnitude variance reduction on the integrating sphere and diffuser scenes, where the current tracer is doing a random walk and hoping.</li>
+        <li><strong>Stratify the emitter.</strong> Jittered stratification over the emitting area and cone, rather than independent samples.</li>
+      </ul>
+    </div>
+    <span class="where"><b>RayTracer.cpp:72–133</b> <code>sampleEmission</code> · <b>Optics.h</b> <code>uniform01</code></span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">E-3</span><h4 class="ftitle">Receiver arrivals are a biased subsample</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-rob">Robustness</span><span class="tag t-phys">Physics</span></span></div>
+    <div class="bd">
+      <p>The arrival budget is divided evenly across chunks, and each chunk keeps the <em>first</em> arrivals it sees until its quota is full. A single trapped ray that arrives fifty times fills its chunk’s quota and censors every later arrival in that chunk. Since through-focus and several spot metrics are computed from arrivals, they are reading a sample skewed toward multi-arrival paths — and the skew is worse on exactly the scenes (light guides, integrating spheres) where paths are long.</p>
+      <p class="fix"><strong>Do this:</strong> reservoir-sample per chunk, seeded from the chunk index so determinism holds. Every arrival then has equal probability of being kept, regardless of when in the chunk it occurred.</p>
+    </div>
+    <span class="where"><b>RayTracer.cpp:660–663</b> <code>chunkArrivalCap</code> · <b>RayTracer.cpp:327</b> <code>arrivals.size() &lt; arrivalCap</code></span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">E-4</span><h4 class="ftitle">Numerically fragile reduction and variance</h4><span class="tags"><span class="tag p2">P2</span><span class="tag t-rob">Robustness</span></span></div>
+    <div class="bd">
+      <p>Two issues in the reduction. The standard error is computed as <code>E[x²] − E[x]²</code>, which cancels catastrophically when efficiency is high — on a 90&nbsp;% scene most of the significant digits are gone before the subtraction. And flux totals accumulate by naive sequential summation over up to 10<sup>7</sup> rays, so the deterministic answer is deterministic but not maximally accurate.</p>
+      <p class="fix"><strong>Do this:</strong> Welford’s online algorithm for the variance, and pairwise or Kahan-compensated summation for the flux totals and the grid reduction. Both preserve the chunk-order determinism guarantee exactly.</p>
+    </div>
+    <span class="where"><b>RayTracer.cpp:774–778</b> variance · <b>RayTracer.cpp:736–742</b> grid reduction</span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">E-5</span><h4 class="ftitle">The ray offset epsilon is absolute, not scale-relative</h4><span class="tags"><span class="tag p2">P2</span><span class="tag t-rob">Robustness</span></span></div>
+    <div class="bd">
+      <p><code>kEps = 1e-6</code> is used both as the minimum hit distance and as the fixed offset when spawning a branch (<code>p + dir * kEps</code>). In a scene measured in millimetres near the origin that is fine; at a metre from the origin, double precision has about 1e−13 relative resolution, so a grazing hit can self-intersect or leak through. It also fails in the other direction: a microlens feature smaller than a few microns gets over-offset.</p>
+      <p class="fix"><strong>Do this:</strong> offset along the geometric normal by a magnitude proportional to the hit point’s coordinate magnitude, and set <code>tMin</code> per-ray from the same scale. The standard robust-offset formulation costs a handful of integer operations and eliminates a whole class of “why is there a hole in my optic” reports.</p>
+    </div>
+    <span class="where"><b>RayTracer.cpp:15</b> <code>kEps</code> · used at :419, :430, :444</span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">E-6</span><h4 class="ftitle">Track optical path length</h4><span class="tags"><span class="tag p2">P2</span><span class="tag t-phys">Physics</span></span></div>
+    <div class="bd">
+      <p>A branch carries position, direction, energy, medium and depth — but not accumulated OPL. Adding one double per branch is nearly free and unlocks a disproportionate amount: <strong>optical path difference maps</strong>, a wavefront error estimate, a Strehl-style figure, a diffraction-limit reference to plot against the geometric spot, and time-of-flight for pulsed work.</p>
+      <p class="fix"><strong>Do this:</strong> accumulate <code>n × distance</code> per leg into <code>PathState</code> and record it on each <code>DetectorArrival</code>. The analysis layer already has everything else it needs.</p>
+    </div>
+    <span class="where"><b>RayTracer.cpp:184–192</b> <code>PathState</code> · <b>SimulationResult.h:36</b> <code>DetectorArrival</code></span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">E-7</span><h4 class="ftitle">The non-Fresnel TIR path pushes two branches into the same half-space</h4><span class="tags"><span class="tag p3">P3</span><span class="tag t-phys">Physics</span></span></div>
+    <div class="bd">
+      <p>When Fresnel is switched off and a ray hits TIR, the transmitted energy is pushed along the reflected direction — and the reflected branch is pushed separately along the same direction. Energy is conserved, but the surface produces two coincident reflected rays with a split that has no physical meaning. It only bites in the “Fresnel off” comparison mode, which is why it has not shown up.</p>
+      <p class="fix"><strong>Do this:</strong> at TIR with Fresnel off, merge the two into one branch carrying <code>reflE + transE</code>.</p>
+    </div>
+    <span class="where"><b>RayTracer.cpp:414–421</b> and :440–446</span>
+  </article>
+</section>
+
+<section id="detector">
+  <div class="sec-head"><span class="sec-num">07 / Measurement</span><h2>Detectors and the far field</h2></div>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">D-1</span><h4 class="ftitle">One receiver, planar, axis-aligned, 64×64, hardcoded</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-rob">Robustness</span><span class="tag t-ui">Interface</span></span></div>
+    <div class="bd">
+      <p>Four restrictions compound here. The receiver must face +Z. Only the first detector surface in a scene becomes the receiver — a second one still terminates rays and books their flux, but bins them against the <em>first</em> detector’s frame, which is a latent correctness bug waiting for the first two-detector scene. And the grid is <code>detNX = detNY = 64</code>, written into the mesher, unreachable from the UI.</p>
+      <p class="fix"><strong>Do this:</strong> store a full receiver frame (origin plus two tangent vectors) instead of assuming +Z; support a list of named detectors each with its own frame, grid and units; expose resolution in the UI. Add an acceptance-cone filter per detector so a ray arriving outside the cone is not counted — that is how a real photometer and a real fibre behave.</p>
+      <p>Then add the detector types the analysis already almost supports: <strong>intensity detectors</strong> (angular bins on a surface) and <strong>radiance detectors</strong> (position × angle), which is what étendue-limited design actually needs.</p>
+    </div>
+    <span class="where"><b>MeshBuilder.cpp:74–86</b> hardcoded 64×64, +Z assumption · <b>TraceScene.cpp:84</b> <code>!m_det.valid</code> takes only the first</span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">D-2</span><h4 class="ftitle">Far-field bins are uniform in θ, so the on-axis peak is one bin wide</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-phys">Physics</span></span></div>
+    <div class="bd">
+      <p>90 θ bins over 180° is a 2° step. The parabolic reflector’s headline result is a 1.3° beam FWHM — resolved by <em>less than one bin</em>, and reported through an interpolated crossing between two of them. Meanwhile the cell solid angle varies by four orders of magnitude between the equator and the pole, so the polar cells are starved of samples and noisy exactly where a collimator’s answer lives.</p>
+      <p class="fix"><strong>Do this:</strong> bin on equal solid angle (a sinusoidal or HEALPix-style scheme) so every cell collects comparable statistics, and auto-refine the on-axis region when the distribution is peaked. At minimum, make the resolution adaptive to the measured FWHM rather than fixed at 90×72.</p>
+    </div>
+    <span class="where"><b>RayTracer.cpp:216–229</b> <code>binDirection</code> · <b>RayTracer.cpp:456–470</b> <code>finishIntensity</code></span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">D-3</span><h4 class="ftitle">Export IES LM-63 and EULUMDAT</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-ui">Interface</span><span class="tag t-phys">Physics</span></span></div>
+    <div class="bd">
+      <p>The far-field grid is already the candela distribution a luminaire is specified by — it is one unit conversion and one file writer away from being the file format the entire lighting industry consumes. Nothing else on this list gives a comparable ratio of usefulness to effort.</p>
+      <p class="fix"><strong>Do this:</strong> once S-1 gives absolute units, write the θ/φ table as IES LM-63 and as EULUMDAT. A user can then take a LuxTrace result straight into DIALux, AGi32 or Relux. That is a genuine interoperability claim, and the sort of thing that gets a tool adopted.</p>
+    </div>
+    <span class="where"><b>Analysis.cpp</b> <code>intensityCsv</code> — the data is already assembled</span>
+  </article>
+</section>
+
+<section id="analysis">
+  <div class="sec-head"><span class="sec-num">08 / Measurement</span><h2>Analysis and parameter studies</h2></div>
+  <p class="lede">The analysis layer is the strongest part of the app — densities rather than bin counts, error bars on everything, a focus sweep as a post-process. The gap is not quality, it is coverage: two studies exist where the infrastructure supports five.</p>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">A-1</span><h4 class="ftitle">Sweep the geometry parameters — the study the app is already built for</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-ui">Interface</span></span></div>
+    <div class="bd">
+      <p>Every scene declares its parameters with ranges, steps and units. There is a shared-ownership geometry cache designed for exactly the case of sweeping through parameter values. There is a study worker with progress and cancellation. And the only sweeps offered are ray count and focus position.</p>
+      <p class="fix"><strong>Do this:</strong> a parameter sweep — efficiency, RMS radius, uniformity or FWHM against any one of the scene’s own dimensions, plotted with error bars on the existing <code>PlotWidget</code>. Then a 2D sweep over a parameter pair as a contour map. This is a small amount of work on top of what already exists, and it turns the app from a viewer into a design tool.</p>
+    </div>
+    <span class="where"><b>Studies.h</b> · <b>Simulation.cpp:19</b> <code>kVariantCacheSize</code> — already built for this</span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">A-2</span><h4 class="ftitle">Optimisation against a merit function</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-ui">Interface</span></span></div>
+    <div class="bd">
+      <p>The step after A-1, and the reason people pay for OpticStudio. Given a parameter vector and a merit function — maximise efficiency, minimise RMS radius, hit a target uniformity — search for the best design.</p>
+      <p class="fix"><strong>Do this:</strong> Nelder–Mead first (derivative-free, handles the Monte Carlo noise, and short), then CMA-ES for the harder landscapes. Feed it the deterministic tracer with a fixed seed so the objective is a genuine function rather than a noisy one — your determinism guarantee is what makes this work cleanly, and it is a real advantage over tools whose objective jitters between evaluations.</p>
+    </div>
+    <span class="where"><b>Studies.cpp</b> · <b>StudyWorker.cpp</b></span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">A-3</span><h4 class="ftitle">Tolerance analysis</h4><span class="tags"><span class="tag p2">P2</span><span class="tag t-phys">Physics</span><span class="tag t-ui">Interface</span></span></div>
+    <div class="bd">
+      <p>The question a manufacturer actually asks is not “how good is the nominal design” but “what fraction of production will pass”. Nothing here answers it.</p>
+      <p class="fix"><strong>Do this:</strong> perturb parameters, decentres, tilts and surface figure by specified distributions; trace an ensemble; report a yield histogram against a pass criterion, and a sensitivity ranking showing which tolerance dominates. The determinism story makes the ensemble reproducible, which tolerancing tools rarely are.</p>
+    </div>
+    <span class="where"><b>Studies.h</b></span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">A-4</span><h4 class="ftitle">Image-quality metrics beyond the spot</h4><span class="tags"><span class="tag p2">P2</span><span class="tag t-phys">Physics</span></span></div>
+    <div class="bd">
+      <p>The spot metrics are well chosen and correctly computed as densities. What is missing is the frequency-domain half: <strong>MTF</strong> from the point-spread function the arrivals already describe, and — once E-6 tracks optical path length — an <strong>OPD map</strong> and a diffraction-limit reference to plot the geometric spot against.</p>
+      <p class="fix"><strong>Do this:</strong> LSF from the arrival distribution, FFT to MTF, plot beside the encircled-energy curve. Add the Airy radius as a reference marker so a user can see when the design has stopped being geometry-limited.</p>
+    </div>
+    <span class="where"><b>Analysis.h:12–38</b> <code>SpotMetrics</code></span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">A-5</span><h4 class="ftitle">Through-focus should refuse rather than mislead</h4><span class="tags"><span class="tag p3">P3</span><span class="tag t-rob">Robustness</span></span></div>
+    <div class="bd">
+      <p>The sweep propagates arrivals in a straight line, which is exact only where nothing stands between the planes. The limit is documented but not enforced — sweep across an intervening optic and the result is confidently wrong.</p>
+      <p class="fix"><strong>Do this:</strong> test the swept span against the scene bounds and grey out or warn on the range where geometry intervenes. A tool that says “I cannot answer that here” is worth more than one that answers anyway.</p>
+    </div>
+    <span class="where"><b>Analysis.cpp</b> <code>throughFocus</code> · <b>Studies.cpp</b></span>
+  </article>
+</section>
+
+<section id="perf">
+  <div class="sec-head"><span class="sec-num">09 / Speed</span><h2>Performance</h2></div>
+  <p class="lede">The big win is already banked — 48&nbsp;s to 0.17&nbsp;s. The remaining headroom is substantial before any GPU work, and most of it comes from the estimator (E-1, E-2) rather than from the intersection kernel. These are the structural items underneath that.</p>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">P-1</span><h4 class="ftitle">Float bounds and a wide BVH</h4><span class="tags"><span class="tag p2">P2</span><span class="tag t-perf">Performance</span></span></div>
+    <div class="bd">
+      <p>A <code>BvhNode</code> holds six doubles of bounds plus four ints — 64 bytes, one full cache line per node, and the slab test is the hot loop. Traversal is a binary walk with a scalar three-axis slab test.</p>
+      <p class="fix"><strong>Do this:</strong> store bounds as floats rounded outward (conservative, so no hit is lost) while keeping the triangle intersection in double — halves node size immediately. Then go to a 4- or 8-wide BVH with a SIMD slab test against all children at once.</p>
+    </div>
+    <span class="where"><b>TraceScene.h:68–76</b> <code>BvhNode</code> · <b>TraceScene.cpp:255–305</b> traversal</span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">P-2</span><h4 class="ftitle">Two-level BVH for repeated geometry</h4><span class="tags"><span class="tag p2">P2</span><span class="tag t-perf">Performance</span></span></div>
+    <div class="bd">
+      <p>The 5×5 microlens array tessellates twenty-five copies of one lenslet and builds one BVH over all of them — which is why it needs a hand-tuned coarse mesh hint to stay under a three-second build.</p>
+      <p class="fix"><strong>Do this:</strong> a top-level acceleration structure over instances, each referencing one shared bottom-level BVH with a transform. Twenty-five lenslets become one mesh, one BVH, twenty-five transforms. Build time and memory collapse, and the mesh can be made <em>finer</em> rather than coarser. This also generalises to any imported CAD assembly with repeated parts.</p>
+    </div>
+    <span class="where"><b>TraceScene.cpp:56–104</b> <code>build</code> · <b>GeometryProvider.h:26</b> per-shape mesh hint</span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">P-3</span><h4 class="ftitle">Parallel BVH build</h4><span class="tags"><span class="tag p3">P3</span><span class="tag t-perf">Performance</span></span></div>
+    <div class="bd">
+      <p><code>buildNode</code> recurses on one thread. It is not the bottleneck for a single run, but it is what a user feels when dragging a parameter slider, since every step mints new geometry that misses the cache.</p>
+      <p class="fix"><strong>Do this:</strong> parallelise the top few levels of the recursion as tasks. Cheap, and it directly improves the interactive feel of the thing users touch most.</p>
+    </div>
+    <span class="where"><b>TraceScene.cpp:120</b> <code>buildNode</code></span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">P-4</span><h4 class="ftitle">Per-thread detector grids will not scale past 64×64</h4><span class="tags"><span class="tag p2">P2</span><span class="tag t-perf">Performance</span><span class="tag t-rob">Robustness</span></span></div>
+    <div class="bd">
+      <p>Each thread gets a full copy of the irradiance grid, tripled on a spectral run. At 64×64 that is 32&nbsp;KB per thread and entirely reasonable. At the 1024×1024 resolution D-1 makes reachable, it is 8&nbsp;MB per thread — 256&nbsp;MB on a 32-thread machine, tripled again for spectral, and the final reduction becomes a serial pass over a quarter-gigabyte.</p>
+      <p class="fix"><strong>Do this:</strong> tile the detector and give each thread sparse tiles allocated on first touch, or accumulate into a shared grid with per-thread write coalescing. Keep the deterministic reduction order either way.</p>
+    </div>
+    <span class="where"><b>RayTracer.cpp:637–647</b> per-thread grid allocation</span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">P-5</span><h4 class="ftitle">Progressive results — the change users will feel most</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-ui">Interface</span><span class="tag t-perf">Performance</span></span></div>
+    <div class="bd">
+      <p>Today a run reports a progress percentage and then, at the end, a result. A ten-million-ray trace is a progress bar and a wait. Every commercial tool shows the image forming.</p>
+      <p class="fix"><strong>Do this:</strong> emit a partial <code>SimulationResult</code> every couple hundred milliseconds — the per-thread grids are already there to be summed, and the normalisation already handles a partial ray count correctly (the cancellation path proves it). The heatmap fills in, the error bar visibly shrinks, and the user can stop as soon as the answer is good enough.</p>
+      <p>This is a change in perceived performance far larger than any of P-1 through P-4, and it is mostly plumbing on machinery that already exists.</p>
+    </div>
+    <span class="where"><b>SimulationWorker.cpp</b> · <b>RayTracer.cpp:663–711</b> the worker loop and its progress callback</span>
+  </article>
+</section>
+
+<section id="robust">
+  <div class="sec-head"><span class="sec-num">10 / Robustness</span><h2>Robustness and validation</h2></div>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">R-1</span><h4 class="ftitle">OCCT exceptions can escape a worker thread</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-rob">Robustness</span></span></div>
+    <div class="bd">
+      <p><code>BRepMesh_IncrementalMesh</code>, the boolean operations and the revolve/prism builders all throw <code>Standard_Failure</code> on degenerate input. The only guard in the mesher is a <code>try/catch</code> around one <code>gp_Dir</code> construction. Parameters are sanitised and clamped, which covers most of it — but a boolean that fails on a specific combination will propagate out of a build running on a worker thread and terminate the process.</p>
+      <p class="fix"><strong>Do this:</strong> wrap scene construction and meshing in a <code>Standard_Failure</code> handler that returns a failed build with a message, and surface it in the UI as “this parameter combination cannot be built” rather than as a crash. Add a fuzz test that walks every scene across its full declared parameter ranges and asserts a build always either succeeds or fails cleanly.</p>
+    </div>
+    <span class="where"><b>MeshBuilder.cpp:36</b> · <b>GeometryProvider.cpp</b> boolean and revolve calls · <b>SimulationWorker.cpp</b></span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">R-2</span><h4 class="ftitle">Validate against closed-form optics, not only against recomputed arithmetic</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-phys">Physics</span><span class="tag t-rob">Robustness</span></span></div>
+    <div class="bd">
+      <p>108 tests is real coverage, and pinning Fresnel against Rs and Rp recomputed in the test is the right instinct. But recomputing the same formula proves the implementation matches itself. What convinces an engineer evaluating the tool is agreement with independent analytic optics.</p>
+      <p class="fix"><strong>Add a <code>--validate</code> mode</strong> that checks the tracer against results derived outside it:</p>
+      <ul class="pts">
+        <li>Paraxial focal length of the plano-convex and biconvex lenses against the lensmaker’s equation.</li>
+        <li>Integrating-sphere throughput against the sphere multiplier <code>M = ρ / (1 − ρ(1 − f))</code>.</li>
+        <li>Irradiance from a point source on a tilted plane against the inverse-square cosine law.</li>
+        <li>CPC acceptance angle against <code>sin θmax = 1/C</code> for the concentration ratio built.</li>
+        <li>Prism deviation against the minimum-deviation formula, per band.</li>
+        <li>A Lambertian disc’s far field against <code>I(θ) = I0 cos θ</code>.</li>
+      </ul>
+      <p>Publish the table with residuals. That page is a better sales argument than any feature list, and every one of these has a textbook closed form.</p>
+    </div>
+    <span class="where"><b>test/NewTests.inc</b> · <b>main.cpp</b> diagnostic modes</span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">R-3</span><h4 class="ftitle">Golden-file regression across all 25 scenes</h4><span class="tags"><span class="tag p2">P2</span><span class="tag t-rob">Robustness</span></span></div>
+    <div class="bd">
+      <p><code>--smoke</code> prints the whole library’s figures and nothing compares them to anything. Given bit-exact determinism — which is unusual and valuable — a golden file is trivially available and would catch every unintended physics change as a diff.</p>
+      <p class="fix"><strong>Do this:</strong> commit a reference table of efficiency, RMS radius, uniformity and FWHM for every scene × source at a fixed ray count and seed; fail CI on a change beyond tolerance. When a change is intentional, the diff <em>is</em> the changelog entry.</p>
+    </div>
+    <span class="where"><b>main.cpp</b> <code>--smoke</code> · <b>test/CMakeLists.txt</b></span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">R-4</span><h4 class="ftitle">Untested edges</h4><span class="tags"><span class="tag p2">P2</span><span class="tag t-rob">Robustness</span></span></div>
+    <div class="bd">
+      <p>Worth adding, roughly in order: degenerate BVH input (zero-area, coincident and NaN triangles); a cancelled run reducing deterministically; medium tracking through nested solids (which will fail until M-3 lands, and that failing test is the specification); ray counts at the ceiling for overflow; and a thread-count sweep beyond what <code>--bench</code> covers.</p>
+    </div>
+    <span class="where"><b>test/NewTests.inc</b></span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">R-5</span><h4 class="ftitle">No logging, no diagnostics capture, no config migration</h4><span class="tags"><span class="tag p3">P3</span><span class="tag t-rob">Robustness</span></span></div>
+    <div class="bd">
+      <p>The config carries a format string and there is no versioned migration path. There is no log file, so a user reporting “it crashed” hands you nothing.</p>
+      <p class="fix"><strong>Do this:</strong> a rotating log with build version, scene, parameters and timings per run; a config schema version with an explicit upgrade step; and a “copy diagnostics” action that puts the environment, the config and the last run’s summary on the clipboard.</p>
+    </div>
+    <span class="where"><b>ConfigIO.cpp:44</b> format string · no logging anywhere</span>
+  </article>
+</section>
+
+<section id="ux">
+  <div class="sec-head"><span class="sec-num">11 / Interface</span><h2>Making it intuitive</h2></div>
+  <p class="lede">The UI is competently built — parameter rows generated from the registry, a debounced rebuild, a worker thread that keeps the window alive, hand-drawn plots with hover readouts. What it lacks is the layer that turns controls into understanding: no absolute units, no derived quantities, no way to compare two runs, and no path from a result to a document.</p>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">U-1</span><h4 class="ftitle">Show the derived optical quantities next to the parameters</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-ui">Interface</span></span></div>
+    <div class="bd">
+      <p>A user edits “focal length” and “aperture” as bare numbers. The quantities they actually reason about — f-number, numerical aperture, acceptance angle, concentration ratio, étendue, the paraxial focus position — are all computable from the current parameters and none are shown.</p>
+      <p class="fix"><strong>Do this:</strong> a live derived-quantities strip under the parameter block, updating as the spin boxes move, before any trace runs. This is the difference between a form and an instrument, and it teaches the tool while the user drives it.</p>
+    </div>
+    <span class="where"><b>ControlsPanel.cpp</b> <code>rebuildParamRows</code></span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">U-2</span><h4 class="ftitle">Compare two runs</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-ui">Interface</span></span></div>
+    <div class="bd">
+      <p>Only <code>m_last</code> is kept, so changing a parameter destroys the thing you were comparing against. Design is iterative and the app currently forgets the previous iteration.</p>
+      <p class="fix"><strong>Do this:</strong> a run history — pin a result, then overlay it on every plot, show a difference heatmap, and put the metrics side by side with deltas. Judge whether a delta is real against the error bars you already compute. This is the single most useful workflow feature missing, and it is pure UI work over data already in memory.</p>
+    </div>
+    <span class="where"><b>MainWindow.h:100</b> <code>m_last</code>, a single result</span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">U-3</span><h4 class="ftitle">Edit optics on the surface you picked</h4><span class="tags"><span class="tag p1">P1</span><span class="tag t-ui">Interface</span></span></div>
+    <div class="bd">
+      <p>Clicking a surface in the viewport reports its properties and stops there. Meanwhile roughness, scatter and absorption are only adjustable as blunt <em>scene-wide</em> overrides — a design decision that made sense when properties were hardcoded per scene, and stops making sense the moment a user wants one matte mirror in a polished system.</p>
+      <p class="fix"><strong>Do this:</strong> make the pick panel editable, writing back to that surface’s <code>OpticalSurface</code> and re-tracing. Since none of these are geometry properties, no re-tessellation is needed — the existing cache stays warm and the round trip is a trace, not a rebuild.</p>
+    </div>
+    <span class="where"><b>MainWindow.cpp</b> <code>onSurfacePicked</code> · <b>RayTracer.h:71–76</b> the scene-wide overrides</span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">U-4</span><h4 class="ftitle">One-click report</h4><span class="tags"><span class="tag p2">P2</span><span class="tag t-ui">Interface</span></span></div>
+    <div class="bd">
+      <p>Export is CSV per data type and PNG per view, assembled by hand into whatever the user is writing. Every view already renders to a pixmap at arbitrary size — <code>renderToPixmap</code> exists on all five widgets — and the metrics already format to HTML.</p>
+      <p class="fix"><strong>Do this:</strong> an HTML or PDF report with the scene, its parameters, the energy budget, all four plots and the metrics table, with the seed and version stamped on it so it is reproducible. Small work on existing machinery, and it is what a design review actually consumes.</p>
+    </div>
+    <span class="where"><b>MainWindow.cpp</b> export slots · <code>renderToPixmap</code> on every view widget</span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">U-5</span><h4 class="ftitle">Restructure the control panel around the task, not the data model</h4><span class="tags"><span class="tag p2">P2</span><span class="tag t-ui">Interface</span></span></div>
+    <div class="bd">
+      <p>The panel is one flat vertical stack of group boxes in which every control has equal prominence: scene selection sits at the same weight as the absorption scale multiplier. A first-time user cannot tell what they must set from what they may.</p>
+      <p class="fix"><strong>Do this:</strong> split into <em>Design</em> (scene, geometry, source) and <em>Solve</em> (rays, seed, threads, physics model), with the physics group collapsed by default behind a one-line summary of which effects are active. Surface <code>SceneInfo::description</code> prominently — it is written, it is good, and it is currently invisible. Add units to every field, and named presets for sources and materials.</p>
+    </div>
+    <span class="where"><b>ControlsPanel.cpp</b> · <b>GeometryProvider.h:104</b> <code>SceneInfo::description</code></span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">U-6</span><h4 class="ftitle">Heatmap: measure, don’t just look</h4><span class="tags"><span class="tag p2">P2</span><span class="tag t-ui">Interface</span></span></div>
+    <div class="bd">
+      <p>The heatmap has five colour maps, three scalings, a colour bar and a draggable cut line — genuinely good. What it cannot do is answer a question about a region.</p>
+      <p class="fix"><strong>Do this:</strong> a rectangular or circular ROI with flux, mean, peak and uniformity computed over it; iso-contour overlay at 10/50/90&nbsp;% of peak, which is how a beam is specified on a datasheet; and a numeric readout in absolute units under the cursor once S-1 lands. Add a raw binary or NumPy grid export alongside CSV, since a 1024² grid as CSV is a text file nobody wants.</p>
+    </div>
+    <span class="where"><b>HeatmapWidget.cpp</b></span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">U-7</span><h4 class="ftitle">Undo, shortcuts, and dockable panels</h4><span class="tags"><span class="tag p3">P3</span><span class="tag t-ui">Interface</span></span></div>
+    <div class="bd">
+      <p>No undo on parameter edits — a mis-typed value loses the previous one. No keyboard shortcut for the most-used action in the app (run). The five views are fixed tabs, so a heatmap and a far field cannot be watched together, on one monitor or two.</p>
+      <p class="fix"><strong>Do this:</strong> a <code>QUndoStack</code> over config changes; F5 to run and Esc to cancel; and <code>QDockWidget</code> panels with a saved layout instead of a fixed <code>QTabWidget</code>.</p>
+    </div>
+    <span class="where"><b>MainWindow.cpp:65–71</b> <code>QTabWidget</code> · <b>ControlsPanel.cpp</b></span>
+  </article>
+
+  <article class="finding">
+    <div class="hd"><span class="fid">U-8</span><h4 class="ftitle">Viewport: collision, measurement, and a draggable receiver</h4><span class="tags"><span class="tag p3">P3</span><span class="tag t-ui">Interface</span></span></div>
+    <div class="bd">
+      <p>Walking passes straight through solid geometry. There is no measurement tool. The receiver — the thing a user most wants to nudge — is moved by typing into the last parameter spin box.</p>
+      <p class="fix"><strong>Do this:</strong> a capsule collision test against the existing BVH (the accelerator is right there); a point-to-point measure with a numeric readout; and a drag handle on the receiver that live-updates the through-focus curve as it moves. Thin the displayed rays by energy rather than by the flat leg cap, so the important paths survive the thinning.</p>
+    </div>
+    <span class="where"><b>OcctViewWidget.cpp</b> <code>applyWalk</code>, <code>rebuildRays</code></span>
+  </article>
+</section>
+
+<section id="roadmap">
+  <div class="sec-head"><span class="sec-num">12 / Sequence</span><h2>What to do, in what order</h2></div>
+  <p class="lede">Ordered so each phase makes the next one cheaper. The dependencies are real: units need a spectrum, coatings need materials, and nearly everything downstream is easier once normals are correct.</p>
+
+  <div class="phase">
+    <h3>Phase 1 — Lift the accuracy ceiling</h3>
+    <span class="when">The core, first · G-1, G-2, M-3, E-1, E-3</span>
+    <p>Interpolated surface normals and consistent face orientation together remove the tessellation limit that currently caps every imaging scene. Medium stacking makes multi-element and immersed optics tractable. Russian roulette removes the truncation bias and pays for itself in speed on refractive scenes. Reservoir-sampled arrivals fix a bias that quietly affects the focus study.</p>
+    <p>Nothing in this phase changes an API the UI touches, and each item is independently testable. Re-baseline the whole scene library afterwards — the numbers will move, and that movement is the deliverable.</p>
+  </div>
+
+  <div class="phase">
+    <h3>Phase 2 — Become measurable</h3>
+    <span class="when">Credibility · M-1, S-1, S-2, D-1, D-3, R-2</span>
+    <p>A material type with Sellmeier and a glass catalogue; a source flux in watts or lumens; a real spectrum sampled per ray. Together these turn every output from a fraction into a physical quantity, which is the difference between a demonstrator and an instrument. Then arbitrary detector frames and resolution, IES export, and a validation suite against closed-form optics with the residuals published.</p>
+  </div>
+
+  <div class="phase">
+    <h3>Phase 3 — Become fast enough to iterate</h3>
+    <span class="when">Speed &amp; feel · E-2, P-5, P-1, P-2</span>
+    <p>Sobol sampling and emission aiming cut the rays needed for a given error bar by a large factor. Progressive results change how the app feels more than any kernel optimisation will. Float BVH bounds, a wide traversal and instancing then take the kernel itself further.</p>
+  </div>
+
+  <div class="phase">
+    <h3>Phase 4 — Become a design tool</h3>
+    <span class="when">Workflow · A-1, A-2, U-1, U-2, U-3, U-4, G-3</span>
+    <p>Parameter sweeps and optimisation against a merit function; derived quantities beside the parameters; run comparison; a one-click report; and STEP import so the tool can be pointed at work that already exists. This phase is where the app stops answering “what does this do” and starts answering “what should I build”.</p>
+  </div>
+
+  <div class="phase">
+    <h3>Phase 5 — Depth</h3>
+    <span class="when">Specialisation · M-2, M-4, M-5, A-3, A-4</span>
+    <p>The full BSDF stack with ABg scatter and volume scattering; coatings; polarisation via Stokes vectors; tolerance analysis; MTF and OPD. These are the items that appear on a commercial feature matrix, and each is worth doing properly once the foundation under it is sound.</p>
+  </div>
+
+  <div class="call">
+    <h4>If only three things get done</h4>
+    <p><strong>G-1</strong> interpolated normals, because it lifts the accuracy ceiling for free from data the code already computes and discards. <strong>S-1 with S-2</strong>, because a tool that reports fractions instead of lux will not be taken seriously by the people it is for. <strong>E-1</strong> Russian roulette, because it removes a real bias and makes the slowest scenes several times faster in the same change.</p>
+  </div>
+</section>
+
+<footer>
+  <div>Reviewed against the working tree at commit <span class="mono">3e3c556</span> · 8,029 lines across <span class="mono">src/core</span> and <span class="mono">src/ui</span>. File and line references point at the current source.</div>
+</footer>
+
+  </main>
+</div>
+
+</body></html>

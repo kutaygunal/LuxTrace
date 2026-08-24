@@ -14,11 +14,11 @@ if(MSVC)
 endif()
 
 # One CTest entry per suite, so a failure names the area that broke.
-foreach(suite intersect bvh trace edge tir sampling detector worker patterns fresnel absorption scatter roughness spectral intensity metrics focus convergence source rays params config)
+foreach(suite intersect bvh trace edge tir sampling detector worker patterns fresnel absorption scatter roughness spectral intensity metrics focus convergence source rays params config media material spectrum units detectors photometry validation estimator instances cad sweep optimise derived report overrides bsdf coating polarised imagequality tolerancing)
     add_test(NAME ${suite} COMMAND optics_tests ${suite})
     set_tests_properties(${suite} PROPERTIES TIMEOUT 300)
 endforeach()
 
 # Qt needs its platform plugin resolved even for a console binary on Windows.
-set_tests_properties(intersect bvh trace edge tir sampling detector worker patterns fresnel absorption scatter roughness spectral intensity metrics focus convergence source rays params config
+set_tests_properties(intersect bvh trace edge tir sampling detector worker patterns fresnel absorption scatter roughness spectral intensity metrics focus convergence source rays params config media material spectrum units detectors photometry validation estimator instances cad sweep optimise derived report overrides bsdf coating polarised imagequality tolerancing
                      PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

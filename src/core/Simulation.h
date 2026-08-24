@@ -19,16 +19,57 @@ struct SimConfig {
     SceneParams params;
     bool        useSceneDefaults = true;
 
+    // Geometry read from a CAD file, standing in for the registry's scene.
+    // Null -- the ordinary case -- traces `scene` at `params`; set, it traces
+    // exactly these surfaces from exactly this source placement, and `scene`
+    // and `params` are not consulted at all.
+    //
+    // This is what makes an imported part traceable. It used to reach the 3D
+    // view and stop there, so a run after an import silently traced whichever
+    // built-in scene the controls still had selected -- the right rays through
+    // the wrong solid.
+    //
+    // Shared and const because a config is copied onto a worker thread per run
+    // and once more per study evaluation, and the geometry behind it is
+    // read-only: copying it would be copying a B-Rep per trace.
+    std::shared_ptr<const GeometryProvider::SceneSetup> imported;
+
+    bool tracesImport() const { return imported != nullptr; }
+
+    // What to call the geometry this config traces. The imported file where
+    // there is one, the registry's name otherwise.
+    QString sceneName() const;
+    QString sceneDescription() const;
+
     // Source. Split out of SourceConfig rather than embedding it because the
     // origin and axis are a property of the scene, not of the user's choice.
-    SourceConfig::Type     source   = SourceConfig::Type::Point;
-    SourceConfig::Shape    shape    = SourceConfig::Shape::PointLike;
-    SourceConfig::Spectrum spectrum = SourceConfig::Spectrum::Monochrome;
+    SourceConfig::Type  source = SourceConfig::Type::Point;
+    SourceConfig::Shape shape  = SourceConfig::Shape::PointLike;
+    // The emission spectrum: a distribution, with the monochromatic line and
+    // the colour temperature living on it.
+    SpectrumConfig spectrum;
     double halfAngleDeg = 180.0;
     double sizeA        = 0.0;
     double sizeB        = 0.0;
     double beamRadius   = 25.0;
-    double wavelengthNm = 587.6;
+
+    // Total emitted flux and the unit it is quoted in. This is what turns every
+    // output from a dimensionless fraction into a number that can go in a
+    // specification: W/m^2 or lux on the receiver, W/sr or candela in the far
+    // field.
+    double   power    = 1.0;
+    FluxUnit fluxUnit = FluxUnit::Watt;
+
+    // The polarisation state the source emits, on a polarised trace.
+    // 0 unpolarised, 1 linear s, 2 linear p, 3 circular.
+    int polarisationState = 0;
+
+    // Receiver resolution. 0 keeps the mesher's default grid.
+    int detectorBins = 0;
+
+    // Per-surface optical edits. Applied at trace time, so changing one costs a
+    // trace rather than a rebuild.
+    std::vector<SurfaceOverride> surfaceOverrides;
 
     int            rays    = 10000;
     unsigned       threads = 0;      // 0 == every hardware thread
@@ -70,8 +111,16 @@ public:
     // `buildSecondsOut`, when given, receives the time this call spent building
     // the scene -- zero when it was already cached.
     static SceneRef dataFor(GeometryProvider::Scene scene, const SceneParams& params,
-                            double* buildSecondsOut = nullptr);
+                            double* buildSecondsOut = nullptr, int detectorBins = 0);
     static SceneRef dataFor(const SimConfig& cfg, double* buildSecondsOut = nullptr);
+
+    // Geometry for a scene that was assembled rather than looked up -- an
+    // imported CAD file, with its receiver and its source placement. Cached on
+    // the identity of the setup, so a second run on the same import, and a
+    // convergence study's dozen of them, tessellate and build the hierarchy
+    // once rather than once each.
+    static SceneRef dataFor(const std::shared_ptr<const GeometryProvider::SceneSetup>& setup,
+                            int detectorBins = 0, double* buildSecondsOut = nullptr);
 
     // The emission setup a scene uses at the given parameters. Exposed so tests
     // and the diagnostics paths do not have to duplicate the placement.

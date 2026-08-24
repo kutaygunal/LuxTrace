@@ -29,6 +29,16 @@ public:
 
     GeometryProvider::Scene scene() const;
 
+    // Says that what will be traced came from a file rather than from the scene
+    // list; an empty label hands the scene list back the geometry.
+    //
+    // The parameter block below describes the selected scene, and while an
+    // import is loaded that scene is not what a run traces. Leaving those spin
+    // boxes live was half of why an imported part looked like it was being
+    // traced with the previous shape's dimensions, so they are named as
+    // inactive rather than silently ignored.
+    void setImportedGeometry(const QString& label);
+
     // Freezes the inputs for the duration of a run and swaps Run for Cancel.
     // The window itself stays responsive -- the trace runs on a worker thread.
     void setRunning(bool running);
@@ -52,6 +62,10 @@ private:
     SceneParams currentParams() const;
 
     QComboBox*    m_scene    = nullptr;
+    QLabel*       m_importNote = nullptr;
+    // Set while geometry from a file stands in for the selected scene, so a run
+    // finishing does not quietly re-enable the parameters it does not drive.
+    bool          m_importedGeometry = false;
     QGroupBox*    m_paramBox = nullptr;
     QFormLayout*  m_paramForm = nullptr;
     std::vector<QDoubleSpinBox*> m_params;
@@ -64,6 +78,14 @@ private:
     QDoubleSpinBox* m_sizeB      = nullptr;
     QDoubleSpinBox* m_beamRadius = nullptr;
     QComboBox*      m_spectrum   = nullptr;
+    QDoubleSpinBox* m_cct        = nullptr;
+    QDoubleSpinBox* m_power      = nullptr;
+    QComboBox*      m_powerUnit  = nullptr;
+    QComboBox*      m_detBins    = nullptr;
+    QCheckBox*      m_coatings   = nullptr;
+    QCheckBox*      m_volume     = nullptr;
+    QCheckBox*      m_polarised  = nullptr;
+    QComboBox*      m_polState   = nullptr;
     QDoubleSpinBox* m_wavelength = nullptr;
 
     QCheckBox*      m_fresnel    = nullptr;

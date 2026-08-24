@@ -354,7 +354,7 @@ And from the pass before that:
 |---|---|
 | Embed the OCCT 3D viewer | **Done** -- see the 3D viewport section above |
 | More scenes | **Done** -- 3 became 25, behind a registry, and every one of them parametric |
-| Tests / CTest (the biggest gap) | **Done** — now 108 tests in 22 suites; see below |
+| Tests / CTest (the biggest gap) | **Done** — now 216 tests in 35 suites; see below |
 | Point -> Lambertian silently downgraded | **Done** — the downgrade is gone; a Point source is now traced as an isotropic 4-pi emitter and the combo box says so. Reflector efficiency is ~42.6 % for Point vs ~83.8 % for Lambertian, which is the physically correct halving |
 | `traceRay` had 15 parameters | **Done** — collapsed into `TraceContext`; the recursion is now an explicit stack |
 | Simulation blocked the GUI thread | **Done** — see UI section above |
@@ -362,7 +362,7 @@ And from the pass before that:
 | BVH / spatial index | **Done** — SAH BVH in `TraceScene` |
 
 ### Test coverage
-`ctest -C Release` (10 s, 22 suites, 108 tests, ~312 000 checks):
+`ctest -C Release` (35 suites, 216 tests, ~1 290 000 checks):
 
 Original suites — **intersect** (Moller-Trumbore branches, backface asserted to
 hit *on purpose* since TIR depends on it), **bvh** (12 000 random rays per scene
@@ -413,35 +413,80 @@ Added this pass:
 
 ---
 
+## The engine review pass
+
+An outside engineering review of the tracer listed eighteen features and ranked
+what each needed to stand next to LightTools, TracePro and OpticStudio. It was
+worked through in the five phases it proposed. What each bought:
+
+**Phase 1 — the accuracy ceiling.** Surface normals read off the exact B-Rep and
+interpolated across the facet; consistent face winding; a medium stack with
+priorities; Russian roulette and branch collapsing in place of the hard energy
+cutoff; reservoir-sampled arrivals. The elliptical reflector's spot went from
+10.8 mm RMS to 0.99 mm and its best focus from 22 mm off the analytic answer to
+1.5 mm. Truncation, which used to be a silent loss channel, now reads zero.
+
+**Phase 2 — becoming measurable.** A glass catalogue with Sellmeier dispersion
+and complex-index metals; absolute flux in watts or lumens; a real spectrum
+sampled one wavelength per ray; detector frames, resolution and acceptance cones;
+IES LM-63 and EULUMDAT export; and `--validate`, which checks the tracer against
+seven closed forms derived outside it. Residuals land between 0.00 % and 0.35 %.
+
+**Phase 3 — becoming fast enough to iterate.** Owen-scrambled Sobol emission with
+replicated scrambling, emission aiming, next-event estimation, progressive
+results, and instanced geometry. Error bars 1.5x to 28x tighter at the same ray
+count. A four-wide BVH and float bounding boxes were built, benchmarked, found
+not to pay on this workload, and removed.
+
+**Phase 4 — becoming a design tool.** Parameter sweeps in one and two dimensions,
+Nelder-Mead and CMA-ES optimisation, derived quantities beside the parameters,
+run comparison, editable per-surface optics, a one-click HTML report, and
+STEP/IGES import.
+
+**Phase 5 — depth.** GGX / ABg / measured BSDFs and Henyey-Greenstein volume
+scattering; coatings from an ideal residual to a characteristic-matrix solver;
+polarisation via Stokes vectors and Mueller matrices; Monte Carlo tolerancing
+with a yield and a sensitivity ranking; MTF, OPD and Strehl.
+
 ## What is still open
 
-1. **Ball-lens throughput** (~0.9 M rays/s vs ~17 M for the reflector). Each hit
-   spawns both branches, so a path is a tree with up to ~160 depth. Russian
-   roulette instead of the hard `kCut` energy cutoff would flatten it, at the
-   cost of changing the estimator (results would shift within noise).
-2. **Focus is tessellation-limited, not tracer-limited.** At 0.06 rad angular
-   deflection the elliptical reflector still lands its best focus 22 mm short of
-   its true one. Exact B-Rep surface intersection, or an adaptive mesh on the
-   optically active faces only, is the way past that -- a uniformly finer mesh
-   costs triangles everywhere for accuracy that only the curved mirrors need.
-3. **Rays carry no polarisation.** Fresnel is the unpolarised average, so
-   Brewster's angle shows up in the reflectance curve but a polariser cannot be
-   modelled.
-4. **Dispersion is three bands, not a spectrum.** A prism separates into three
-   beams rather than a smooth rainbow, and there is no spectral weighting curve.
-5. **Scattering is a Russian-roulette choice, not a split.** Unbiased in the mean,
-   but one ray's path is a single outcome rather than an average over both.
-6. **`raysHitDetector` counts path branches, not rays** -- one ray can arrive
-   several times after splitting. Heavy-tailed, so it swings ~20 % run to run
-   while the flux stays stable. Documented in `SimulationResult.h`; judge runs by
-   flux. Labelled "Detector arrivals" in the UI.
-7. **The through-focus sweep assumes clear space** between the receiver and the
+1. **Ray-surface intersection is still against the tessellation**, not the exact
+   B-Rep. It matters far less than it did — the *normals* are exact now, so what
+   a coarse mesh costs is hit position rather than surface direction — but an
+   adaptive mesh driven by curvature and by whether a face is optically active
+   (review item G-4) is still unbuilt, and would let the triangle count fall
+   further.
+2. **`SceneParams` is still capped at four doubles** (review item G-5). A doublet
+   with two radii, two thicknesses, a spacing and a receiver is already six.
+3. **The far field bins uniformly in theta** (review item D-2), so a 1.3-degree
+   beam is resolved by less than one 2-degree bin and the polar cells are starved
+   of samples. Equal-solid-angle binning is the fix.
+4. **Imported CAD is not in the scene list and does not persist.** Import now
+   assembles a full traceable scene -- the parts, a receiver beyond them and the
+   source placement that aims at them, along whichever of the six axes was
+   chosen -- and a run traces that rather than the selected scene
+   (`SimConfig::imported`). What is still missing: the import does not appear in
+   the scene combo, so touching a geometry parameter replaces it and the file has
+   to be imported again; a saved config records the selected scene rather than
+   the file; and studies that vary a dimension decline on it, since an imported
+   solid declares none. The source origin and axis are fixed at import rather
+   than being editable afterwards.
+5. **The through-focus sweep assumes clear space** between the receiver and the
    swept planes, since it propagates recorded arrivals in a straight line. True
    near the receiver, which is the region of interest, but it would quietly
-   mislead across an intervening optic.
-8. **No collision in the walkthrough** -- the camera passes straight through
+   mislead across an intervening optic; review item A-5 is to refuse the range
+   rather than answer it.
+6. **`raysHitDetector` counts path branches and next-event connections**, not
+   rays. Heavy-tailed, so it swings run to run while the flux stays stable.
+   Documented in `SimulationResult.h`; judge runs by flux. Labelled "Detector
+   arrivals" in the UI.
+7. **Per-thread detector grids will not scale past a fine receiver** (review item
+   P-4). At 64 x 64 they cost 32 KB per thread; at 1024 x 1024 they are 8 MB per
+   thread, and a progressive snapshot copies them.
+8. **No collision in the walkthrough** — the camera passes straight through
    geometry.
-9. **Not under version control.** There is still no `.git` here.
+9. **No logging or diagnostics capture** (review item R-5), and the config format
+   string has no versioned migration path.
 
 ## Build / run
 

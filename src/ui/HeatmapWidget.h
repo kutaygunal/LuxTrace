@@ -19,6 +19,15 @@ public:
     explicit HeatmapWidget(QWidget* parent = nullptr);
 
     void setResult(const SimulationResult& res);
+
+    // A pinned run to compare against. While one is set the map shows the
+    // difference -- this run minus that one, red where it gained and blue where
+    // it lost -- because "is this change an improvement" is a question about two
+    // runs, and the app used to forget the previous one the moment a parameter
+    // moved.
+    void setReference(const SimulationResult& reference);
+    void clearReference();
+    bool hasReference() const { return m_hasReference; }
     void setColormap(palette::Map map);
     void setScale(palette::Scale scale);
     // Draw a spectral run as real colour instead of a false-colour map.
@@ -53,6 +62,9 @@ private:
     SimulationResult     m_res;
     analysis::SpotMetrics m_metrics;
     bool                 m_hasResult = false;
+    SimulationResult     m_reference;
+    bool                 m_hasReference = false;
+    double               m_diffPeak = 0.0;   // largest absolute difference, per mm^2
     palette::Map         m_map       = palette::Map::Viridis;
     palette::Scale       m_scale     = palette::Scale::Linear;
     bool                 m_rgb       = false;

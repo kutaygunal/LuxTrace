@@ -46,6 +46,28 @@ void HeatmapWidget::setCut(double x, double y) {
     update();
 }
 
+void HeatmapWidget::setReference(const SimulationResult& reference) {
+    m_reference    = reference;
+    m_hasReference = reference.nx == m_res.nx && reference.ny == m_res.ny &&
+                     !reference.irradiance.empty();
+    m_diffPeak = 0.0;
+    if (m_hasReference) {
+        const double area = m_res.binArea();
+        if (area > 0.0)
+            for (std::size_t i = 0; i < m_res.irradiance.size() &&
+                                    i < m_reference.irradiance.size(); ++i)
+                m_diffPeak = std::max(m_diffPeak,
+                                      std::fabs(m_res.irradiance[i] - m_reference.irradiance[i]) / area);
+    }
+    update();
+}
+
+void HeatmapWidget::clearReference() {
+    m_hasReference = false;
+    m_diffPeak = 0.0;
+    update();
+}
+
 QImage HeatmapWidget::buildImage() const {
     const int nx = m_res.nx, ny = m_res.ny;
     QImage img(std::max(1, nx), std::max(1, ny), QImage::Format_RGB32);
@@ -53,6 +75,27 @@ QImage HeatmapWidget::buildImage() const {
     if (!m_hasResult || m_peak <= 0.0) return img;
 
     const double area = m_res.binArea();
+
+    // Difference mode: a diverging map about zero, so the eye reads sign before
+    // magnitude. A single sequential map cannot show "this got dimmer here".
+    if (m_hasReference && m_diffPeak > 0.0 &&
+        m_reference.irradiance.size() == m_res.irradiance.size() && area > 0.0) {
+        for (int y = 0; y < ny; ++y) {
+            QRgb* row = reinterpret_cast<QRgb*>(img.scanLine(ny - 1 - y));
+            for (int x = 0; x < nx; ++x) {
+                const std::size_t k = std::size_t(y) * std::size_t(nx) + std::size_t(x);
+                const double d = (m_res.irradiance[k] - m_reference.irradiance[k]) / area;
+                const double t = std::clamp(d / m_diffPeak, -1.0, 1.0);
+                // Zero is the background, not a colour, so an unchanged region
+                // stays quiet.
+                const int mag = int(std::lround(std::fabs(t) * 235.0));
+                row[x] = (t >= 0.0) ? qRgb(20 + mag, 20 + mag / 4, 24)
+                                    : qRgb(24, 20 + mag / 3, 20 + mag);
+            }
+        }
+        return img;
+    }
+
     const bool rgb = m_rgb && m_res.spectral &&
                      m_res.bandIrradiance.size() == m_res.irradiance.size() * 3;
     const std::size_t cells = m_res.irradiance.size();
