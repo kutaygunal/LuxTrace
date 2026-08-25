@@ -10,8 +10,10 @@
 #include <QDir>
 #include <QStringList>
 #include <QElapsedTimer>
+#include <QDataStream>
 #include <QFile>
 #include <QFileInfo>
+#include <QTextStream>
 #include <QEventLoop>
 #include <QTimer>
 
@@ -44,6 +46,8 @@
 #include "core/Coating.h"
 #include "core/Polarisation.h"
 #include "core/Material.h"
+#include "core/MaterialFile.h"
+#include "core/RayFile.h"
 #include "core/Spectrum.h"
 #include "core/Sampling.h"
 #include "core/Optics.h"
@@ -1080,6 +1084,7 @@ TEST(patterns, retroreflectors_only_score_by_sending_light_back) {
 }
 
 #include "NewTests.inc"
+#include "AuditTests.inc"
 
 // =================================================================== main ===
 

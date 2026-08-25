@@ -1,11 +1,15 @@
 #include "ConfigIO.h"
+#include "Material.h"
+#include "RayFile.h"
 
 #include <algorithm>
+#include <cmath>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <gp_Vec.hxx>
 
 namespace configio {
 namespace {
@@ -37,6 +41,314 @@ double num(const QJsonObject& o, const char* key, double fallback) {
 bool flag(const QJsonObject& o, const char* key, bool fallback) {
     const QJsonValue v = o.value(QLatin1String(key));
     return v.isBool() ? v.toBool() : fallback;
+}
+
+const char* kBsdfModel[]   = {"specular", "microfacet", "abg", "lambertian", "table"};
+const char* kCoatModel[]   = {"none", "ideal", "table", "stack"};
+const char* kRejectMode[]  = {"absorb", "pass"};
+
+// ---- surface overrides -----------------------------------------------------
+//
+// These are keyed by surface *label*, not by index.
+//
+// The index was what a config used to carry, and reopening one after the scene
+// registry changed -- or against a different CAD import -- silently landed
+// every optical edit on whatever surface now occupied the slot. That is the
+// failure mode that produces a plausible-looking wrong answer, which is the
+// only kind that actually costs someone money. The scene enum was stored by
+// name for exactly this reason; the overrides were not.
+//
+// The index is still written, as a hint for an override whose surface carries
+// no label at all, and the identity hash is written so a stale hint can be
+// vetoed rather than trusted.
+
+QJsonObject bsdfToJson(const bsdf::Surface& b) {
+    QJsonObject o;
+    o[QStringLiteral("model")]    = QLatin1String(kBsdfModel[std::clamp(int(b.model), 0, 4)]);
+    o[QStringLiteral("alpha")]    = b.alpha;
+    o[QStringLiteral("fraction")] = b.fraction;
+    o[QStringLiteral("abgA")]     = b.abgA;
+    o[QStringLiteral("abgB")]     = b.abgB;
+    o[QStringLiteral("abgG")]     = b.abgG;
+    return o;
+}
+
+bsdf::Surface bsdfFromJson(const QJsonObject& o, bsdf::Surface b) {
+    b.model    = bsdf::Model(indexOf(kBsdfModel, o.value(QStringLiteral("model")).toString(),
+                                     int(b.model)));
+    b.alpha    = std::max(0.0, num(o, "alpha", b.alpha));
+    b.fraction = std::clamp(num(o, "fraction", b.fraction), 0.0, 1.0);
+    b.abgA     = std::max(0.0, num(o, "abgA", b.abgA));
+    b.abgB     = std::max(1e-9, num(o, "abgB", b.abgB));
+    b.abgG     = std::max(0.0, num(o, "abgG", b.abgG));
+    return b;
+}
+
+QJsonObject coatingToJson(const coating::Coating& c) {
+    QJsonObject o;
+    o[QStringLiteral("model")]         = QLatin1String(kCoatModel[std::clamp(int(c.model), 0, 3)]);
+    o[QStringLiteral("residual")]      = c.residual;
+    o[QStringLiteral("highReflector")] = c.highReflector;
+    if (c.samples > 0) {
+        QJsonArray lam, refl;
+        for (int i = 0; i < c.samples && i < coating::Coating::kMaxSamples; ++i) {
+            lam.append(c.lambdaNm[i]);
+            refl.append(c.reflectance[i]);
+        }
+        o[QStringLiteral("tableNm")] = lam;
+        o[QStringLiteral("tableR")]  = refl;
+    }
+    if (c.layers > 0) {
+        QJsonArray n, t;
+        for (int i = 0; i < c.layers && i < coating::Coating::kMaxLayers; ++i) {
+            n.append(c.layerIndex[i]);
+            t.append(c.layerThicknessNm[i]);
+        }
+        o[QStringLiteral("layerIndex")]       = n;
+        o[QStringLiteral("layerThicknessNm")] = t;
+    }
+    return o;
+}
+
+coating::Coating coatingFromJson(const QJsonObject& o, coating::Coating c) {
+    c.model = coating::Model(indexOf(kCoatModel, o.value(QStringLiteral("model")).toString(),
+                                     int(c.model)));
+    c.residual      = std::clamp(num(o, "residual", c.residual), 0.0, 1.0);
+    c.highReflector = flag(o, "highReflector", c.highReflector);
+
+    const QJsonArray lam  = o.value(QStringLiteral("tableNm")).toArray();
+    const QJsonArray refl = o.value(QStringLiteral("tableR")).toArray();
+    if (!lam.isEmpty()) {
+        c.samples = 0;
+        for (int i = 0; i < lam.size() && i < refl.size() &&
+                        c.samples < coating::Coating::kMaxSamples; ++i) {
+            c.lambdaNm[c.samples]    = lam[i].toDouble();
+            c.reflectance[c.samples] = std::clamp(refl[i].toDouble(), 0.0, 1.0);
+            ++c.samples;
+        }
+    }
+    const QJsonArray ln = o.value(QStringLiteral("layerIndex")).toArray();
+    const QJsonArray lt = o.value(QStringLiteral("layerThicknessNm")).toArray();
+    if (!ln.isEmpty()) {
+        c.layers = 0;
+        for (int i = 0; i < ln.size() && i < lt.size() &&
+                        c.layers < coating::Coating::kMaxLayers; ++i) {
+            c.layerIndex[c.layers]       = std::max(1.0, ln[i].toDouble());
+            c.layerThicknessNm[c.layers] = std::max(0.0, lt[i].toDouble());
+            ++c.layers;
+        }
+    }
+    return c;
+}
+
+QJsonObject overrideToJson(const SurfaceOverride& ov) {
+    const SurfaceOptics& s = ov.optics;
+    QJsonObject o;
+    o[QStringLiteral("label")] = ov.label;
+    // A 64-bit hash does not survive a JSON double, so it is written as hex.
+    o[QStringLiteral("identity")] =
+        QStringLiteral("%1").arg(ov.identity, 16, 16, QLatin1Char('0'));
+    o[QStringLiteral("surfaceHint")]    = ov.surface;
+
+    o[QStringLiteral("reflectivity")]   = s.reflectivity;
+    o[QStringLiteral("transmissivity")] = s.transmissivity;
+    o[QStringLiteral("index")]          = s.index;
+    o[QStringLiteral("dispersionB")]    = s.dispersionB;
+    o[QStringLiteral("absorption")]     = s.absorption;
+    o[QStringLiteral("scatter")]        = s.scatter;
+    o[QStringLiteral("roughness")]      = s.roughness;
+    o[QStringLiteral("fresnel")]        = s.fresnel;
+    o[QStringLiteral("mediumPriority")] = s.mediumPriority;
+
+    // The catalogue name, not the resolved coefficients: a material is a name a
+    // user typed, and rewriting it as six Sellmeier terms would make a saved
+    // config unreadable and unpatchable by hand.
+    if (s.material.valid()) {
+        for (int i = 0; i < materials::count(); ++i) {
+            const OpticalMaterial m = materials::at(i);
+            if (m.model == s.material.model && std::fabs(m.nd - s.material.nd) < 1e-9) {
+                o[QStringLiteral("material")] = materials::name(i);
+                break;
+            }
+        }
+    }
+
+    o[QStringLiteral("bsdf")]    = bsdfToJson(s.bsdf);
+    o[QStringLiteral("coating")] = coatingToJson(s.coating);
+
+    QJsonObject vol;
+    vol[QStringLiteral("coefficient")] = s.volume.coefficient;
+    vol[QStringLiteral("anisotropy")]  = s.volume.anisotropy;
+    o[QStringLiteral("volume")] = vol;
+
+    if (s.isDetector) {
+        QJsonObject det;
+        det[QStringLiteral("nx")]            = s.detNX;
+        det[QStringLiteral("ny")]            = s.detNY;
+        det[QStringLiteral("acceptanceDeg")] = s.detAcceptanceDeg;
+        det[QStringLiteral("reject")] =
+            QLatin1String(kRejectMode[std::clamp(int(s.detRejectMode), 0, 1)]);
+        o[QStringLiteral("detector")] = det;
+    }
+    return o;
+}
+
+SurfaceOverride overrideFromJson(const QJsonObject& o) {
+    SurfaceOverride ov;
+    ov.label   = o.value(QStringLiteral("label")).toString();
+    ov.surface = int(num(o, "surfaceHint", -1.0));
+    bool okHex = false;
+    const std::uint64_t id =
+        o.value(QStringLiteral("identity")).toString().toULongLong(&okHex, 16);
+    ov.identity = okHex ? id : 0;
+
+    SurfaceOptics& s = ov.optics;
+    s.reflectivity   = std::clamp(num(o, "reflectivity",   s.reflectivity),   0.0, 1.0);
+    s.transmissivity = std::clamp(num(o, "transmissivity", s.transmissivity), 0.0, 1.0);
+    s.index          = std::clamp(num(o, "index",          s.index),          0.0, 10.0);
+    s.dispersionB    = num(o, "dispersionB", s.dispersionB);
+    s.absorption     = std::max(0.0, num(o, "absorption", s.absorption));
+    s.scatter        = std::clamp(num(o, "scatter",   s.scatter),   0.0, 1.0);
+    s.roughness      = std::clamp(num(o, "roughness", s.roughness), 0.0, 1.0);
+    s.fresnel        = flag(o, "fresnel", s.fresnel);
+    s.mediumPriority = int(num(o, "mediumPriority", 0.0));
+
+    const QString mat = o.value(QStringLiteral("material")).toString();
+    // An unknown name degrades to "no material" rather than failing the load,
+    // which is what makes a config written against a catalogue file that is not
+    // loaded here still open.
+    if (!mat.isEmpty()) s.material = materials::byName(mat);
+
+    s.bsdf    = bsdfFromJson(o.value(QStringLiteral("bsdf")).toObject(), s.bsdf);
+    s.coating = coatingFromJson(o.value(QStringLiteral("coating")).toObject(), s.coating);
+
+    const QJsonObject vol = o.value(QStringLiteral("volume")).toObject();
+    s.volume.coefficient = std::max(0.0, num(vol, "coefficient", s.volume.coefficient));
+    s.volume.anisotropy  = std::clamp(num(vol, "anisotropy", s.volume.anisotropy),
+                                      -0.999, 0.999);
+
+    if (o.contains(QStringLiteral("detector"))) {
+        const QJsonObject det = o.value(QStringLiteral("detector")).toObject();
+        s.isDetector       = true;
+        s.detNX            = std::clamp(int(num(det, "nx", 0.0)), 0, 4096);
+        s.detNY            = std::clamp(int(num(det, "ny", 0.0)), 0, 4096);
+        s.detAcceptanceDeg = std::clamp(num(det, "acceptanceDeg", 180.0), 0.0, 180.0);
+        s.detRejectMode    = SurfaceOptics::RejectMode(
+            indexOf(kRejectMode, det.value(QStringLiteral("reject")).toString(), 0));
+    }
+    return ov;
+}
+
+// ---- sources ---------------------------------------------------------------
+
+QJsonObject rayFileToJson(const std::shared_ptr<const RayFileData>& rf,
+                          double scale, bool wavelengths) {
+    QJsonObject o;
+    // The path, not the rays. A ray set is tens of megabytes and it is somebody
+    // else's file; a config that inlined it would be unopenable and would go
+    // stale the moment the vendor published a new measurement.
+    o[QStringLiteral("path")]        = rf->path;
+    o[QStringLiteral("scale")]       = scale;
+    o[QStringLiteral("wavelengths")] = wavelengths;
+    // Written for the reader of the file, and checked on load so a set that has
+    // been replaced underneath the config is reported rather than assumed.
+    o[QStringLiteral("rays")]        = double(rf->declared);
+    return o;
+}
+
+// Reloads the set a config names. A file that has moved or changed leaves the
+// source analytic and the failure named, rather than silently tracing a
+// different emitter.
+std::shared_ptr<const RayFileData> rayFileFromJson(const QJsonObject& o,
+                                                   double& scale, bool& wavelengths,
+                                                   QStringList* warnings) {
+    const QString path = o.value(QStringLiteral("path")).toString();
+    if (path.isEmpty()) return {};
+    scale       = std::max(1e-9, num(o, "scale", 1.0));
+    wavelengths = flag(o, "wavelengths", true);
+
+    const auto res = rayfile::load(path);
+    if (!res.ok) {
+        if (warnings)
+            *warnings << QStringLiteral("ray file %1 could not be reopened: %2")
+                             .arg(path, res.error);
+        return {};
+    }
+    const std::size_t want = std::size_t(num(o, "rays", 0.0));
+    if (want > 0 && res.data->declared != want && warnings)
+        *warnings << QStringLiteral("ray file %1 now holds %2 rays; the config was "
+                                    "saved against %3")
+                         .arg(path).arg(res.data->declared).arg(want);
+    return res.data;
+}
+
+QJsonObject sourceSpecToJson(const SourceSpec& s) {
+    QJsonObject o;
+    o[QStringLiteral("label")]        = s.label;
+    o[QStringLiteral("type")]         = QLatin1String(kSourceType[std::clamp(int(s.type), 0, 2)]);
+    o[QStringLiteral("shape")]        = QLatin1String(kSourceShape[std::clamp(int(s.shape), 0, 3)]);
+    o[QStringLiteral("spectrum")]     = QLatin1String(kSpectrum[std::clamp(int(s.spectrum.kind), 0, 5)]);
+    o[QStringLiteral("wavelengthNm")] = s.spectrum.wavelengthNm;
+    o[QStringLiteral("cct")]          = s.spectrum.cct;
+    o[QStringLiteral("halfAngleDeg")] = s.halfAngleDeg;
+    o[QStringLiteral("sizeA")]        = s.sizeA;
+    o[QStringLiteral("sizeB")]        = s.sizeB;
+    o[QStringLiteral("beamRadius")]   = s.beamRadius;
+    o[QStringLiteral("power")]        = s.power;
+    o[QStringLiteral("polarisation")] =
+        QLatin1String(kPolState[std::clamp(s.polarisationState, 0, 3)]);
+    o[QStringLiteral("absolute")]     = s.absolute;
+    o[QStringLiteral("useSceneAxis")] = s.useSceneAxis;
+
+    QJsonArray off;
+    off.append(s.offset.X()); off.append(s.offset.Y()); off.append(s.offset.Z());
+    o[QStringLiteral("offset")] = off;
+    QJsonArray ax;
+    ax.append(s.axis.X()); ax.append(s.axis.Y()); ax.append(s.axis.Z());
+    o[QStringLiteral("axis")] = ax;
+
+    if (s.tracesRayFile())
+        o[QStringLiteral("rayFile")] =
+            rayFileToJson(s.rayFile, s.rayFileScale, s.rayFileWavelengths);
+    return o;
+}
+
+SourceSpec sourceSpecFromJson(const QJsonObject& o, QStringList* warnings) {
+    SourceSpec s;
+    s.label = o.value(QStringLiteral("label")).toString();
+    s.type  = SourceConfig::Type(
+        indexOf(kSourceType, o.value(QStringLiteral("type")).toString(), int(s.type)));
+    s.shape = SourceConfig::Shape(
+        indexOf(kSourceShape, o.value(QStringLiteral("shape")).toString(), int(s.shape)));
+    s.spectrum.kind = SpectrumConfig::Kind(
+        indexOf(kSpectrum, o.value(QStringLiteral("spectrum")).toString(),
+                int(s.spectrum.kind)));
+    s.spectrum.wavelengthNm =
+        std::clamp(num(o, "wavelengthNm", s.spectrum.wavelengthNm), 200.0, 2000.0);
+    s.spectrum.cct  = std::clamp(num(o, "cct", s.spectrum.cct), 1000.0, 20000.0);
+    s.halfAngleDeg  = std::clamp(num(o, "halfAngleDeg", s.halfAngleDeg), 0.0, 180.0);
+    s.sizeA         = std::max(0.0, num(o, "sizeA", s.sizeA));
+    s.sizeB         = std::max(0.0, num(o, "sizeB", s.sizeB));
+    s.beamRadius    = std::max(0.0, num(o, "beamRadius", s.beamRadius));
+    s.power         = std::max(0.0, num(o, "power", s.power));
+    s.polarisationState =
+        indexOf(kPolState, o.value(QStringLiteral("polarisation")).toString(), 0);
+    s.absolute      = flag(o, "absolute", false);
+    s.useSceneAxis  = flag(o, "useSceneAxis", true);
+
+    const QJsonArray off = o.value(QStringLiteral("offset")).toArray();
+    if (off.size() >= 3)
+        s.offset = gp_Pnt(off[0].toDouble(), off[1].toDouble(), off[2].toDouble());
+    const QJsonArray ax = o.value(QStringLiteral("axis")).toArray();
+    if (ax.size() >= 3) {
+        const gp_Vec v(ax[0].toDouble(), ax[1].toDouble(), ax[2].toDouble());
+        if (v.Magnitude() > 1e-12) s.axis = gp_Dir(v);
+    }
+
+    if (o.contains(QStringLiteral("rayFile")))
+        s.rayFile = rayFileFromJson(o.value(QStringLiteral("rayFile")).toObject(),
+                                    s.rayFileScale, s.rayFileWavelengths, warnings);
+    return s;
 }
 
 } // namespace
@@ -78,7 +390,30 @@ QString toJson(const SimConfig& cfg) {
     src[QStringLiteral("powerUnit")]    = QLatin1String(kFluxUnit[int(cfg.fluxUnit)]);
     src[QStringLiteral("polarisation")] = QLatin1String(kPolState[
         std::clamp(cfg.polarisationState, 0, 3)]);
+    if (cfg.rayFile && cfg.rayFile->valid())
+        src[QStringLiteral("rayFile")] =
+            rayFileToJson(cfg.rayFile, cfg.rayFileScale, cfg.rayFileWavelengths);
     root[QStringLiteral("source")] = src;
+
+    // Everything beyond the primary source. Absent for the ordinary
+    // single-source configuration, so a file written by one build and read by
+    // another does not gain an empty array it has to ignore.
+    if (!cfg.extraSources.empty()) {
+        QJsonArray extras;
+        for (const SourceSpec& s : cfg.extraSources) extras.append(sourceSpecToJson(s));
+        root[QStringLiteral("extraSources")] = extras;
+    }
+
+    // Per-surface optical edits, keyed by label. These were not written at all,
+    // so every edit a user made to a surface was lost the moment the
+    // configuration was saved -- and the index they would have been keyed by is
+    // exactly what makes a reopened file land an edit on the wrong surface.
+    if (!cfg.surfaceOverrides.empty()) {
+        QJsonArray ovs;
+        for (const SurfaceOverride& ov : cfg.surfaceOverrides)
+            ovs.append(overrideToJson(ov));
+        root[QStringLiteral("surfaceOverrides")] = ovs;
+    }
 
     QJsonObject phys;
     phys[QStringLiteral("fresnel")]           = cfg.physics.fresnel;
@@ -106,7 +441,8 @@ QString toJson(const SimConfig& cfg) {
     return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Indented));
 }
 
-bool fromJson(const QString& json, SimConfig& out, QString* errorOut) {
+bool fromJson(const QString& json, SimConfig& out, QString* errorOut,
+              QStringList* warnings) {
     QJsonParseError err{};
     const QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8(), &err);
     if (doc.isNull() || !doc.isObject()) {
@@ -151,6 +487,16 @@ bool fromJson(const QString& json, SimConfig& out, QString* errorOut) {
     cfg.polarisationState = indexOf(kPolState,
                                     src.value(QStringLiteral("polarisation")).toString(),
                                     cfg.polarisationState);
+    if (src.contains(QStringLiteral("rayFile")))
+        cfg.rayFile = rayFileFromJson(src.value(QStringLiteral("rayFile")).toObject(),
+                                      cfg.rayFileScale, cfg.rayFileWavelengths, warnings);
+
+    for (const QJsonValue& v : root.value(QStringLiteral("extraSources")).toArray())
+        if (v.isObject()) cfg.extraSources.push_back(sourceSpecFromJson(v.toObject(),
+                                                                       warnings));
+
+    for (const QJsonValue& v : root.value(QStringLiteral("surfaceOverrides")).toArray())
+        if (v.isObject()) cfg.surfaceOverrides.push_back(overrideFromJson(v.toObject()));
 
     const QJsonObject phys = root.value(QStringLiteral("physics")).toObject();
     cfg.physics.fresnel    = flag(phys, "fresnel",    cfg.physics.fresnel);
@@ -194,13 +540,14 @@ bool save(const QString& path, const SimConfig& cfg, QString* errorOut) {
     return true;
 }
 
-bool load(const QString& path, SimConfig& out, QString* errorOut) {
+bool load(const QString& path, SimConfig& out, QString* errorOut,
+          QStringList* warnings) {
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
         if (errorOut) *errorOut = f.errorString();
         return false;
     }
-    return fromJson(QString::fromUtf8(f.readAll()), out, errorOut);
+    return fromJson(QString::fromUtf8(f.readAll()), out, errorOut, warnings);
 }
 
 } // namespace configio

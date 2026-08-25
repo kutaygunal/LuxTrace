@@ -41,20 +41,24 @@ struct SurfaceOptics {
     // Fraction of the reflected (and of the transmitted) energy that leaves
     // cosine-weighted about the surface normal instead of specularly.
     // 0 is a polished surface, 1 a perfect Lambertian diffuser.
+    //
+    // A shorthand now, not a model of its own: effectiveBsdf() reads it as a
+    // Lambertian lobe of this fraction.
     double scatter = 0.0;
 
-    // RMS surface slope error, radians. The interaction normal is jittered by a
-    // Gaussian of this width before the laws are applied, so a mirror spreads a
-    // reflected ray by twice it -- which is what a real polish tolerance does.
+    // RMS surface slope error, radians -- the simplest possible statement of
+    // "not quite polished", and the number a polish tolerance is written in.
     //
-    // Superseded by `bsdf` where one is set: a Gaussian tilt with a rejection
-    // branch is not an energy-conserving BSDF and cannot be fitted to measured
-    // data. It stays for the scenes that were built against it and for the
-    // simplest possible statement of "not quite polished".
+    // A shorthand now, not a model of its own: effectiveBsdf() reads it as a
+    // GGX microfacet of the same RMS slope. It used to be applied as a Gaussian
+    // jitter of the interaction normal with a rejection branch, which is not an
+    // energy-conserving BSDF, has no shadowing-masking term, biases toward
+    // specular by however often the tilt had to be rejected, and cannot be
+    // fitted to measured data.
     double roughness = 0.0;
 
-    // How this surface scatters, when it is described by a real BSDF rather than
-    // by the tilt above and the Lambertian fraction below.
+    // How this surface scatters, where it is described by a real BSDF rather
+    // than by one of the two shorthands above.
     bsdf::Surface bsdf;
 
     // Scattering *inside* the medium behind this surface, rather than at it.
@@ -89,6 +93,57 @@ struct SurfaceOptics {
     // outside the cone is not counted -- which is how a real photometer, and a
     // real fibre, behave. >= 180 accepts everything.
     double detAcceptanceDeg = 180.0;
+
+    // What a receiver does with a ray its acceptance cone refuses.
+    //   Absorb  the branch stops there, as an absorbing photometer head does
+    //   Pass    the branch carries on undeflected, as a recording plane does
+    // Refused flux is booked to its own channel either way: it was not absorbed
+    // by anything, it was refused by a measurement condition, and an
+    // absorbed-flux figure that silently includes it is a wrong loss budget.
+    enum class RejectMode : int { Absorb = 0, Pass = 1 };
+    RejectMode detRejectMode = RejectMode::Absorb;
+
+    // The one scattering model this surface actually has.
+    //
+    // A surface could once describe its scattering in three unrelated ways at
+    // the same time, and all three ran side by side inside a single
+    // interaction: a Gaussian tilt of the normal, a Lambertian fraction, and a
+    // real BSDF. The first two decided *direction* while the energy stayed
+    // whatever specular Fresnel gave it -- so a rough dielectric reflected as
+    // though it were polished and then left in a diffuse direction. Three
+    // models meant three behaviours that could disagree, and the two that were
+    // not energy conserving were the ones every built-in scene used.
+    //
+    // There is one now, and this is where the older two are read into it:
+    //
+    //   a real BSDF wins wherever one is set
+    //   `scatter`   becomes a Lambertian lobe of that fraction
+    //   `roughness` becomes a GGX microfacet of the same RMS slope
+    //
+    // Both fields stay, because scenes and saved configs were written against
+    // them and because one number is the right way to say "slightly matte".
+    bsdf::Surface effectiveBsdf() const {
+        if (!bsdf.isSpecular()) return bsdf;
+
+        if (scatter > 0.0) {
+            bsdf::Surface b;
+            b.model    = bsdf::Model::Lambertian;
+            b.fraction = scatter < 1.0 ? scatter : 1.0;
+            return b;
+        }
+        if (roughness > 0.0) {
+            bsdf::Surface b;
+            b.model = bsdf::Model::Microfacet;
+            // A Gaussian slope error of sigma per tangent axis is a Beckmann
+            // distribution of alpha = sqrt(2) sigma, and GGX is conventionally
+            // matched to Beckmann by equating the two alphas. So the number in
+            // the box keeps meaning the RMS slope it always meant.
+            b.alpha    = 1.4142135623730951 * roughness;
+            b.fraction = 1.0;
+            return b;
+        }
+        return bsdf::Surface{};        // polished
+    }
 
     // Refractive index at `lambdaNm`. The catalogue material wins where one is
     // assigned; otherwise the Cauchy shorthand does. `dispersion` off pins every

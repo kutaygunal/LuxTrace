@@ -33,8 +33,49 @@ struct RaySegment {
     float         wavelengthNm = 0.0f;
     std::uint16_t depth        = 0;
     std::uint16_t flags        = 0;
+    // Which source emitted the ray this leg belongs to. Two bytes, and it fits
+    // inside the padding the struct already had -- which is what lets the
+    // viewer separate a stray-light source's rays from the signal's.
+    std::uint16_t source       = 0;
 
     bool reachedDetector() const { return (flags & ReachedDetector) != 0; }
+};
+
+// One interaction along a single explicitly-traced ray.
+//
+// Every commercial tracer has a single-ray debugger and this one did not, even
+// though the machinery was finished: traceSingleRay already turns the
+// estimators off so the whole path tree is visible, and already records every
+// segment. What was missing was the *why* -- at this surface, at this angle,
+// against this index pair, this much reflected and this much went on.
+//
+// Filled only when a caller asks for it, so the Monte Carlo path pays one null
+// check per interaction and nothing else.
+struct RayInteraction {
+    Vec3    point;
+    QString label;              // the surface's name, resolved by the caller
+    int     surface = -1;
+    int     depth   = 0;
+
+    // Against the normal the interaction actually used -- the microfacet where
+    // the surface is rough, which is the number Fresnel was evaluated at rather
+    // than the one the smooth surface would have given.
+    double  angleDeg = 0.0;
+    double  n1 = 1.0, n2 = 1.0;
+
+    double  reflectance   = 0.0;
+    double  transmittance = 0.0;
+    double  energyIn      = 0.0;   // fraction of the emitted ray still travelling
+    double  opl           = 0.0;   // accumulated optical path length, mm
+
+    // Which body the ray was inside on the way in, and how many it was inside
+    // at once. A cemented doublet is the case this exists for.
+    int     mediumSurface = -1;
+    int     mediumDepth   = 0;
+
+    bool    tir       = false;
+    bool    detector  = false;
+    bool    scattered = false;     // the outgoing direction came from a lobe
 };
 
 // One ray arriving at the receiver, recorded with the direction it came in on.
@@ -53,6 +94,10 @@ struct DetectorArrival {
     // from -- and it is one double per branch to carry.
     float  opl          = 0.0f;
     int    detector     = 0;  // index into SimulationResult::detectors
+    // Which source emitted it. A luminaire with a signal source and a
+    // stray-light source needs its spot metrics separable, and the arrival is
+    // the only place that distinction survives to.
+    int    source       = 0;
 };
 
 // Where a receiver sits and how it is binned, carried on the result so the
@@ -98,6 +143,105 @@ struct IntensityGrid {
     double thetaCenterDeg(int i) const { return (double(i) + 0.5) * thetaStepDeg(); }
 };
 
+// The estimator's bookkeeping residual, one named channel per estimator.
+//
+// Every one of these replaces a sampled quantity with an estimate of it, so the
+// two differ run to run and agree in expectation. Booking them all to a single
+// accumulator made the energy balance close even when one contributor was
+// systematically wrong and another happened to cancel it -- which is the one
+// respect in which the closed balance could close while being wrong. Named
+// channels turn it into a real guarantee: each one's mean has to lie inside its
+// own error bar, and the test asserts exactly that.
+struct EstimatorResidual {
+    // A killed branch's energy, less the energy handed to the survivor that
+    // replaced it.
+    double roulette      = 0.0;
+    // The analytic share of the source's distribution aimed away, less the
+    // companion draw that stood for it.
+    double aiming        = 0.0;
+    // Next-event estimation: the analytic direct term, entered negative
+    // because it was added to the receiver without a ray carrying it.
+    double nextEvent     = 0.0;
+    // The sampled path's own direct hit, suppressed because next-event
+    // estimation already accounted for it.
+    double neeSuppressed = 0.0;
+    // What a BSDF sampling weight created or destroyed.
+    double bsdfWeight    = 0.0;
+
+    double total() const {
+        return roulette + aiming + nextEvent + neeSuppressed + bsdfWeight;
+    }
+    void scale(double f) {
+        roulette *= f; aiming *= f; nextEvent *= f;
+        neeSuppressed *= f; bsdfWeight *= f;
+    }
+};
+
+// Why flux was truncated, rather than how much of it was.
+//
+// At a depth limit of 160 a light guide or an integrating sphere can put real
+// flux here, and one number cannot say whether raising the limit would help or
+// whether the geometry is the problem.
+struct TruncationBreakdown {
+    double depthLimit    = 0.0;   // ran past kMaxDepth interactions
+    double stackOverflow = 0.0;   // the pending-branch stack was full
+    double degenerate    = 0.0;   // an outgoing direction that would not normalise
+    double refractFailed = 0.0;   // Snell refused where the energy split did not
+    double energyCutoff  = 0.0;   // below the cutoff, with roulette switched off
+
+    std::size_t depthLimitCount    = 0;
+    std::size_t stackOverflowCount = 0;
+    std::size_t degenerateCount    = 0;
+    std::size_t refractFailedCount = 0;
+    std::size_t energyCutoffCount  = 0;
+
+    double total() const {
+        return depthLimit + stackOverflow + degenerate + refractFailed + energyCutoff;
+    }
+    void scale(double f) {
+        depthLimit *= f; stackOverflow *= f; degenerate *= f;
+        refractFailed *= f; energyCutoff *= f;
+    }
+};
+
+// Medium-tracking anomalies, counted rather than swallowed.
+//
+// The recoveries themselves are right: exiting a body the stack never recorded
+// entering is a modelling artefact and corrupting the rest of the stack over it
+// would be worse. But a self-intersecting or non-manifold imported mesh
+// produces systematically wrong index pairs and a perfectly clean-looking
+// result, and imported CAD is the path most likely to be geometrically
+// imperfect. This is what a commercial tracer's ray-error report is.
+struct MediumAnomalies {
+    // A refractive surface was left that the branch was never recorded entering.
+    std::size_t unmatchedExit = 0;
+    // More than kMediumDepth nested media at once; the innermost was dropped.
+    std::size_t stackOverflow = 0;
+    // A face was crossed outward while the branch was recorded as being in
+    // vacuum, so the incident index had to be guessed.
+    std::size_t guessedIndex  = 0;
+
+    std::size_t total() const { return unmatchedExit + stackOverflow + guessedIndex; }
+    bool any() const { return total() > 0; }
+};
+
+// What one source of a multi-source run contributed.
+//
+// SimConfig used to hold exactly one source, placed by the scene, so any
+// luminaire with more than one LED -- and any system needing a stray-light
+// source alongside the signal source -- could not be built at all. The tracer
+// carries a source index on every emitted ray; this is where that index is
+// reported back.
+struct SourceSummary {
+    QString     label;
+    double      power   = 0.0;    // as configured, in the run's unit
+    double      flux    = 0.0;    // what reached the receivers, same unit
+    std::size_t rays    = 0;      // ray budget this source was given
+    bool        rayFile = false;  // emitted from a measured ray set
+
+    double efficiency() const { return power > 0.0 ? flux / power : 0.0; }
+};
+
 // Result of a Monte Carlo ray-trace run: detector irradiance grid + statistics
 // + sampled ray segments (x,z) for the 2D diagram.
 //
@@ -139,17 +283,43 @@ struct SimulationResult {
     // reported surface rather than a silent mis-binning.
     std::vector<DetectorFrame> detectors;
 
+    // Every source that emitted into this run, in configuration order. One
+    // entry for the ordinary single-source case, so nothing has to branch on
+    // the count to read it.
+    std::vector<SourceSummary> sources;
+
     double fluxDetector  = 0.0;   // reached the receiver
     double fluxAbsorbed  = 0.0;   // lost to surface absorption and bulk attenuation
     double fluxEscaped   = 0.0;   // left the scene without hitting anything
     double fluxTruncated = 0.0;   // dropped at the depth limit or a degenerate branch
 
-    // Bookkeeping residual of the Russian-roulette estimator: the energy a
-    // killed branch took with it, less the energy handed to the survivors that
-    // replaced it. Its expectation is exactly zero -- it is not a loss channel,
-    // it is the estimator's noise made visible -- and including it is what keeps
-    // the four physical buckets closed to the last bit.
+    // Refused by a receiver's acceptance cone. That light was not absorbed by
+    // anything -- it was refused by a measurement condition -- and an
+    // absorbed-flux figure that silently includes it is a wrong loss budget.
+    double fluxRejected  = 0.0;
+
+    // Bookkeeping residual of the estimators: the energy a killed branch took
+    // with it, less the energy handed to the survivors that replaced it, and
+    // the same for every other estimator. Its expectation is exactly zero -- it
+    // is not a loss channel, it is the estimator's noise made visible -- and
+    // including it is what keeps the physical buckets closed to the last bit.
     double fluxRoulette  = 0.0;
+
+    // The same figure, split one channel per estimator, so a channel that is
+    // systematically wrong cannot hide behind another that cancels it.
+    EstimatorResidual   residual;
+    // Why the truncated flux was truncated.
+    TruncationBreakdown truncation;
+    // Medium-tracking anomalies seen during the run.
+    MediumAnomalies     anomalies;
+
+    // True when the truncated share of the source is large enough to be worth
+    // saying so. "Where did the missing 4 % go?" is the question the energy
+    // balance exists to answer.
+    static constexpr double kTruncationWarn = 1e-3;   // 0.1 % of the source
+    bool truncationSignificant() const {
+        return sourcePower > 0.0 && fluxTruncated > kTruncationWarn * sourcePower;
+    }
 
     // Bulk (Beer-Lambert) share of fluxAbsorbed. Reported separately because it
     // is the term that scales with path length rather than with hit count, so
@@ -193,6 +363,11 @@ struct SimulationResult {
         return luminousEfficacy > 0.0 ? fluxDetector / luminousEfficacy : 0.0;
     }
 
+    // Surface overrides the scene could not be matched to, by label. An edit
+    // that no longer resolves is reported rather than dropped or -- worse --
+    // applied to whatever surface now occupies the slot it was saved against.
+    std::vector<QString> unmatchedOverrides;
+
     // Wall-clock time of the trace itself (geometry/meshing excluded).
     double traceSeconds = 0.0;
     // Wall-clock time spent building geometry + mesh + BVH (0 when cached).
@@ -207,6 +382,11 @@ struct SimulationResult {
     bool        partial       = false;
     std::size_t raysRequested = 0;
 
+    // Every interaction of a single explicitly-traced ray, in the order they
+    // happened. Empty for a Monte Carlo run: it is filled only by
+    // RayTracer::traceSingleRay, which is what the ray inspector calls.
+    std::vector<RayInteraction> interactions;
+
     // Sampled ray path legs, for the 3D viewer and the 2D diagram.
     std::vector<RaySegment> raySegments;
     // Sampled receiver arrivals, for the spot metrics and the focus sweep.
@@ -214,7 +394,8 @@ struct SimulationResult {
 
     // Sum of every energy bucket; equals sourcePower for a conserving run.
     double fluxAccounted() const {
-        return fluxDetector + fluxAbsorbed + fluxEscaped + fluxTruncated + fluxRoulette;
+        return fluxDetector + fluxAbsorbed + fluxEscaped + fluxTruncated
+             + fluxRejected + fluxRoulette;
     }
 
     // Where a point on the receiver falls in the frame the bins are indexed in.

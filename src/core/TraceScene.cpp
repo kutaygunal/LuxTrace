@@ -6,14 +6,76 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <thread>
+
+#if defined(_MSC_VER)
+#include <intrin.h>
+#include <immintrin.h>
+#endif
 
 namespace {
+
+// How many levels of the build may hand a subtree to another thread, and how
+// big a subtree has to be to be worth the hand-off. Three levels is at most
+// seven extra threads, which is the right order for a desktop machine and small
+// enough that the bookkeeping never dominates.
+//
+// The threshold is 50 000 rather than a few thousand, and that is measured
+// rather than guessed. Across the whole built-in library the largest single
+// hierarchy is 22 000 triangles -- the ball lens and the integrating sphere --
+// and the microlens array, which looks like the big one, is instanced: one
+// lenslet is tessellated once and placed twenty-five times, so its hierarchy is
+// small. At that size the build is about a millisecond, which is less than the
+// thread spawns cost, and geometry latency is dominated by OCCT's tessellation
+// rather than by the hierarchy at all: parallel and serial both measure
+// 0.11 s on those scenes, repeatably.
+//
+// It is kept because the case the threshold is set for is real and is the one
+// the app is sold on -- an imported CAD assembly of several hundred thousand
+// triangles, where the build genuinely is the wait between opening a file and
+// seeing it. Below the threshold the serial path runs, which is what the
+// numbers above say it should.
+constexpr int    kBuildSpawnDepth  = 3;
+constexpr int    kBuildParallelMin = 50000;
 
 constexpr int    kLeafSize    = 4;    // triangle count below which splitting stops paying off
 constexpr int    kSahBins     = 16;   // buckets used by the SAH split search
 constexpr int    kMaxBvhDepth = 60;   // traversal stack is sized from this
 constexpr double kBoundsPad   = 1e-7; // absolute slack so grazing hits are not culled
 
+
+// One entry of a traversal stack: which node, and how far along the ray its box
+// begins.
+//
+// Storing the entry distance is what lets a node be tested when it is *pushed*
+// rather than only when it is popped. Every node on the stack used to be a node
+// that would be popped and slab-tested even after `best` had tightened past it;
+// now a node whose box starts beyond the closest hit found since is skipped for
+// the cost of one comparison. A well-established 10 to 20 per cent on the
+// incoherent workloads a light guide produces.
+struct StackEntry {
+    int    node;
+    double entry;
+};
+
+// Where along the ray a box begins, or false when the ray never enters it
+// inside (tMin, tLimit). A template because the node type is private to
+// TraceScene and this is used from inside it.
+template <class NodeT>
+inline bool slabEntry(const NodeT& n, const Vec3& o, const Vec3& invD,
+                      double tMin, double tLimit, double& entry) {
+    double t0 = tMin, t1 = tLimit;
+    for (int a = 0; a < 3; ++a) {
+        double lo = (n.bmin[a] - o[a]) * invD[a];
+        double hi = (n.bmax[a] - o[a]) * invD[a];
+        if (lo > hi) { const double tmp = lo; lo = hi; hi = tmp; }
+        if (lo > t0) t0 = lo;
+        if (hi < t1) t1 = hi;
+        if (t0 > t1) return false;
+    }
+    entry = t0;
+    return true;
+}
 
 inline double surfaceArea(const double bmin[3], const double bmax[3]) {
     const double dx = std::max(0.0, bmax[0] - bmin[0]);
@@ -48,10 +110,49 @@ bool intersectTriangle(const Vec3& o, const Vec3& d,
     return true;
 }
 
+// ---- the wide leaf path ----------------------------------------------------
+
+namespace simd {
+
+// Probed here rather than in the kernel's own translation unit: that one is
+// compiled for AVX2, and the check that decides whether AVX2 may be executed
+// cannot live somewhere the compiler is free to use it.
+bool avx2Available() {
+    static const bool ok = [] {
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+        int info[4] = {0, 0, 0, 0};
+        __cpuid(info, 0);
+        if (info[0] < 7) return false;
+
+        __cpuid(info, 1);
+        const bool osxsave = (info[2] & (1 << 27)) != 0;
+        const bool avx     = (info[2] & (1 << 28)) != 0;
+        if (!osxsave || !avx) return false;
+        // The OS has to have enabled saving the upper half of the register
+        // file, or the instructions exist and the state does not survive a
+        // context switch.
+        const unsigned long long xcr0 = _xgetbv(0);
+        if ((xcr0 & 0x6) != 0x6) return false;
+
+        __cpuidex(info, 7, 0);
+        return (info[1] & (1 << 5)) != 0;      // AVX2
+#elif defined(__AVX2__)
+        return true;
+#else
+        return false;
+#endif
+    }();
+    return ok;
+}
+
+} // namespace simd
+
 void TraceScene::clear() {
     m_tris.clear();
     m_surfs.clear();
+    m_surfLabels.clear();
     m_nodes.clear();
+    m_packed.clear();
     m_order.clear();
     m_centroids.clear();
     m_shade.clear();
@@ -67,6 +168,56 @@ void TraceScene::clear() {
     m_boundsRadius = 0.0;
     m_det = DetectorInfo{};
     m_maxDepth = 0;
+}
+
+std::uint64_t TraceScene::surfaceIdentity(int i) const {
+    if (i < 0 || i >= int(m_surfs.size())) return 0;
+    // FNV-1a over the label, then the role bits folded in. Both halves matter:
+    // the label says which surface this was meant to be, the role says the slot
+    // still holds a surface of that character.
+    std::uint64_t h = 1469598103934665603ull;
+    const QByteArray bytes = surfaceLabel(i).toUtf8();
+    for (char c : bytes) {
+        h ^= std::uint64_t(std::uint8_t(c));
+        h *= 1099511628211ull;
+    }
+    const SceneSurface& s = m_surfs[std::size_t(i)];
+    std::uint64_t role = 0;
+    if (s.isDetector)     role |= 1u;
+    if (s.index > 0.0)    role |= 2u;
+    if (s.material.isMetal()) role |= 4u;
+    h ^= role + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
+    return h;
+}
+
+int TraceScene::resolveSurface(const QString& label, std::uint64_t identity, int hint) const {
+    const int n = int(m_surfs.size());
+    if (!label.isEmpty()) {
+        int found = -1, matches = 0;
+        for (int i = 0; i < n; ++i) {
+            if (m_surfLabels[std::size_t(i)] != label) continue;
+            ++matches;
+            // An exact identity match settles an ambiguous label immediately.
+            if (surfaceIdentity(i) == identity) return i;
+            if (found < 0) found = i;
+        }
+        // One surface carries the name: that is the surface, whatever the
+        // identity says about its role. A user who turned a mirror into a
+        // window still means that mirror.
+        if (matches == 1) return found;
+        // Named, and either ambiguous or absent. Falling back to the stored
+        // index here would be the precise failure this function exists to
+        // prevent -- landing the edit on whatever now occupies the slot -- so
+        // an override that names a surface the scene does not have resolves to
+        // nothing and gets reported.
+        return -1;
+    }
+    // No label to go on: an override from before overrides were named. The
+    // stored index is a hint and nothing more, so it is taken only when the
+    // surface sitting there is still the same kind of surface.
+    if (hint >= 0 && hint < n && (identity == 0 || surfaceIdentity(hint) == identity))
+        return hint;
+    return -1;
 }
 
 void TraceScene::build(const MeshList& meshes) {
@@ -101,6 +252,7 @@ void TraceScene::build(const MeshList& meshes) {
         // MeshSurface derives from SurfaceOptics, so the whole optical
         // description slices across in one copy.
         m_surfs.push_back(static_cast<const SceneSurface&>(m));
+        m_surfLabels.push_back(m.label);
 
         // A part placed more than once is tessellated once and traced through
         // its placements, so its triangles never enter the scene-wide list.
@@ -177,6 +329,7 @@ void TraceScene::build(const MeshList& meshes) {
             d.cosAcceptance = (m.detAcceptanceDeg >= 180.0)
                                   ? -1.0
                                   : std::cos(std::max(0.0, m.detAcceptanceDeg) * 3.14159265358979323846 / 180.0);
+            d.rejectPasses = (m.detRejectMode == SurfaceOptics::RejectMode::Pass);
             m_dets.push_back(d);
             if (!m_det.valid) m_det = d;
         }
@@ -262,6 +415,7 @@ void TraceScene::build(const MeshList& meshes) {
 
     m_nodes.reserve(2 * (m_tris.size() / kLeafSize + 1));
     buildNode(0, int(m_tris.size()), 0);
+    packLeaves(m_nodes, m_order, m_tris, m_packed);
 
     // The scene's extent, over the static hierarchy and every placement, since
     // emission aiming has to be able to promise that a direction outside it hits
@@ -320,6 +474,7 @@ void TraceScene::buildBlasFromMembers(Blas& out) {
     out.order    = std::move(m_order);
     out.nodes    = std::move(m_nodes);
     out.maxDepth = m_maxDepth;
+    packLeaves(out.nodes, out.order, out.tris, out.packed);
 
     m_tris.clear();
     m_shade.clear();
@@ -485,21 +640,80 @@ void TraceScene::boundsOf(int start, int count, double bmin[3], double bmax[3]) 
     for (int a = 0; a < 3; ++a) { bmin[a] -= kBoundsPad; bmax[a] += kBoundsPad; }
 }
 
+void TraceScene::packLeaves(std::vector<BvhNode>& nodes, const std::vector<int>& order,
+                            const std::vector<SceneTri>& tris,
+                            std::vector<simd::Tri4>& packed) {
+    packed.clear();
+    if (!simd::avx2Available()) {
+        // No wide path on this machine: mark every leaf scalar and spend
+        // nothing on a layout that will not be read.
+        for (BvhNode& n : nodes)
+            if (n.count > 0) n.right = -1;
+        return;
+    }
+
+    std::size_t groups = 0;
+    for (const BvhNode& n : nodes)
+        if (n.count > 0) groups += std::size_t(n.count / 4);
+    packed.reserve(groups);
+
+    for (BvhNode& n : nodes) {
+        if (n.count <= 0) continue;
+        const int whole = n.count / 4;
+        if (whole == 0) { n.right = -1; continue; }
+
+        n.right = int(packed.size());
+        for (int g = 0; g < whole; ++g) {
+            simd::Tri4 rec;
+            for (int lane = 0; lane < 4; ++lane) {
+                const int ti = order[std::size_t(n.left + g * 4 + lane)];
+                const SceneTri& tr = tris[std::size_t(ti)];
+                for (int a = 0; a < 3; ++a) {
+                    rec.v0[a][lane] = tr.v0[a];
+                    rec.e1[a][lane] = tr.e1[a];
+                    rec.e2[a][lane] = tr.e2[a];
+                }
+                rec.tri[lane] = ti;
+            }
+            packed.push_back(rec);
+        }
+    }
+}
+
+void TraceScene::spliceSubtree(std::vector<BvhNode>& dst, const std::vector<BvhNode>& src) {
+    const int base = int(dst.size());
+    dst.reserve(dst.size() + src.size());
+    for (const BvhNode& n : src) {
+        BvhNode copy = n;
+        if (copy.count == 0) { copy.left += base; copy.right += base; }
+        dst.push_back(copy);
+    }
+}
+
 int TraceScene::buildNode(int start, int count, int depth) {
-    const int self = int(m_nodes.size());
-    m_nodes.emplace_back();
-    m_maxDepth = std::max(m_maxDepth, depth);
+    int maxDepth = m_maxDepth;
+    const int root = buildSubtree(m_nodes, start, count, depth, maxDepth,
+                                  kBuildSpawnDepth);
+    m_maxDepth = std::max(m_maxDepth, maxDepth);
+    return root;
+}
+
+int TraceScene::buildSubtree(std::vector<BvhNode>& out, int start, int count, int depth,
+                             int& maxDepth, int threadBudget) {
+    const int self = int(out.size());
+    out.emplace_back();
+    maxDepth = std::max(maxDepth, depth);
 
     double bmin[3], bmax[3];
     boundsOf(start, count, bmin, bmax);
 
     auto storeBounds = [&]() {
-        BvhNode& n = m_nodes[std::size_t(self)];
+        BvhNode& n = out[std::size_t(self)];
         for (int a = 0; a < 3; ++a) { n.bmin[a] = bmin[a]; n.bmax[a] = bmax[a]; }
     };
     auto makeLeaf = [&]() {
         storeBounds();
-        BvhNode& n = m_nodes[std::size_t(self)];
+        BvhNode& n = out[std::size_t(self)];
         n.left  = start;
         n.right = 0;
         n.count = count;
@@ -605,11 +819,36 @@ int TraceScene::buildNode(int start, int count, int depth) {
     const int leftN = int(mid - (m_order.begin() + start));
     if (leftN == 0 || leftN == count) return makeLeaf();
 
-    const int leftChild  = buildNode(start, leftN, depth + 1);
-    const int rightChild = buildNode(start + leftN, count - leftN, depth + 1);
+    int leftChild = 0, rightChild = 0;
+    if (threadBudget > 0 && count >= kBuildParallelMin) {
+        // The two halves index disjoint ranges of the primitive order and read
+        // everything else, so they are independent from here. Each builds into
+        // its own node vector and the two are spliced in the order the serial
+        // recursion would have produced them, which is what keeps the layout --
+        // and therefore the answer -- identical.
+        std::vector<BvhNode> leftNodes, rightNodes;
+        int leftDepth = depth + 1, rightDepth = depth + 1;
+
+        std::thread worker([&] {
+            buildSubtree(rightNodes, start + leftN, count - leftN, depth + 1,
+                         rightDepth, threadBudget - 1);
+        });
+        buildSubtree(leftNodes, start, leftN, depth + 1, leftDepth, threadBudget - 1);
+        worker.join();
+
+        leftChild = int(out.size());
+        spliceSubtree(out, leftNodes);
+        rightChild = int(out.size());
+        spliceSubtree(out, rightNodes);
+        maxDepth = std::max(maxDepth, std::max(leftDepth, rightDepth));
+    } else {
+        leftChild  = buildSubtree(out, start, leftN, depth + 1, maxDepth, 0);
+        rightChild = buildSubtree(out, start + leftN, count - leftN, depth + 1,
+                                  maxDepth, 0);
+    }
 
     storeBounds();
-    BvhNode& n = m_nodes[std::size_t(self)];
+    BvhNode& n = out[std::size_t(self)];
     n.left  = leftChild;
     n.right = rightChild;
     n.count = 0;
@@ -629,42 +868,42 @@ bool TraceScene::nearestHitStatic(const Vec3& o, const Vec3& d, RayHit& hit,
 
     // Each interior node pushes both children, so the stack never needs more
     // than one entry per level plus the level being expanded.
-    int stack[kMaxBvhDepth + 2];
+    StackEntry stack[kMaxBvhDepth + 2];
     int sp = 0;
-    stack[sp++] = 0;
+    {
+        // The root box is tested here for the same reason every other node is
+        // tested at push time: a ray that misses the whole scene should learn
+        // it from one slab test.
+        double e = tMin;
+        if (slabEntry(m_nodes[0], o, invD, tMin, best, e)) stack[sp++] = {0, e};
+    }
 
     while (sp > 0) {
-        const BvhNode& n = m_nodes[std::size_t(stack[--sp])];
-
-        // Slab test against the node box, clipped to the best hit so far.
-        double t0 = tMin, t1 = best;
-        bool   miss = false;
-        for (int a = 0; a < 3; ++a) {
-            double lo = (n.bmin[a] - o[a]) * invD[a];
-            double hi = (n.bmax[a] - o[a]) * invD[a];
-            if (lo > hi) { const double tmp = lo; lo = hi; hi = tmp; }
-            if (lo > t0) t0 = lo;
-            if (hi < t1) t1 = hi;
-            if (t0 > t1) { miss = true; break; }
-        }
-        if (miss) continue;
+        const StackEntry top = stack[--sp];
+        // The box was tested when it was pushed. `best` may have tightened past
+        // it since, and one comparison is cheaper than re-running the slab test
+        // to find that out.
+        if (top.entry >= best) continue;
+        const BvhNode& n = m_nodes[std::size_t(top.node)];
 
         if (n.count > 0) {
-            for (int i = n.left; i < n.left + n.count; ++i) {
-                const int ti = m_order[std::size_t(i)];
-                const SceneTri& tr = m_tris[std::size_t(ti)];
-                double t = 0.0, u = 0.0, v = 0.0;
-                if (intersectTriangle(o, d, tr.v0, tr.e1, tr.e2, t, u, v) &&
-                    t > tMin && t < best) {
-                    best = t; bestTri = ti; bestU = u; bestV = v;
-                }
-            }
-        } else {
-            // Push the far child first so the near one is popped and tested
-            // first, tightening `best` as early as possible.
-            if (d[n.axis] < 0.0) { stack[sp++] = n.left;  stack[sp++] = n.right; }
-            else                 { stack[sp++] = n.right; stack[sp++] = n.left;  }
+            intersectLeaf(n, m_order, m_tris, m_packed, o, d, tMin,
+                          best, bestTri, bestU, bestV);
+            continue;
         }
+
+        // Test both children here rather than on the way back out, and push only
+        // the ones the ray actually enters. The near one is pushed last so it is
+        // popped first and tightens `best` as early as possible.
+        double eNear = 0.0, eFar = 0.0;
+        const int nearChild = (d[n.axis] < 0.0) ? n.right : n.left;
+        const int farChild  = (d[n.axis] < 0.0) ? n.left  : n.right;
+        const bool hitNear = slabEntry(m_nodes[std::size_t(nearChild)], o, invD,
+                                       tMin, best, eNear);
+        const bool hitFar  = slabEntry(m_nodes[std::size_t(farChild)], o, invD,
+                                       tMin, best, eFar);
+        if (hitFar)  stack[sp++] = {farChild,  eFar};
+        if (hitNear) stack[sp++] = {nearChild, eNear};
     }
 
     if (bestTri < 0) return false;
@@ -674,6 +913,113 @@ bool TraceScene::nearestHitStatic(const Vec3& o, const Vec3& d, RayHit& hit,
     hit.u    = bestU;
     hit.v    = bestV;
     return true;
+}
+
+bool TraceScene::occluded(const Vec3& o, const Vec3& d, double tMax, int ignoreSurface,
+                          double tMin) const {
+    if (!(tMax > tMin)) return false;
+    const Vec3 invD(1.0 / d.x, 1.0 / d.y, 1.0 / d.z);
+
+    // The scene-wide hierarchy. No `best` to tighten and no nearest to keep:
+    // the first triangle in the way is the whole answer, so the walk returns
+    // from inside the leaf loop rather than running to completion.
+    if (!m_nodes.empty()) {
+        StackEntry stack[kMaxBvhDepth + 2];
+        int sp = 0;
+        {
+            double e = tMin;
+            if (slabEntry(m_nodes[0], o, invD, tMin, tMax, e)) stack[sp++] = {0, e};
+        }
+        while (sp > 0) {
+            const BvhNode& n = m_nodes[std::size_t(stack[--sp].node)];
+            if (n.count > 0) {
+                for (int i = n.left; i < n.left + n.count; ++i) {
+                    const int ti = m_order[std::size_t(i)];
+                    const SceneTri& tr = m_tris[std::size_t(ti)];
+                    if (tr.surf == ignoreSurface) continue;
+                    double t = 0.0, u = 0.0, v = 0.0;
+                    if (intersectTriangle(o, d, tr.v0, tr.e1, tr.e2, t, u, v) &&
+                        t > tMin && t < tMax)
+                        return true;
+                }
+                continue;
+            }
+            // No near/far ordering: without a nearest hit to tighten, which
+            // child is visited first changes nothing but the order of the
+            // answer, and the answer is a bool.
+            double e = tMin;
+            if (slabEntry(m_nodes[std::size_t(n.left)], o, invD, tMin, tMax, e))
+                stack[sp++] = {n.left, e};
+            if (slabEntry(m_nodes[std::size_t(n.right)], o, invD, tMin, tMax, e))
+                stack[sp++] = {n.right, e};
+        }
+    }
+
+    // The placements.
+    if (m_tlasNodes.empty()) return false;
+    StackEntry stack[kMaxBvhDepth + 2];
+    int sp = 0;
+    {
+        double e = tMin;
+        if (slabEntry(m_tlasNodes[0], o, invD, tMin, tMax, e)) stack[sp++] = {0, e};
+    }
+    while (sp > 0) {
+        const BvhNode& n = m_tlasNodes[std::size_t(stack[--sp].node)];
+        if (n.count == 0) {
+            double e = tMin;
+            if (slabEntry(m_tlasNodes[std::size_t(n.left)], o, invD, tMin, tMax, e))
+                stack[sp++] = {n.left, e};
+            if (slabEntry(m_tlasNodes[std::size_t(n.right)], o, invD, tMin, tMax, e))
+                stack[sp++] = {n.right, e};
+            continue;
+        }
+        for (int i = n.left; i < n.left + n.count; ++i) {
+            const int ii = m_tlasOrder[std::size_t(i)];
+            const Instance& in = m_instances[std::size_t(ii)];
+            if (in.surf == ignoreSurface) continue;
+
+            double e = tMin;
+            struct Box { const double* bmin; const double* bmax; } box{in.bmin, in.bmax};
+            struct BoxNode { double bmin[3], bmax[3]; } bn;
+            for (int a = 0; a < 3; ++a) { bn.bmin[a] = box.bmin[a]; bn.bmax[a] = box.bmax[a]; }
+            if (!slabEntry(bn, o, invD, tMin, tMax, e)) continue;
+
+            const Vec3  lo2 = in.toLocal(o);
+            const Vec3  ld  = in.dirToLocal(d);
+            const Blas& bl  = m_blas[std::size_t(in.blas)];
+            if (bl.nodes.empty()) continue;
+
+            const Vec3 linv(1.0 / ld.x, 1.0 / ld.y, 1.0 / ld.z);
+            StackEntry bstack[kMaxBvhDepth + 2];
+            int bsp = 0;
+            {
+                double be = tMin;
+                if (slabEntry(bl.nodes[0], lo2, linv, tMin, tMax, be))
+                    bstack[bsp++] = {0, be};
+            }
+            while (bsp > 0) {
+                const BvhNode& b = bl.nodes[std::size_t(bstack[--bsp].node)];
+                if (b.count > 0) {
+                    for (int k = b.left; k < b.left + b.count; ++k) {
+                        const int ti = bl.order[std::size_t(k)];
+                        const SceneTri& tr = bl.tris[std::size_t(ti)];
+                        double t = 0.0, u = 0.0, v = 0.0;
+                        if (intersectTriangle(lo2, ld, tr.v0, tr.e1, tr.e2, t, u, v) &&
+                            t > tMin && t < tMax)
+                            return true;
+                    }
+                    continue;
+                }
+                double be = tMin;
+                if (bsp + 2 >= int(sizeof(bstack) / sizeof(bstack[0]))) continue;
+                if (slabEntry(bl.nodes[std::size_t(b.left)], lo2, linv, tMin, tMax, be))
+                    bstack[bsp++] = {b.left, be};
+                if (slabEntry(bl.nodes[std::size_t(b.right)], lo2, linv, tMin, tMax, be))
+                    bstack[bsp++] = {b.right, be};
+            }
+        }
+    }
+    return false;
 }
 
 bool TraceScene::nearestHitInstanced(const Vec3& o, const Vec3& d, RayHit& hit,
@@ -690,38 +1036,36 @@ bool TraceScene::nearestHitInstanced(const Vec3& o, const Vec3& d, RayHit& hit,
     int    bestTri = -1;
     double bestU   = 0.0, bestV = 0.0;
 
-    int stack[kMaxBvhDepth + 2];
+    StackEntry stack[kMaxBvhDepth + 2];
     int sp = 0;
-    stack[sp++] = 0;
+    {
+        // The root box is tested here for the same reason every other node is
+        // tested at push time: a ray that misses the whole scene should learn
+        // it from one slab test.
+        double e = tMin;
+        if (slabEntry(m_nodes[0], o, invD, tMin, best, e)) stack[sp++] = {0, e};
+    }
 
     while (sp > 0) {
-        const BvhNode& n = m_nodes[std::size_t(stack[--sp])];
-        double t0 = tMin, t1 = best;
-        bool   miss = false;
-        for (int a = 0; a < 3; ++a) {
-            double lo = (n.bmin[a] - o[a]) * invD[a];
-            double hi = (n.bmax[a] - o[a]) * invD[a];
-            if (lo > hi) { const double tmp = lo; lo = hi; hi = tmp; }
-            if (lo > t0) t0 = lo;
-            if (hi < t1) t1 = hi;
-            if (t0 > t1) { miss = true; break; }
-        }
-        if (miss) continue;
+        const StackEntry top = stack[--sp];
+        if (top.entry >= best) continue;
+        const BvhNode& n = m_nodes[std::size_t(top.node)];
 
         if (n.count > 0) {
-            for (int i = n.left; i < n.left + n.count; ++i) {
-                const int ti = m_order[std::size_t(i)];
-                const SceneTri& tr = m_tris[std::size_t(ti)];
-                double t = 0.0, u = 0.0, v = 0.0;
-                if (intersectTriangle(o, d, tr.v0, tr.e1, tr.e2, t, u, v) &&
-                    t > tMin && t < best) {
-                    best = t; bestTri = ti; bestU = u; bestV = v;
-                }
-            }
-        } else {
-            if (d[n.axis] < 0.0) { stack[sp++] = n.left;  stack[sp++] = n.right; }
-            else                 { stack[sp++] = n.right; stack[sp++] = n.left;  }
+            intersectLeaf(n, m_order, m_tris, m_packed, o, d, tMin,
+                          best, bestTri, bestU, bestV);
+            continue;
         }
+
+        double eNear = 0.0, eFar = 0.0;
+        const int nearChild = (d[n.axis] < 0.0) ? n.right : n.left;
+        const int farChild  = (d[n.axis] < 0.0) ? n.left  : n.right;
+        const bool hitNear = slabEntry(m_nodes[std::size_t(nearChild)], o, invD,
+                                       tMin, best, eNear);
+        const bool hitFar  = slabEntry(m_nodes[std::size_t(farChild)], o, invD,
+                                       tMin, best, eFar);
+        if (hitFar)  stack[sp++] = {farChild,  eFar};
+        if (hitNear) stack[sp++] = {nearChild, eNear};
     }
 
     if (bestTri < 0) return instHit;

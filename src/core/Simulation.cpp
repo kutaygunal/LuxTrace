@@ -3,8 +3,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <deque>
+#include <future>
 #include <mutex>
+#include <vector>
 
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
@@ -34,6 +37,13 @@ struct CacheKey {
 };
 
 struct SceneCache {
+    // Guards the maps below and nothing else. It is emphatically *not* held
+    // across a build: entryFor() used to call buildData() -- OCCT tessellation
+    // plus a full hierarchy build, potentially seconds -- with this locked. A
+    // parameter sweep serialised every geometry build behind it, and worse, the
+    // UI's geometry worker blocked behind a running study, so the 3D viewport
+    // froze on a background job it had nothing to do with. Responsiveness is
+    // what the whole worker architecture exists to protect.
     std::mutex mutex;
     // Default-parameter geometry, one slot per scene. Pinned for the lifetime of
     // the process so `sceneFor` can keep handing out plain references.
@@ -49,6 +59,25 @@ struct SceneCache {
         Simulation::SceneRef                                data;
     };
     std::deque<ImportedEntry> imported;
+
+    // Builds that are running right now, keyed the way the cache is.
+    //
+    // A second request for geometry already being built waits on the first
+    // one's future instead of building it a second time -- which is the
+    // ordinary case when a slider is dragged back to a value the previous step
+    // is still building.
+    struct InFlight {
+        CacheKey                                 key;
+        std::shared_future<Simulation::SceneRef> future;
+    };
+    std::vector<InFlight> building;
+
+    struct InFlightImport {
+        std::shared_ptr<const GeometryProvider::SceneSetup> setup;
+        int                                                 detBins = 0;
+        std::shared_future<Simulation::SceneRef>            future;
+    };
+    std::vector<InFlightImport> buildingImports;
 };
 
 SceneCache& cache() {
@@ -80,36 +109,36 @@ Simulation::SceneRef buildData(GeometryProvider::Scene scene, const SceneParams&
     return buildFromSetup(GeometryProvider::build(scene, params), detBins, seconds);
 }
 
-// Builds and caches one scene. The caller must hold the cache mutex.
-Simulation::SceneRef entryFor(SceneCache& c, GeometryProvider::Scene scene,
-                              const SceneParams& params, int detBins,
-                              double* buildSecondsOut) {
-    double seconds = 0.0;
-    const std::size_t idx = std::size_t(int(scene));
-    const bool isDefault  = (params == GeometryProvider::defaultParams(scene)) && detBins <= 0;
+bool isDefaultKey(const CacheKey& key) {
+    const auto scene = GeometryProvider::Scene(key.scene);
+    return key.detBins <= 0 && key.params == GeometryProvider::defaultParams(scene);
+}
 
-    Simulation::SceneRef ref;
-    if (isDefault) {
-        if (!c.pinned[idx]) c.pinned[idx] = buildData(scene, params, detBins, seconds);
-        ref = c.pinned[idx];
-    } else {
-        const CacheKey key{int(scene), params, detBins};
-        auto it = std::find_if(c.variants.begin(), c.variants.end(),
-                               [&](const auto& e) { return e.first == key; });
-        if (it != c.variants.end()) {
-            // Move to the front: a slider sweep revisits the same few sets.
-            auto entry = std::move(*it);
-            c.variants.erase(it);
-            c.variants.push_front(std::move(entry));
-        } else {
-            c.variants.emplace_front(key, buildData(scene, params, detBins, seconds));
-            while (c.variants.size() > kVariantCacheSize) c.variants.pop_back();
-        }
-        ref = c.variants.front().second;
+// The cached entry for a key, or null. The caller must hold the cache mutex.
+Simulation::SceneRef lookupLocked(SceneCache& c, const CacheKey& key) {
+    if (isDefaultKey(key)) return c.pinned[std::size_t(key.scene)];
+
+    auto it = std::find_if(c.variants.begin(), c.variants.end(),
+                           [&](const auto& e) { return e.first == key; });
+    if (it == c.variants.end()) return {};
+    // Move to the front: a slider sweep revisits the same few sets.
+    auto entry = std::move(*it);
+    c.variants.erase(it);
+    c.variants.push_front(std::move(entry));
+    return c.variants.front().second;
+}
+
+// Files a finished build. The caller must hold the cache mutex.
+void storeLocked(SceneCache& c, const CacheKey& key, const Simulation::SceneRef& ref) {
+    if (!ref) return;
+    if (isDefaultKey(key)) {
+        // Pinned for the lifetime of the process, so sceneFor() can keep handing
+        // out plain references.
+        c.pinned[std::size_t(key.scene)] = ref;
+        return;
     }
-
-    if (buildSecondsOut) *buildSecondsOut = seconds;
-    return ref;
+    c.variants.emplace_front(key, ref);
+    while (c.variants.size() > kVariantCacheSize) c.variants.pop_back();
 }
 
 } // namespace
@@ -117,10 +146,60 @@ Simulation::SceneRef entryFor(SceneCache& c, GeometryProvider::Scene scene,
 Simulation::SceneRef Simulation::dataFor(GeometryProvider::Scene scene,
                                          const SceneParams& params,
                                          double* buildSecondsOut, int detectorBins) {
-    SceneCache& c = cache();
-    std::lock_guard<std::mutex> lock(c.mutex);
-    return entryFor(c, scene, GeometryProvider::sanitise(scene, params), detectorBins,
-                    buildSecondsOut);
+    if (buildSecondsOut) *buildSecondsOut = 0.0;
+
+    const SceneParams sane = GeometryProvider::sanitise(scene, params);
+    const CacheKey    key{int(scene), sane, detectorBins};
+    SceneCache&       c = cache();
+
+    std::promise<SceneRef>   promise;
+    std::shared_future<SceneRef> waitOn;
+    bool building = false;
+    {
+        std::lock_guard<std::mutex> lock(c.mutex);
+        if (SceneRef hit = lookupLocked(c, key)) return hit;
+
+        auto it = std::find_if(c.building.begin(), c.building.end(),
+                               [&](const SceneCache::InFlight& b) { return b.key == key; });
+        if (it != c.building.end()) {
+            waitOn = it->future;                 // somebody is already on it
+        } else {
+            waitOn = promise.get_future().share();
+            c.building.push_back({key, waitOn});
+            building = true;
+        }
+    }
+    // Outside the lock, both ways: waiting for somebody else's build must not
+    // block a third request for geometry that is already cached.
+    if (!building) return waitOn.get();
+
+    double   seconds = 0.0;
+    SceneRef built;
+    try {
+        built = buildData(scene, sane, detectorBins, seconds);
+    } catch (...) {
+        {
+            std::lock_guard<std::mutex> lock(c.mutex);
+            std::erase_if(c.building, [&](const SceneCache::InFlight& b) {
+                return b.key == key;
+            });
+        }
+        // Everyone waiting on this key gets the same failure rather than a
+        // future nobody will ever fulfil.
+        promise.set_exception(std::current_exception());
+        throw;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(c.mutex);
+        storeLocked(c, key, built);
+        std::erase_if(c.building, [&](const SceneCache::InFlight& b) {
+            return b.key == key;
+        });
+    }
+    promise.set_value(built);
+    if (buildSecondsOut) *buildSecondsOut = seconds;
+    return built;
 }
 
 Simulation::SceneRef Simulation::dataFor(
@@ -130,23 +209,63 @@ Simulation::SceneRef Simulation::dataFor(
     if (!setup) return {};
 
     SceneCache& c = cache();
-    std::lock_guard<std::mutex> lock(c.mutex);
-    auto it = std::find_if(c.imported.begin(), c.imported.end(),
-                           [&](const SceneCache::ImportedEntry& e) {
-                               return e.setup == setup && e.detBins == detectorBins;
-                           });
-    if (it != c.imported.end()) {
-        auto entry = std::move(*it);
-        c.imported.erase(it);
-        c.imported.push_front(std::move(entry));
-        return c.imported.front().data;
+
+    std::promise<SceneRef>       promise;
+    std::shared_future<SceneRef> waitOn;
+    bool building = false;
+    {
+        std::lock_guard<std::mutex> lock(c.mutex);
+        auto it = std::find_if(c.imported.begin(), c.imported.end(),
+                               [&](const SceneCache::ImportedEntry& e) {
+                                   return e.setup == setup && e.detBins == detectorBins;
+                               });
+        if (it != c.imported.end()) {
+            auto entry = std::move(*it);
+            c.imported.erase(it);
+            c.imported.push_front(std::move(entry));
+            return c.imported.front().data;
+        }
+
+        auto inFlight = std::find_if(c.buildingImports.begin(), c.buildingImports.end(),
+                                     [&](const SceneCache::InFlightImport& b) {
+                                         return b.setup == setup && b.detBins == detectorBins;
+                                     });
+        if (inFlight != c.buildingImports.end()) {
+            waitOn = inFlight->future;
+        } else {
+            waitOn = promise.get_future().share();
+            c.buildingImports.push_back({setup, detectorBins, waitOn});
+            building = true;
+        }
+    }
+    if (!building) return waitOn.get();
+
+    auto forget = [&] {
+        std::lock_guard<std::mutex> lock(c.mutex);
+        std::erase_if(c.buildingImports, [&](const SceneCache::InFlightImport& b) {
+            return b.setup == setup && b.detBins == detectorBins;
+        });
+    };
+
+    double   seconds = 0.0;
+    SceneRef built;
+    try {
+        built = buildFromSetup(*setup, detectorBins, seconds);
+    } catch (...) {
+        forget();
+        promise.set_exception(std::current_exception());
+        throw;
     }
 
-    double seconds = 0.0;
-    c.imported.push_front({setup, detectorBins, buildFromSetup(*setup, detectorBins, seconds)});
-    while (c.imported.size() > kImportedCacheSize) c.imported.pop_back();
+    {
+        std::lock_guard<std::mutex> lock(c.mutex);
+        c.imported.push_front({setup, detectorBins, built});
+        while (c.imported.size() > kImportedCacheSize) c.imported.pop_back();
+    }
+    forget();
+    promise.set_value(built);
     if (buildSecondsOut) *buildSecondsOut = seconds;
-    return c.imported.front().data;
+    return built;
 }
 
 Simulation::SceneRef Simulation::dataFor(const SimConfig& cfg, double* buildSecondsOut) {
@@ -184,10 +303,81 @@ SourceConfig Simulation::sourceFor(const SimConfig& cfg, const SceneData& data) 
     src.power        = cfg.power;
     src.fluxUnit     = cfg.fluxUnit;
     src.polarisationState = cfg.polarisationState;
+    src.rayFile            = cfg.rayFile;
+    src.rayFileScale       = cfg.rayFileScale;
+    src.rayFileWavelengths = cfg.rayFileWavelengths;
+    src.label = cfg.rayFile && !cfg.rayFile->label.isEmpty()
+                    ? cfg.rayFile->label
+                    : QStringLiteral("Source 1");
     // Every option is traced exactly as configured -- the scene never silently
     // substitutes one source for another, so the efficiency reported always
     // matches the source selected.
     return src;
+}
+
+std::vector<SourceConfig> Simulation::sourcesFor(const SimConfig& cfg,
+                                                 const SceneData& data) {
+    std::vector<SourceConfig> out;
+    out.reserve(std::size_t(cfg.sourceCount()));
+    out.push_back(sourceFor(cfg, data));
+    if (cfg.extraSources.empty()) return out;
+
+    const gp_Pnt base = data.sourceOrigin;
+    int n = 2;
+    for (const SourceSpec& s : cfg.extraSources) {
+        SourceConfig c;
+        c.type         = s.type;
+        c.shape        = s.shape;
+        c.spectrum     = s.spectrum;
+        c.halfAngleDeg = s.halfAngleDeg;
+        c.sizeA        = s.sizeA;
+        c.sizeB        = s.sizeB;
+        c.beamRadius   = s.beamRadius;
+        c.power        = s.power;
+        // The run reports in one unit, and the first source fixes it.
+        c.fluxUnit     = cfg.fluxUnit;
+        c.polarisationState = s.polarisationState;
+        c.origin = s.absolute
+                       ? s.offset
+                       : gp_Pnt(base.X() + s.offset.X(),
+                                base.Y() + s.offset.Y(),
+                                base.Z() + s.offset.Z());
+        c.axis   = s.useSceneAxis ? data.sourceAxis : s.axis;
+        c.rayFile            = s.rayFile;
+        c.rayFileScale       = s.rayFileScale;
+        c.rayFileWavelengths = s.rayFileWavelengths;
+        c.label = !s.label.isEmpty()
+                      ? s.label
+                      : (s.rayFile && !s.rayFile->label.isEmpty()
+                             ? s.rayFile->label
+                             : QStringLiteral("Source %1").arg(n));
+        ++n;
+        out.push_back(c);
+    }
+
+    // Share the run budget in proportion to power. That is the variance-optimal
+    // split -- a source carrying a tenth of the light gets a tenth of the rays,
+    // and every source ends the run with a comparable error bar -- and it keeps
+    // the cost of adding a second LED at zero.
+    //
+    // Every source keeps at least one ray, so a source configured at zero power
+    // still appears in the report as the zero it is rather than disappearing.
+    double totalPower = 0.0;
+    for (const SourceConfig& c : out) totalPower += std::max(0.0, c.power);
+    const int budget = std::max(int(out.size()), cfg.rays);
+
+    int handed = 0;
+    for (std::size_t i = 0; i + 1 < out.size(); ++i) {
+        const double share = totalPower > 0.0 ? std::max(0.0, out[i].power) / totalPower
+                                              : 1.0 / double(out.size());
+        const int r = std::max(1, int(std::llround(share * double(budget))));
+        out[i].rays = std::min(r, budget - handed - int(out.size() - i - 1));
+        handed += out[i].rays;
+    }
+    // The last source takes the remainder, so the budget is spent exactly and
+    // the ray count a user asked for is the ray count the run traces.
+    out.back().rays = std::max(1, budget - handed);
+    return out;
 }
 
 SourceConfig Simulation::sourceFor(GeometryProvider::Scene scene,
@@ -223,7 +413,7 @@ SimulationResult Simulation::run(const SimConfig& cfg, const TraceControl& ctl) 
     // entry underneath without the geometry disappearing.
     const SceneRef data = dataFor(cfg, &buildSeconds);
 
-    const SourceConfig src = sourceFor(cfg, *data);
+    const std::vector<SourceConfig> srcs = sourcesFor(cfg, *data);
 
     TraceOptions opt;
     opt.threads = cfg.threads;
@@ -234,7 +424,7 @@ SimulationResult Simulation::run(const SimConfig& cfg, const TraceControl& ctl) 
     opt.surfaceOverrides = cfg.surfaceOverrides;
 
     SimulationResult res;
-    RayTracer::trace(data->scene, src, res, opt, ctl);
+    RayTracer::trace(data->scene, srcs, res, opt, ctl);
     res.buildSeconds = buildSeconds;
     return res;
 }

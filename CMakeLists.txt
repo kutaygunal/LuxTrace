@@ -28,7 +28,10 @@ add_library(optics_core STATIC
     src/core/Optics.h
     src/core/SurfaceOptics.h
     src/core/Sampling.h src/core/Sampling.cpp
+    src/core/ThreadPool.h src/core/ThreadPool.cpp
     src/core/Material.h src/core/Material.cpp
+    src/core/RayFile.h src/core/RayFile.cpp
+    src/core/MaterialFile.h src/core/MaterialFile.cpp
     src/core/Bsdf.h src/core/Bsdf.cpp
     src/core/Coating.h src/core/Coating.cpp
     src/core/Polarisation.h src/core/Polarisation.cpp
@@ -38,6 +41,7 @@ add_library(optics_core STATIC
     src/core/CadImport.h src/core/CadImport.cpp
     src/core/MeshBuilder.h src/core/MeshBuilder.cpp
     src/core/TraceScene.h src/core/TraceScene.cpp
+    src/core/TraceSceneSimd.h src/core/TraceSceneSimd.cpp
     src/core/RayTracer.h src/core/RayTracer.cpp
     src/core/SimulationResult.h src/core/SimulationResult.cpp
     src/core/Simulation.h src/core/Simulation.cpp
@@ -87,6 +91,10 @@ qt_add_executable(LuxTrace
     src/ui/HeatmapWidget.h src/ui/HeatmapWidget.cpp
     src/ui/RayDiagramWidget.h src/ui/RayDiagramWidget.cpp
     src/ui/ControlsPanel.h src/ui/ControlsPanel.cpp
+    src/ui/ImportDialog.h src/ui/ImportDialog.cpp
+    src/ui/SurfaceInspector.h src/ui/SurfaceInspector.cpp
+    src/ui/EnergyBarWidget.h src/ui/EnergyBarWidget.cpp
+    src/ui/SourceDialog.h src/ui/SourceDialog.cpp
     src/ui/OcctViewWidget.h src/ui/OcctViewWidget.cpp
     src/ui/MainWindow.h src/ui/MainWindow.cpp
 )
@@ -110,6 +118,20 @@ endif()
 # The ray tracer is only meaningful in an optimised build. /fp:fast is
 # deliberately NOT used: the slab test tolerates the NaN that an axis-aligned
 # ray produces, and fast math is allowed to assume NaNs never occur.
+# The four-wide leaf intersection is the one translation unit compiled for
+# AVX2, and it is guarded at run time by a CPUID probe that lives elsewhere.
+# /fp:precise is stated rather than assumed: it is what stops the compiler
+# fusing a multiply and an add into an FMA, which would re-round an
+# intermediate and make the wide path disagree with the scalar one in the last
+# bits -- and being bit-identical is the whole claim.
+if(MSVC)
+    set_source_files_properties(src/core/TraceSceneSimd.cpp PROPERTIES
+        COMPILE_OPTIONS "/arch:AVX2;/fp:precise")
+else()
+    set_source_files_properties(src/core/TraceSceneSimd.cpp PROPERTIES
+        COMPILE_OPTIONS "-mavx2;-ffp-contract=off")
+endif()
+
 if(MSVC)
     target_compile_options(optics_core PRIVATE /W3 /MP)
     target_compile_options(LuxTrace PRIVATE /W3 /MP)

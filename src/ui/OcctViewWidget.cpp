@@ -20,6 +20,9 @@
 #include <Poly_Triangulation.hxx>
 #include <Prs3d_Drawer.hxx>
 #include <Prs3d_Presentation.hxx>
+#include <Prs3d_Text.hxx>
+#include <Prs3d_TextAspect.hxx>
+#include <TCollection_ExtendedString.hxx>
 #include <PrsMgr_PresentationManager.hxx>
 #include <Quantity_Color.hxx>
 #include <SelectMgr_EntityOwner.hxx>
@@ -53,7 +56,17 @@ public:
         Quantity_Color c;
     };
 
-    explicit RayCloud(std::vector<Vertex> vertices) : m_verts(std::move(vertices)) {}
+    // A word anchored in the scene. Only the overlay uses these: a ray cloud
+    // has nothing to say, and a scene that names its own source and receiver
+    // needs no documentation to be read.
+    struct Label {
+        gp_Pnt         at;
+        QString        text;
+        Quantity_Color colour;
+    };
+
+    explicit RayCloud(std::vector<Vertex> vertices, std::vector<Label> labels = {})
+        : m_verts(std::move(vertices)), m_labels(std::move(labels)) {}
 
 protected:
     void Compute(const Handle(PrsMgr_PresentationManager)&,
@@ -69,6 +82,16 @@ protected:
             new Graphic3d_AspectLine3d(Quantity_Color(1.0, 0.78, 0.35, Quantity_TOC_RGB),
                                        Aspect_TOL_SOLID, 1.0));
         group->AddPrimitiveArray(arr);
+
+        for (const Label& l : m_labels) {
+            Handle(Prs3d_TextAspect) aspect = new Prs3d_TextAspect();
+            aspect->SetColor(l.colour);
+            aspect->SetHeight(13.0);
+            Handle(Graphic3d_Group) tg = thePrs->NewGroup();
+            Prs3d_Text::Draw(tg, aspect,
+                             TCollection_ExtendedString(l.text.toStdU16String().c_str()),
+                             l.at);
+        }
     }
 
     // Deliberately empty: rays are a visual overlay, and making tens of
@@ -80,6 +103,7 @@ protected:
 
 private:
     std::vector<Vertex> m_verts;
+    std::vector<Label>  m_labels;
 };
 
 IMPLEMENT_STANDARD_RTTIEXT(RayCloud, AIS_InteractiveObject)
@@ -227,6 +251,34 @@ void OcctViewWidget::setScene(GeometryProvider::Scene scene,
         for (const auto& s : m_shapes) m_context->Remove(s, Standard_False);
         m_shapes.clear();
         m_shapes.reserve(surfaces.size());
+        // A different set of parts is a different set of things to hide, so the
+        // visibility flags start again with them.
+        m_visible.assign(surfaces.size(), true);
+        m_highlighted = -1;
+    }
+    if (m_visible.size() != surfaces.size()) m_visible.assign(surfaces.size(), true);
+
+    // The receivers, remembered as frames so the overlay can outline them and
+    // draw their acceptance cones.
+    m_receivers.clear();
+    for (const OpticalSurface& os : surfaces) {
+        if (!os.isDetector) continue;
+        // The mesher owns the receiver rectangle, so this is what MeshBuilder
+        // would derive: the shape's own bounding box in the surface's frame.
+        Bnd_Box b;
+        BRepBndLib::Add(os.shape, b);
+        if (b.IsVoid()) continue;
+        double xm, ym, zm, xM, yM, zM;
+        b.Get(xm, ym, zm, xM, yM, zM);
+        ReceiverGlyph g;
+        g.centre = gp_Pnt(0.5 * (xm + xM), 0.5 * (ym + yM), 0.5 * (zm + zM));
+        g.u = gp_Dir(1, 0, 0);
+        g.v = gp_Dir(0, 1, 0);
+        g.n = gp_Dir(0, 0, 1);
+        g.w = xM - xm;
+        g.h = yM - ym;
+        g.acceptanceDeg = os.detAcceptanceDeg;
+        m_receivers.push_back(g);
     }
 
     Bnd_Box bounds;
@@ -277,6 +329,13 @@ void OcctViewWidget::setScene(GeometryProvider::Scene scene,
             drawer->SetDeviationAngle(os.meshAngle);
         }
 
+        // The selected surface reads as selected: a scene tree and a viewport
+        // that disagree about what is picked are worse than either alone.
+        if (int(i) == m_highlighted) {
+            shape->SetColor(Quantity_Color(1.0, 0.72, 0.25, Quantity_TOC_RGB));
+            shape->SetTransparency(0.25f);
+        }
+
         shape->SetDisplayMode(AIS_Shaded);
         if (fresh) {
             // Selection mode 0 is the whole shape: that is what makes a surface
@@ -301,6 +360,13 @@ void OcctViewWidget::setScene(GeometryProvider::Scene scene,
     m_sceneKey  = key;
     m_haveScene = true;
 
+    // Hidden parts stay hidden across a parameter edit: the user hid them to be
+    // able to see something, and a spin-box step is not a reason to undo that.
+    for (std::size_t i = 0; i < m_shapes.size(); ++i)
+        if (i < m_visible.size() && !m_visible[i])
+            m_context->Erase(m_shapes[i], Standard_False);
+
+    rebuildOverlay();
     applyClip();
     if (sceneChanged) {
         resetView();
@@ -312,6 +378,263 @@ void OcctViewWidget::setScene(GeometryProvider::Scene scene,
         m_view->Invalidate();
         update();
     }
+}
+
+// ---- the overlay -----------------------------------------------------------
+//
+// A source glyph, the receiver planes with their acceptance cones, a corner
+// axis triad and a scale bar.
+//
+// A first-time user cannot tell which grey translucent object is the
+// measurement plane and which is the optic, and cannot tell how big any of it
+// is. These four additions do more for comprehension than any amount of
+// documentation, and they are lines: one primitive array, drawn the way the
+// rays already are.
+
+void OcctViewWidget::setSourceGlyph(const gp_Pnt& origin, const gp_Dir& axis,
+                                    double halfAngleDeg, bool collimated,
+                                    double beamRadius) {
+    m_sourceOrigin     = origin;
+    m_sourceAxis       = axis;
+    m_sourceHalfAngle  = halfAngleDeg;
+    m_sourceCollimated = collimated;
+    m_sourceBeamRadius = beamRadius;
+    m_haveSource       = true;
+    rebuildOverlay();
+}
+
+void OcctViewWidget::clearSourceGlyph() {
+    m_haveSource = false;
+    rebuildOverlay();
+}
+
+void OcctViewWidget::setOverlaysVisible(bool on) {
+    if (m_overlaysOn == on) return;
+    m_overlaysOn = on;
+    rebuildOverlay();
+}
+
+void OcctViewWidget::setSurfaceVisible(int index, bool visible) {
+    if (index < 0 || index >= int(m_shapes.size())) return;
+    if (int(m_visible.size()) <= index) m_visible.resize(m_shapes.size(), true);
+    m_visible[std::size_t(index)] = visible;
+    if (m_context.IsNull()) return;
+    if (visible) m_context->Display(m_shapes[std::size_t(index)], AIS_Shaded, 0,
+                                    Standard_False);
+    else         m_context->Erase(m_shapes[std::size_t(index)], Standard_False);
+    if (!m_view.IsNull()) { m_view->Invalidate(); update(); }
+}
+
+void OcctViewWidget::setHighlightedSurface(int index) {
+    if (m_highlighted == index) return;
+    m_highlighted = index;
+    if (m_context.IsNull()) return;
+    // Repaint every part rather than tracking the previous one: the list is a
+    // handful of shapes, and a stale highlight is the bug this exists to avoid.
+    for (std::size_t i = 0; i < m_shapes.size(); ++i) {
+        if (int(i) == index) {
+            m_shapes[i]->SetColor(Quantity_Color(1.0, 0.72, 0.25, Quantity_TOC_RGB));
+            m_shapes[i]->SetTransparency(0.25f);
+        }
+        m_context->Redisplay(m_shapes[i], Standard_False, Standard_False);
+    }
+    if (!m_view.IsNull()) { m_view->Invalidate(); update(); }
+}
+
+void OcctViewWidget::rebuildOverlay() {
+    if (m_context.IsNull()) return;
+    if (!m_overlay.IsNull()) {
+        m_context->Remove(m_overlay, Standard_False);
+        m_overlay.Nullify();
+    }
+    if (!m_overlaysOn) {
+        if (!m_view.IsNull()) { m_view->Invalidate(); update(); }
+        return;
+    }
+
+    const double scale = std::max(1e-6, m_sceneSize);
+    std::vector<RayCloud::Vertex> v;
+    std::vector<RayCloud::Label>  labels;
+
+    auto line = [&](const gp_Pnt& a, const gp_Pnt& b, const Quantity_Color& c) {
+        v.push_back({a, c});
+        v.push_back({b, c});
+    };
+    auto ring = [&](const gp_Pnt& centre, const gp_Dir& n, double radius,
+                    const Quantity_Color& c, int steps = 48) {
+        gp_Vec up(0, 0, 1);
+        if (std::fabs(n.Dot(gp_Dir(0, 0, 1))) > 0.99) up = gp_Vec(1, 0, 0);
+        gp_Vec e1 = gp_Vec(n).Crossed(up);
+        if (e1.Magnitude() < 1e-12) return;
+        e1.Normalize();
+        gp_Vec e2 = gp_Vec(n).Crossed(e1);
+        if (e2.Magnitude() < 1e-12) return;
+        e2.Normalize();
+        gp_Pnt prev;
+        for (int i = 0; i <= steps; ++i) {
+            const double t = 2.0 * M_PI * double(i) / double(steps);
+            const gp_Vec off = e1 * (radius * std::cos(t)) + e2 * (radius * std::sin(t));
+            const gp_Pnt p(centre.X() + off.X(), centre.Y() + off.Y(), centre.Z() + off.Z());
+            if (i > 0) line(prev, p, c);
+            prev = p;
+        }
+    };
+
+    // ---- the source ---------------------------------------------------------
+    if (m_haveSource) {
+        // Warmer and more saturated than the ray amber, so the emitter is not
+        // mistaken for the brightest bundle leaving it.
+        const Quantity_Color amber(1.0, 0.52, 0.12, Quantity_TOC_RGB);
+        const double reach = 0.22 * scale;
+        const gp_Vec ax(m_sourceAxis);
+
+        labels.push_back({m_sourceOrigin.Translated(gp_Vec(0, 0, 0.05 * scale)),
+                          QStringLiteral("source"), amber});
+
+        // A short cross at the emitter, so its position is unambiguous even
+        // when the cone is edge-on.
+        const double tick = 0.03 * scale;
+        for (int a = 0; a < 3; ++a) {
+            gp_Vec d(a == 0 ? tick : 0.0, a == 1 ? tick : 0.0, a == 2 ? tick : 0.0);
+            line(m_sourceOrigin.Translated(-d), m_sourceOrigin.Translated(d), amber);
+        }
+
+        if (m_sourceCollimated) {
+            // A parallel bundle: the beam's own circle, extruded a little.
+            const double r = m_sourceBeamRadius > 0.0 ? m_sourceBeamRadius : 0.05 * scale;
+            ring(m_sourceOrigin, m_sourceAxis, r, amber);
+            const gp_Pnt tip = m_sourceOrigin.Translated(ax * reach);
+            ring(tip, m_sourceAxis, r, amber);
+            for (int i = 0; i < 4; ++i) {
+                const double t = 2.0 * M_PI * double(i) / 4.0;
+                gp_Vec up(0, 0, 1);
+                if (std::fabs(m_sourceAxis.Dot(gp_Dir(0, 0, 1))) > 0.99) up = gp_Vec(1, 0, 0);
+                gp_Vec e1 = ax.Crossed(up); if (e1.Magnitude() < 1e-12) continue;
+                e1.Normalize();
+                gp_Vec e2 = ax.Crossed(e1); e2.Normalize();
+                const gp_Vec off = e1 * (r * std::cos(t)) + e2 * (r * std::sin(t));
+                line(m_sourceOrigin.Translated(off), tip.Translated(off), amber);
+            }
+        } else {
+            // The emission cone, as eight ribs and the circle they end on.
+            //
+            // The radius is fixed and the *length* follows from the angle,
+            // rather than the other way round. Taking a fixed length and
+            // opening it by tan(half) makes a near-hemispherical source -- the
+            // default for a Lambertian emitter -- draw a cone fifty times the
+            // size of the scene, and a very narrow one draw a spike too short
+            // to see. This way a wide source reads as a flat disc and a narrow
+            // one as a long spike, which is what those two things look like.
+            const double half  = std::clamp(m_sourceHalfAngle, 1.0, 89.5);
+            const double r     = 0.10 * scale;
+            const double reachC = std::clamp(r / std::tan(half * M_PI / 180.0),
+                                             0.01 * scale, 0.30 * scale);
+            const gp_Pnt tip   = m_sourceOrigin.Translated(ax * reachC);
+            ring(tip, m_sourceAxis, r, amber);
+
+            gp_Vec up(0, 0, 1);
+            if (std::fabs(m_sourceAxis.Dot(gp_Dir(0, 0, 1))) > 0.99) up = gp_Vec(1, 0, 0);
+            gp_Vec e1 = ax.Crossed(up);
+            if (e1.Magnitude() > 1e-12) {
+                e1.Normalize();
+                gp_Vec e2 = ax.Crossed(e1);
+                e2.Normalize();
+                for (int i = 0; i < 8; ++i) {
+                    const double t = 2.0 * M_PI * double(i) / 8.0;
+                    const gp_Vec off = e1 * (r * std::cos(t)) + e2 * (r * std::sin(t));
+                    line(m_sourceOrigin, tip.Translated(off), amber);
+                }
+                // A second, half-size ring so the cone reads as a solid of
+                // revolution rather than as a wire star.
+                ring(m_sourceOrigin.Translated(ax * (0.5 * reachC)), m_sourceAxis,
+                     0.5 * r, amber, 32);
+            }
+        }
+    }
+
+    // ---- the receivers ------------------------------------------------------
+    {
+        const Quantity_Color green(0.35, 0.95, 0.55, Quantity_TOC_RGB);
+        for (const ReceiverGlyph& g : m_receivers) {
+            const gp_Vec eu(g.u), ev(g.v);
+            const gp_Vec hu = eu * (0.5 * g.w), hv = ev * (0.5 * g.h);
+            const gp_Pnt a = g.centre.Translated(-hu - hv);
+            const gp_Pnt b = g.centre.Translated(hu - hv);
+            const gp_Pnt c = g.centre.Translated(hu + hv);
+            const gp_Pnt d = g.centre.Translated(-hu + hv);
+            labels.push_back({d.Translated(gp_Vec(0, 0, 0.02 * scale)),
+                              g.acceptanceDeg < 179.0
+                                  ? QStringLiteral("receiver, accepts %1 deg")
+                                        .arg(g.acceptanceDeg, 0, 'f', 0)
+                                  : QStringLiteral("receiver"),
+                              green});
+            line(a, b, green); line(b, c, green); line(c, d, green); line(d, a, green);
+            // The diagonals, so the plane reads as a plane rather than as a
+            // wire square floating in front of the optic.
+            line(a, c, green); line(b, d, green);
+
+            // The acceptance cone, where it accepts less than everything: a
+            // receiver that refuses light is a measurement condition, and it
+            // should be visible that one is in force.
+            if (g.acceptanceDeg < 179.0) {
+                const double reach = 0.12 * scale;
+                const double r     = reach * std::tan(std::min(89.0, g.acceptanceDeg)
+                                                      * M_PI / 180.0);
+                const gp_Pnt tip = g.centre.Translated(gp_Vec(g.n) * reach);
+                ring(tip, g.n, r, green, 32);
+                gp_Vec e1(g.u), e2(g.v);
+                for (int i = 0; i < 4; ++i) {
+                    const double t = 2.0 * M_PI * double(i) / 4.0;
+                    const gp_Vec off = e1 * (r * std::cos(t)) + e2 * (r * std::sin(t));
+                    line(g.centre, tip.Translated(off), green);
+                }
+            }
+        }
+    }
+
+    // ---- the scale bar ------------------------------------------------------
+    //
+    // No axis triad here: the view already draws one in its lower-left corner,
+    // labelled, in screen space (see TriedronDisplay in initViewer). A second
+    // one anchored in the world would be two triads disagreeing about which
+    // corner is which. The scale bar is the half of that pair that was actually
+    // missing -- nothing on screen said how big any of this was.
+    {
+        // A bar of a round number of millimetres, chosen as the 1/2/5 step
+        // nearest a fifth of the scene -- the same rule an axis tick uses.
+        const double target = 0.2 * scale;
+        const double decade = std::pow(10.0, std::floor(std::log10(std::max(1e-9, target))));
+        double step = decade;
+        for (double m : {1.0, 2.0, 5.0, 10.0})
+            if (m * decade <= target * 1.5) step = m * decade;
+
+        const Quantity_Color grey(0.75, 0.78, 0.85, Quantity_TOC_RGB);
+        const gp_Pnt s0(m_bbMin[0], m_bbMin[1] - 0.14 * scale, m_bbMin[2]);
+        const gp_Pnt s1 = s0.Translated(gp_Vec(step, 0, 0));
+        line(s0, s1, grey);
+        const double cap = 0.02 * scale;
+        line(s0.Translated(gp_Vec(0, 0, -cap)), s0.Translated(gp_Vec(0, 0, cap)), grey);
+        line(s1.Translated(gp_Vec(0, 0, -cap)), s1.Translated(gp_Vec(0, 0, cap)), grey);
+        // Ticks along it, so the length can be read without a label: five of
+        // them means the bar is five of whatever the caption says.
+        for (int i = 1; i < 5; ++i) {
+            const gp_Pnt t = s0.Translated(gp_Vec(step * double(i) / 5.0, 0, 0));
+            line(t.Translated(gp_Vec(0, 0, -0.4 * cap)),
+                 t.Translated(gp_Vec(0, 0, 0.4 * cap)), grey);
+        }
+        labels.push_back({s0.Translated(gp_Vec(0, 0, -2.0 * cap)),
+                          QStringLiteral("%1 mm").arg(step, 0, 'g', 3), grey});
+    }
+
+    if (v.empty()) {
+        if (!m_view.IsNull()) { m_view->Invalidate(); update(); }
+        return;
+    }
+    m_overlay = new RayCloud(std::move(v), std::move(labels));
+    // Display mode 0 and no selection: this is furniture, and the optics are
+    // the things worth clicking on.
+    m_context->Display(m_overlay, 0, -1, Standard_False);
+    if (!m_view.IsNull()) { m_view->Invalidate(); update(); }
 }
 
 void OcctViewWidget::setRays(const std::vector<RaySegment>& segments) {

@@ -76,21 +76,13 @@ inline Vec3 cosineHemisphere(const Vec3& n, double u1, double u2) {
     return d;
 }
 
-// Jitters a unit normal by a Gaussian slope error of `sigma` radians. Applying
-// the reflection/refraction laws to the jittered normal is what turns a
-// polished surface into a matte one, and it deviates a reflected ray by twice
-// the tilt on its own -- no separate factor needed.
-inline Vec3 perturbNormal(const Vec3& n, double sigma, std::uint64_t& state) {
-    if (sigma <= 0.0) return n;
-    Vec3 t, b;
-    orthonormalBasis(n, t, b);
-    // Two independent slope errors, one per tangent axis.
-    const double a1 = gaussian(state) * sigma;
-    const double a2 = gaussian(state) * sigma;
-    Vec3 p = n + t * std::tan(a1) + b * std::tan(a2);
-    if (!p.normalize()) return n;
-    return p;
-}
+// The Gaussian normal tilt that used to stand in for surface roughness is gone.
+// It decided a direction while the energy stayed whatever specular Fresnel gave
+// it at the *smooth* normal, so a rough dielectric reflected as though it were
+// polished and then left in a diffuse direction; it had no shadowing-masking
+// term; and its rejection branch biased it toward specular by however often the
+// tilt tipped past the incident ray. Roughness is a GGX microfacet now -- see
+// SurfaceOptics::effectiveBsdf, which reads the same RMS-slope number into one.
 
 // ---- interfaces ------------------------------------------------------------
 

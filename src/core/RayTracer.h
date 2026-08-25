@@ -2,11 +2,14 @@
 #include "Mesh.h"
 #include "SimulationResult.h"
 #include "Polarisation.h"
+#include "RayFile.h"
 #include "Spectrum.h"
 #include "TraceScene.h"
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <vector>
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
 
@@ -67,6 +70,35 @@ struct SourceConfig {
     //   2  linear, p
     //   3  circular
     int polarisationState = 0;
+
+    // What to call this source where a run reports more than one.
+    QString label;
+
+    // A measured ray set standing in for the analytic emitter.
+    //
+    // With one set, `type`, `shape`, `sizeA`/`sizeB`, `beamRadius` and
+    // `halfAngleDeg` are not consulted at all: the file already carries every
+    // ray's origin, direction and flux, which is the whole point of buying a
+    // measurement rather than approximating one. `power` still says what the
+    // source is worth in the run's unit, and the spectrum is still consulted
+    // for the rays the file gives no wavelength to.
+    //
+    // The file's own frame is placed by `origin` and `axis`, exactly as an
+    // analytic emitter's is: its +Z is rotated onto `axis` and its origin
+    // translated to `origin`, so a ray set drops into whatever place the scene
+    // puts its emitter.
+    std::shared_ptr<const RayFileData> rayFile;
+
+    // Extra scale on the ray-file positions, on top of whatever its header's
+    // dimension code already applied. 1 is the ordinary case.
+    double rayFileScale = 1.0;
+
+    // Take each ray's wavelength from the file where it has one. Off pins the
+    // whole set to the configured spectrum, which is what comparing a measured
+    // set against an idealised one needs.
+    bool   rayFileWavelengths = true;
+
+    bool tracesRayFile() const { return rayFile && rayFile->valid(); }
 };
 
 // One emitted ray: where it starts, where it goes, and what colour it is.
@@ -172,7 +204,22 @@ struct EstimatorOptions {
 // warm. That is what makes editing the surface you just clicked on feel
 // immediate.
 struct SurfaceOverride {
-    int           surface = -1;   // index into TraceScene::surfaces()
+    // Which surface this edit belongs to, keyed by what the surface *is*.
+    //
+    // It used to be an index into TraceScene::surfaces() and nothing else, and
+    // a config persisted that index. Reopen a saved config after the scene
+    // registry changes, or against a different CAD import, and every optical
+    // edit silently lands on whatever surface now occupies the slot -- a
+    // plausible-looking wrong answer, which is the only kind that costs anyone
+    // money. The scene enum was stored by name for exactly this reason.
+    //
+    // `label` is the primary key, `identity` (TraceScene::surfaceIdentity)
+    // disambiguates repeated labels and vetoes a stale index, and `surface` is
+    // a hint used only when there is no label to go on. An override that
+    // resolves to nothing is reported on the result rather than dropped.
+    QString       label;
+    std::uint64_t identity = 0;
+    int           surface  = -1;
     SurfaceOptics optics;
 };
 
@@ -232,6 +279,24 @@ struct TraceControl {
 class RayTracer {
 public:
     static void trace(const TraceScene& scene, const SourceConfig& src,
+                      SimulationResult& out,
+                      const TraceOptions& opt = TraceOptions{},
+                      const TraceControl& ctl = TraceControl{});
+
+    // The same, with more than one source.
+    //
+    // Each source keeps its own placement, angular law, spectrum, polarisation
+    // state, ray budget and power; the run reports the total and, per source,
+    // what that source delivered. Rays are partitioned by source over one
+    // global index space, so a run is still bit-identical at any thread count.
+    //
+    // The powers are combined at emission rather than at the end: a ray from
+    // source s is emitted carrying power_s / rays_s, so one shared receiver
+    // grid holds every source's contribution correctly weighted, and a
+    // two-source run costs one grid rather than two. For a single source this
+    // is exactly the normalisation the one-source overload always used, which
+    // is why that overload is now a call to this one.
+    static void trace(const TraceScene& scene, const std::vector<SourceConfig>& sources,
                       SimulationResult& out,
                       const TraceOptions& opt = TraceOptions{},
                       const TraceControl& ctl = TraceControl{});

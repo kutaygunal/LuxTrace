@@ -47,6 +47,8 @@ h2 { font-size: 16px; margin: 32px 0 10px 0; font-weight: 600;
      border-bottom: 1px solid #e2e2e2; padding-bottom: 6px; }
 h3 { font-size: 13px; margin: 20px 0 6px 0; font-weight: 600; color: #444; }
 .sub { color: #6b6b6b; margin: 0 0 8px 0; }
+.warn { color: #8a4b00; background: #fff6e5; border-left: 3px solid #d08a2c;
+        padding: 8px 10px; margin: 8px 0; }
 table { border-collapse: collapse; margin: 8px 0 4px 0; }
 th, td { text-align: left; padding: 3px 18px 3px 0; vertical-align: top; }
 th { font-weight: 500; color: #4a4a4a; white-space: nowrap; }
@@ -163,7 +165,11 @@ void writeBudget(QTextStream& ts, const Content& c) {
     line(QStringLiteral("Absorbed at surfaces"), r.fluxAbsorbed - r.fluxBulkAbsorbed);
     line(QStringLiteral("Absorbed in the bulk"), r.fluxBulkAbsorbed, QStringLiteral("Beer-Lambert"));
     line(QStringLiteral("Escaped the scene"), r.fluxEscaped);
-    line(QStringLiteral("Truncated"), r.fluxTruncated, QStringLiteral("depth limit"));
+    line(QStringLiteral("Refused by a receiver"), r.fluxRejected,
+         QStringLiteral("outside an acceptance cone: a measurement condition, "
+                        "not a loss"));
+    line(QStringLiteral("Truncated"), r.fluxTruncated,
+         QStringLiteral("see the breakdown below"));
     line(QStringLiteral("Estimator residual"), r.fluxRoulette, QStringLiteral("zero in expectation"));
     line(QStringLiteral("Accounted"), r.fluxAccounted());
     ts << "</table>\n";
@@ -171,6 +177,93 @@ void writeBudget(QTextStream& ts, const Content& c) {
        << esc(num(100.0 * r.efficiencyStdErr, 3)) << " %</b> "
        << "<span class='note'>one standard error, measured across independent "
           "scrambles of the sampling sequence</span></p>\n";
+
+    // The estimator residual, one channel per estimator. Booked to a single
+    // accumulator, its expectation is zero even when one contributor is
+    // systematically wrong and another cancels it -- which is the one respect
+    // in which a closed energy balance can close while being wrong. Named, each
+    // channel has to answer for itself.
+    ts << "<h3>Estimator residual by channel</h3>\n";
+    ts << "<p class='sub'>Each of these has an expectation of exactly zero. They "
+          "are not loss channels: they are the estimator's noise, made visible "
+          "rather than hidden inside a single number.</p>\n";
+    ts << "<table>\n<tr><th></th><th>share</th><th>" << esc(fu) << "</th></tr>\n";
+    line(QStringLiteral("Russian roulette"), r.residual.roulette);
+    line(QStringLiteral("Emission aiming"), r.residual.aiming);
+    line(QStringLiteral("Next-event estimate"), r.residual.nextEvent,
+         QStringLiteral("the analytic direct term"));
+    line(QStringLiteral("Next-event suppression"), r.residual.neeSuppressed,
+         QStringLiteral("the sampled hit it replaced"));
+    line(QStringLiteral("BSDF sampling weights"), r.residual.bsdfWeight);
+    ts << "</table>\n";
+
+    if (r.fluxTruncated > 0.0) {
+        const TruncationBreakdown& t = r.truncation;
+        ts << "<h3>Truncated flux, by reason</h3>\n";
+        ts << "<p class='sub'>Raising the depth limit only helps where the depth "
+              "limit is what took the light.</p>\n";
+        ts << "<table>\n<tr><th></th><th>share</th><th>" << esc(fu)
+           << "</th><th>branches</th></tr>\n";
+        auto tline = [&](const QString& name, double v, std::size_t n) {
+            ts << "<tr><th>" << esc(name) << "</th><td>"
+               << esc(pct(v, r.sourcePower)) << "</td><td>"
+               << esc(QString::number(v, 'g', 5)) << "</td><td>" << n << "</td></tr>\n";
+        };
+        tline(QStringLiteral("Depth limit"), t.depthLimit, t.depthLimitCount);
+        tline(QStringLiteral("Branch stack full"), t.stackOverflow, t.stackOverflowCount);
+        tline(QStringLiteral("Degenerate direction"), t.degenerate, t.degenerateCount);
+        tline(QStringLiteral("Refraction refused"), t.refractFailed, t.refractFailedCount);
+        tline(QStringLiteral("Energy cutoff"), t.energyCutoff, t.energyCutoffCount);
+        ts << "</table>\n";
+        if (r.truncationSignificant())
+            ts << "<p class='warn'><b>More than "
+               << esc(num(100.0 * SimulationResult::kTruncationWarn, 2))
+               << " % of the source was truncated.</b> The line above says which "
+                  "mechanism took it.</p>\n";
+    }
+
+    if (r.anomalies.any()) {
+        ts << "<h3>Medium-tracking anomalies</h3>\n";
+        ts << "<p class='sub'>Recovered from, not errors. A count that scales with "
+              "the ray budget on imported geometry means the mesh is not closed, "
+              "and the index pairs it produced were guesses.</p>\n";
+        ts << "<table>\n";
+        row(ts, QStringLiteral("Unmatched exits"),
+            QString::number(r.anomalies.unmatchedExit),
+            QStringLiteral("left a solid the branch was never recorded entering"));
+        row(ts, QStringLiteral("Medium-stack overflows"),
+            QString::number(r.anomalies.stackOverflow),
+            QStringLiteral("more nested media at once than the stack holds"));
+        row(ts, QStringLiteral("Guessed incident indices"),
+            QString::number(r.anomalies.guessedIndex),
+            QStringLiteral("crossed a face outward while recorded as in vacuum"));
+        ts << "</table>\n";
+    }
+
+    if (!r.unmatchedOverrides.empty()) {
+        ts << "<h3>Surface edits that matched no surface</h3>\n";
+        ts << "<p class='sub'>These were reported rather than applied. An edit "
+              "keyed to a surface this geometry does not have must not land on "
+              "whatever now occupies its slot.</p>\n<ul>\n";
+        for (const QString& s : r.unmatchedOverrides)
+            ts << "<li>" << esc(s) << "</li>\n";
+        ts << "</ul>\n";
+    }
+
+    if (r.sources.size() > 1) {
+        ts << "<h3>Per source</h3>\n";
+        ts << "<table>\n<tr><th></th><th>emitted</th><th>delivered</th>"
+              "<th>efficiency</th><th>rays</th></tr>\n";
+        for (const SourceSummary& s : r.sources) {
+            ts << "<tr><th>" << esc(s.label) << "</th><td>"
+               << esc(QString::number(s.power, 'g', 5)) << " " << esc(fu) << "</td><td>"
+               << esc(QString::number(s.flux, 'g', 5)) << " " << esc(fu) << "</td><td>"
+               << esc(num(100.0 * s.efficiency(), 3)) << " %</td><td>" << s.rays
+               << "</td><td class='note'>"
+               << (s.rayFile ? "measured ray file" : "") << "</td></tr>\n";
+        }
+        ts << "</table>\n";
+    }
 }
 
 void writeMetrics(QTextStream& ts, const Content& c) {
@@ -454,6 +547,83 @@ QString html(const Content& c) {
           "machine, at any thread count, reproduces every number above bit for bit.</p>\n";
     ts << "</body></html>\n";
     return out;
+}
+
+QString validationHtml(const std::vector<studies::ValidationCase>& cases, int rays) {
+    QString out;
+    QTextStream ts(&out);
+
+    int failed = 0;
+    for (const auto& c : cases) if (!c.passed) ++failed;
+
+    ts << "<!doctype html>\n<html lang='en'><head><meta charset='utf-8'>\n";
+    ts << "<title>LuxTrace validation</title>\n<style>" << kStyle << "</style>\n";
+    ts << "</head><body>\n";
+    ts << "<h1>LuxTrace validation</h1>\n";
+    ts << "<p class='sub'>Every case below is checked against optics derived "
+          "outside the tracer. Pinning a formula against the same formula "
+          "recomputed in a test proves only that the implementation matches "
+          "itself; what this table shows is agreement with a closed form nobody "
+          "had to trust the tracer to write.</p>\n";
+
+    ts << "<table>\n";
+    row(ts, QStringLiteral("Generated"),
+        QDateTime::currentDateTime().toString(Qt::ISODate));
+    row(ts, QStringLiteral("Build"), QCoreApplication::applicationVersion());
+    row(ts, QStringLiteral("Monte Carlo budget"), QString::number(rays) + " rays",
+        QStringLiteral("the purely geometric and analytic cases ignore it"));
+    row(ts, QStringLiteral("Result"),
+        failed == 0 ? QStringLiteral("%1 of %1 passed").arg(cases.size())
+                    : QStringLiteral("%1 of %2 FAILED").arg(failed).arg(cases.size()));
+    ts << "</table>\n";
+
+    if (failed > 0)
+        ts << "<p class='warn'><b>" << failed << " case(s) did not agree with the "
+              "closed form.</b> The residual column says by how much, and the "
+              "reference column says against what.</p>\n";
+
+    ts << "<h2>Cases</h2>\n";
+    ts << "<table>\n<tr><th>case</th><th>expected</th><th>measured</th>"
+          "<th>residual</th><th>relative</th><th>tolerance</th><th></th></tr>\n";
+    for (const auto& c : cases) {
+        ts << "<tr><th>" << esc(c.name) << "</th>"
+           << "<td>" << esc(QString::number(c.expected, 'g', 6)) << "</td>"
+           << "<td>" << esc(QString::number(c.measured, 'g', 6)) << "</td>"
+           << "<td>" << esc(QString::number(c.residual(), 'g', 3)) << "</td>"
+           << "<td>" << esc(num(100.0 * c.relative(), 2)) << " %</td>"
+           << "<td>" << esc(QString::number(c.tolerance, 'g', 3)) << " "
+           << esc(c.unit) << "</td>"
+           << "<td>" << (c.passed ? "pass" : "<b>FAIL</b>") << "</td></tr>\n";
+        ts << "<tr><td colspan='7' class='note'>" << esc(c.reference) << "</td></tr>\n";
+    }
+    ts << "</table>\n";
+
+    ts << "<h2>What this does and does not prove</h2>\n";
+    ts << "<p class='sub'>These cases check the physics against its own closed "
+          "forms. They do not check that the geometry in front of the tracer is "
+          "the geometry the customer drew, and they say nothing about a scene "
+          "whose mesh is not closed -- the run report's medium-anomaly counters "
+          "are what answer that. Nor do they replace the reference corpus, which "
+          "asserts that every scene still produces the number it produced "
+          "before, to the last few digits.</p>\n";
+    ts << "</body></html>\n";
+    return out;
+}
+
+bool writeValidation(const QString& path,
+                     const std::vector<studies::ValidationCase>& cases,
+                     int rays, QString* errorOut) {
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        if (errorOut) *errorOut = f.errorString();
+        return false;
+    }
+    const QByteArray bytes = validationHtml(cases, rays).toUtf8();
+    if (f.write(bytes) != bytes.size()) {
+        if (errorOut) *errorOut = f.errorString();
+        return false;
+    }
+    return true;
 }
 
 bool write(const QString& path, const Content& content, QString* errorOut) {

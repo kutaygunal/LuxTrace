@@ -1,7 +1,10 @@
 #include "Studies.h"
 #include "MeshBuilder.h"
+#include "Bsdf.h"
 #include "Material.h"
 #include "Optics.h"
+#include "Polarisation.h"
+#include "Spectrum.h"
 
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
@@ -16,6 +19,7 @@
 #include <cmath>
 #include <numeric>
 
+#include <QFile>
 #include <QTextStream>
 #include <algorithm>
 #include <chrono>
@@ -189,6 +193,11 @@ bool metricBiggerIsBetter(Metric m) {
     default:
         return false;
     }
+}
+
+double metricStdErr(const SimulationResult& res, Metric m) {
+    if (m == Metric::Efficiency) return 100.0 * res.efficiencyStdErr;
+    return 0.0;
 }
 
 double metricValue(const SimulationResult& res, Metric m) {
@@ -448,6 +457,7 @@ struct Evaluator {
         OptimisationStep step;
         step.params     = c.params;
         step.value      = value;
+        step.stdErr     = metricStdErr(res, objective.metric);
         step.merit      = objective.merit(out->bestValue);
         step.evaluation = out->evaluations;
         out->history.push_back(step);
@@ -1330,6 +1340,194 @@ ValidationCase validateLambertianFarField(int rays) {
 
 } // namespace
 
+// ---- physics checks against the closed forms they were built from ----------
+//
+// The seven original cases test the tracer end to end: build a scene, fire rays,
+// compare the answer to optics derived outside it. These six test the layers
+// underneath, where a wrong number is hardest to see because nothing about the
+// picture looks wrong. All six are deterministic or nearly so, and none of them
+// costs a trace.
+
+// Fresnel at an air/glass interface, against the closed form evaluated
+// independently. The engine's own fresnelReflectance is the thing under test, so
+// the expectation is written out longhand from Born and Wolf rather than by
+// calling it a second time.
+ValidationCase validateFresnelCurve() {
+    const double n1 = 1.0, n2 = 1.5168;              // air -> N-BK7
+    double worst = 0.0;
+    for (int i = 0; i <= 80; ++i) {
+        const double th   = double(i) * 1.0 * kValPi / 180.0;   // 0..80 degrees
+        const double cosI = std::cos(th), sinI = std::sin(th);
+        const double sinT = n1 * sinI / n2;
+        if (sinT >= 1.0) continue;
+        const double cosT = std::sqrt(1.0 - sinT * sinT);
+        const double rs = (n1 * cosI - n2 * cosT) / (n1 * cosI + n2 * cosT);
+        const double rp = (n1 * cosT - n2 * cosI) / (n1 * cosT + n2 * cosI);
+        const double want = 0.5 * (rs * rs + rp * rp);
+        worst = std::max(worst, std::fabs(optics::fresnelReflectance(n1, n2, cosI) - want));
+    }
+    return makeCase(QStringLiteral("Fresnel R(theta) residual"),
+                    QStringLiteral("worst |R_traced - R_analytic| over 0-80 deg at "
+                                   "air -> n 1.5168"),
+                    QStringLiteral("reflectance"), 0.0, worst, 1e-12);
+}
+
+// Brewster's angle: p-polarised light reflects nothing at all there. The
+// unpolarised average has a minimum but never a zero, so this checks the
+// polarised path specifically -- the amplitude coefficients and the Mueller
+// matrix built from them, not the scalar curve.
+ValidationCase validateBrewsterNull() {
+    const double n1 = 1.0, n2 = 1.5168;
+    const double brewster = std::atan(n2 / n1);
+    double as = 0.0, ap = 0.0, phase = 0.0;
+    polarisation::fresnelAmplitudes(n1, n2, std::cos(brewster), as, ap, phase);
+
+    // A p-polarised state through the interface Mueller matrix: the reflected
+    // intensity is what should vanish.
+    const polarisation::Stokes in  = polarisation::Stokes::linearP();
+    const polarisation::Stokes out =
+        polarisation::Mueller::fromFresnel(as, ap, phase).apply(in);
+    return makeCase(QStringLiteral("Brewster p-reflectance"),
+                    QStringLiteral("R_p = 0 at theta_B = atan(n2/n1) = %1 deg")
+                        .arg(brewster * 180.0 / kValPi, 0, 'f', 3),
+                    QStringLiteral("reflectance"), 0.0, std::fabs(out.i), 1e-9);
+}
+
+// Total internal reflection is a retarder, and the retardance has a closed form.
+// At the angle where it peaks in glass of index 1.5168 a Fresnel rhomb takes two
+// such bounces to make a quarter wave, so the peak has to be an eighth of a wave
+// -- 45 degrees of phase -- for the rhomb to work at all.
+ValidationCase validateTirRetardance() {
+    const double n = 1.5168;                          // glass -> air
+    double peak = 0.0;
+    const double crit = std::asin(1.0 / n);
+    // Strictly inside the totally-reflecting region. At exactly the critical
+    // angle sin^2(theta_t) lands on either side of one depending on the last
+    // bit, and the sub-critical branch legitimately returns a pi phase from the
+    // p-amplitude changing sign. That discontinuity is real and it is not what
+    // this case is about.
+    for (int i = 1; i <= 400; ++i) {
+        const double th = crit + (0.5 * kValPi - crit) * double(i) / 400.0;
+        double rs = 0.0, rp = 0.0, phase = 0.0;
+        polarisation::fresnelAmplitudes(n, 1.0, std::cos(th), rs, rp, phase);
+        peak = std::max(peak, std::fabs(phase));
+    }
+    // cos(delta/2) = ... maximised at cos^2 th = (n^2 - 1) / (n^2 + 1); the
+    // resulting peak retardance is 2 atan((n^2 - 1) / (2n)).
+    const double expected = 2.0 * std::atan((n * n - 1.0) / (2.0 * n));
+    return makeCase(QStringLiteral("TIR peak retardance"),
+                    QStringLiteral("delta_max = 2 atan((n^2-1)/2n) at glass -> air, "
+                                   "n = %1").arg(n, 0, 'f', 4),
+                    QStringLiteral("degrees"),
+                    expected * 180.0 / kValPi, peak * 180.0 / kValPi, 0.5);
+}
+
+// The white-furnace test: a scattering model that conserves energy must return
+// everything it was given. Sampling the GGX lobe many times and averaging the
+// weights the sampler hands back has to come out at one, or the surface is
+// creating or destroying light at every bounce.
+ValidationCase validateGgxWhiteFurnace() {
+    bsdf::Surface s;
+    s.model    = bsdf::Model::Microfacet;
+    s.alpha    = 0.25;
+    s.fraction = 1.0;
+
+    const Vec3 n(0, 0, 1);
+    std::uint64_t rng = optics::mix64(0x5EEDu);
+    double sum = 0.0;
+    int    taken = 0;
+    constexpr int kDraws = 200000;
+    for (int i = 0; i < kDraws; ++i) {
+        // A fixed 30-degree incidence, which is where masking and shadowing
+        // both matter and neither dominates.
+        const double th = 30.0 * kValPi / 180.0;
+        const Vec3 wi(std::sin(th), 0.0, -std::cos(th));
+        const Vec3 spec = optics::reflect(wi, n);
+        Vec3 out;
+        double w = 1.0;
+        if (!s.sample(wi, n, spec, rng, out, w)) continue;
+        sum += w;
+        ++taken;
+    }
+    // What the tracer actually multiplies a branch by. A draw the sampler
+    // refuses keeps the specular direction and its whole energy, so it counts
+    // as a weight of one -- measuring only the draws that fired would report a
+    // number the engine never applies.
+    const double measured = (sum + double(kDraws - taken)) / double(kDraws);
+    return makeCase(QStringLiteral("GGX white furnace"),
+                    QStringLiteral("mean energy multiplier at a rough reflection "
+                                   "(alpha %1, 30 deg). Single-scattering GGX loses "
+                                   "the few per cent that multiple microfacet "
+                                   "bounces would return, so the shortfall is the "
+                                   "model and not the sampler -- what must not "
+                                   "happen is energy being created")
+                        .arg(s.alpha, 0, 'f', 2),
+                    QStringLiteral("albedo"), 1.0, measured, 0.05);
+}
+
+// The Henyey-Greenstein phase function is a probability density over the sphere,
+// so it integrates to one there. It is quoted per steradian, so the integral is
+// 2 pi times the integral over cos(theta) from -1 to 1.
+ValidationCase validateHgNormalisation() {
+    double worst = 0.0;
+    for (double g : {-0.6, -0.2, 0.0, 0.3, 0.7, 0.9}) {
+        // Simpson over cos(theta). The forward peak at g = 0.9 is sharp, so the
+        // grid is fine enough that the quadrature is not the thing being tested.
+        constexpr int kN = 20000;                     // even, for Simpson
+        const double h = 2.0 / double(kN);
+        double sum = bsdf::henyeyGreenstein(-1.0, g) + bsdf::henyeyGreenstein(1.0, g);
+        for (int i = 1; i < kN; ++i) {
+            const double c = -1.0 + h * double(i);
+            sum += bsdf::henyeyGreenstein(c, g) * ((i % 2) ? 4.0 : 2.0);
+        }
+        const double integral = 2.0 * kValPi * sum * h / 3.0;
+        worst = std::max(worst, std::fabs(integral - 1.0));
+    }
+    return makeCase(QStringLiteral("Henyey-Greenstein normalisation"),
+                    QStringLiteral("worst |integral over the sphere - 1| over "
+                                   "g = -0.6 .. 0.9"),
+                    QStringLiteral("probability"), 0.0, worst, 2e-4);
+}
+
+// Luminous efficacy of a blackbody, against the number the definition gives.
+// 683 lm/W at the peak of V(lambda) is the SI definition, so a 5500 K Planckian
+// sampled over the visible must land where an independent integration of the
+// same two curves does. The point is that the run's efficacy -- the number that
+// turns every watt in the result into a lumen -- is not a fitted constant.
+ValidationCase validateBlackbodyEfficacy() {
+    SpectrumConfig cfg;
+    cfg.kind  = SpectrumConfig::Kind::Blackbody;
+    cfg.cct   = 5500.0;
+    cfg.minNm = 380.0;
+    cfg.maxNm = 780.0;
+    SampledSpectrum spec;
+    spec.build(cfg);
+
+    // Planck at 5500 K, weighted by V(lambda), integrated over the same band by
+    // a quadrature that knows nothing about the sampler under test.
+    const double T = 5500.0;
+    const double c1 = 3.741771852e-16, c2 = 1.438776877e-2;   // SI, W m^2 and m K
+    auto planck = [&](double nm) {
+        const double l = nm * 1e-9;
+        return c1 / (std::pow(l, 5.0) * (std::exp(c2 / (l * T)) - 1.0));
+    };
+    double num = 0.0, den = 0.0;
+    constexpr int kN = 4001;
+    for (int i = 0; i < kN; ++i) {
+        const double nm = 380.0 + (780.0 - 380.0) * double(i) / double(kN - 1);
+        const double w  = (i == 0 || i == kN - 1) ? 0.5 : 1.0;   // trapezium
+        const double p  = planck(nm);
+        num += w * p * spectrum::photopic(nm);
+        den += w * p;
+    }
+    const double expected = den > 0.0 ? 683.0 * num / den : 0.0;
+    return makeCase(QStringLiteral("Blackbody luminous efficacy"),
+                    QStringLiteral("683 * <V(lambda)> for a 5500 K Planckian over "
+                                   "380-780 nm"),
+                    QStringLiteral("lm/W"), expected, spec.efficacy(),
+                    0.02 * expected);
+}
+
 std::vector<ValidationCase> validate(int rays) {
     std::vector<ValidationCase> cases;
     cases.push_back(validateLensmaker(rays));
@@ -1338,7 +1536,235 @@ std::vector<ValidationCase> validate(int rays) {
     cases.push_back(validateCpcConcentration());
     cases.push_back(validatePrismDeviation());
     cases.push_back(validateLambertianFarField(rays));
+
+    // The layers underneath, each against the closed form it was built from. A
+    // wrong number here is the hardest kind to see, because nothing about the
+    // picture the tracer draws looks wrong.
+    cases.push_back(validateFresnelCurve());
+    cases.push_back(validateBrewsterNull());
+    cases.push_back(validateTirRetardance());
+    cases.push_back(validateGgxWhiteFurnace());
+    cases.push_back(validateHgNormalisation());
+    cases.push_back(validateBlackbodyEfficacy());
     return cases;
+}
+
+// ---- regression corpus -----------------------------------------------------
+
+namespace {
+
+// The corpus file's own format version. A change to what is recorded has to
+// invalidate every stored file rather than be read as drift.
+constexpr int kCorpusVersion = 1;
+
+// Every quantity a reference point holds, named once so writing, reading and
+// comparing cannot disagree about the order.
+struct Quantity {
+    const char* name;
+    double ReferencePoint::*member;
+};
+
+const Quantity kQuantities[] = {
+    {"efficiency",    &ReferencePoint::efficiency},
+    {"fluxDetector",  &ReferencePoint::fluxDetector},
+    {"fluxAbsorbed",  &ReferencePoint::fluxAbsorbed},
+    {"fluxEscaped",   &ReferencePoint::fluxEscaped},
+    {"fluxTruncated", &ReferencePoint::fluxTruncated},
+    {"fluxRejected",  &ReferencePoint::fluxRejected},
+    {"residual",      &ReferencePoint::residual},
+};
+constexpr int kQuantityCount = int(sizeof(kQuantities) / sizeof(kQuantities[0]));
+
+} // namespace
+
+std::vector<ReferencePoint> referenceCorpus(int rays, std::uint64_t seed,
+                                            const TraceControl& ctl) {
+    std::vector<ReferencePoint> out;
+    out.reserve(std::size_t(GeometryProvider::count()));
+
+    for (int i = 0; i < GeometryProvider::count(); ++i) {
+        if (ctl.cancel && ctl.cancel->load(std::memory_order_relaxed)) break;
+
+        const auto scene = GeometryProvider::Scene(i);
+        SimConfig cfg;
+        cfg.scene  = scene;
+        cfg.rays   = std::max(1, rays);
+        cfg.seed   = seed;
+        // The far field, the path recording and the arrivals are not part of
+        // what is asserted, and building them makes the corpus slower without
+        // making it stricter.
+        cfg.nTheta = 0;
+        cfg.nPhi   = 0;
+
+        const SimulationResult res = Simulation::run(cfg);
+
+        ReferencePoint p;
+        p.scene         = GeometryProvider::info(scene).name;
+        p.rays          = int(res.raysEmitted);
+        p.seed          = seed;
+        p.efficiency    = res.efficiency;
+        p.fluxDetector  = res.fluxDetector;
+        p.fluxAbsorbed  = res.fluxAbsorbed;
+        p.fluxEscaped   = res.fluxEscaped;
+        p.fluxTruncated = res.fluxTruncated;
+        p.fluxRejected  = res.fluxRejected;
+        p.residual      = res.fluxRoulette;
+        out.push_back(p);
+
+        if (ctl.progress) ctl.progress(std::size_t(i + 1),
+                                       std::size_t(GeometryProvider::count()));
+    }
+    return out;
+}
+
+bool writeCorpus(const QString& path, const std::vector<ReferencePoint>& pts,
+                 QString* errorOut) {
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        if (errorOut) *errorOut = f.errorString();
+        return false;
+    }
+    QTextStream ts(&f);
+    ts << "# LuxTrace reference corpus, version " << kCorpusVersion << "\n";
+    ts << "# Bit-reproducible results at a fixed seed and ray budget. Regenerate\n";
+    ts << "# with: LuxTrace --regress bless <path>\n";
+    ts << "# scene\trays\tseed";
+    for (const Quantity& q : kQuantities) ts << "\t" << q.name;
+    ts << "\n";
+
+    // Seventeen significant digits round-trips a double exactly, which is what
+    // makes the stored value the value and not an approximation of it.
+    for (const ReferencePoint& p : pts) {
+        ts << p.scene << "\t" << p.rays << "\t" << p.seed;
+        for (const Quantity& q : kQuantities)
+            ts << "\t" << QString::number(p.*(q.member), 'g', 17);
+        ts << "\n";
+    }
+    ts.flush();
+    if (f.error() != QFileDevice::NoError) {
+        if (errorOut) *errorOut = f.errorString();
+        return false;
+    }
+    return true;
+}
+
+bool readCorpus(const QString& path, std::vector<ReferencePoint>& out, QString* errorOut) {
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        if (errorOut) *errorOut = f.errorString();
+        return false;
+    }
+    out.clear();
+    QTextStream ts(&f);
+    int version = 0;
+    while (!ts.atEnd()) {
+        const QString line = ts.readLine();
+        if (line.startsWith(QLatin1Char('#'))) {
+            if (version == 0 && line.contains(QLatin1String("version")))
+                version = line.section(QLatin1String("version"), 1).trimmed().toInt();
+            continue;
+        }
+        if (line.trimmed().isEmpty()) continue;
+
+        const QStringList tok = line.split(QLatin1Char('\t'));
+        if (tok.size() < 3 + kQuantityCount) continue;
+
+        ReferencePoint p;
+        p.scene = tok[0];
+        p.rays  = tok[1].toInt();
+        p.seed  = tok[2].toULongLong();
+        for (int q = 0; q < kQuantityCount; ++q)
+            p.*(kQuantities[q].member) = tok[3 + q].toDouble();
+        out.push_back(p);
+    }
+
+    if (version != kCorpusVersion) {
+        if (errorOut)
+            *errorOut = QStringLiteral("%1 is a version %2 corpus and this build writes "
+                                       "version %3; regenerate it")
+                            .arg(path).arg(version).arg(kCorpusVersion);
+        out.clear();
+        return false;
+    }
+    if (out.empty()) {
+        if (errorOut) *errorOut = QStringLiteral("%1 holds no reference points").arg(path);
+        return false;
+    }
+    return true;
+}
+
+std::vector<RegressionDrift> compareCorpus(const std::vector<ReferencePoint>& reference,
+                                           const std::vector<ReferencePoint>& measured,
+                                           double tolerance) {
+    std::vector<RegressionDrift> drift;
+
+    auto find = [](const std::vector<ReferencePoint>& v, const QString& name)
+        -> const ReferencePoint* {
+        for (const ReferencePoint& p : v)
+            if (p.scene == name) return &p;
+        return nullptr;
+    };
+
+    for (const ReferencePoint& r : reference) {
+        const ReferencePoint* m = find(measured, r.scene);
+        if (!m) {
+            drift.push_back({r.scene, QStringLiteral("missing from this run"),
+                             0.0, 0.0, 0.0});
+            continue;
+        }
+        if (m->rays != r.rays || m->seed != r.seed) {
+            // Comparing a different budget against the stored one would report
+            // Monte Carlo noise as drift, which is worse than not comparing.
+            drift.push_back({r.scene, QStringLiteral("traced at a different budget or seed"),
+                             double(r.rays), double(m->rays), 0.0});
+            continue;
+        }
+        for (const Quantity& q : kQuantities) {
+            const double a = r.*(q.member), b = m->*(q.member);
+            // Relative where there is something to be relative to, absolute at
+            // zero -- an escaped-flux bucket that was exactly zero and is now
+            // 1e-16 is not a hundred per cent drift.
+            const double scale = std::max(std::fabs(a), 1e-12);
+            const double rel   = (b - a) / scale;
+            if (std::fabs(rel) > tolerance)
+                drift.push_back({r.scene, QLatin1String(q.name), a, b, rel});
+        }
+    }
+
+    for (const ReferencePoint& m : measured)
+        if (!find(reference, m.scene))
+            drift.push_back({m.scene, QStringLiteral("not in the reference corpus"),
+                             0.0, 0.0, 0.0});
+
+    return drift;
+}
+
+QString regressionTable(const std::vector<RegressionDrift>& drift,
+                        std::size_t scenesChecked) {
+    QString out;
+    QTextStream ts(&out);
+    if (drift.empty()) {
+        ts << scenesChecked << " scene(s) match the reference corpus to "
+           << QString::number(kRegressionTolerance, 'g', 2) << " relative.\n";
+        return out;
+    }
+    ts << "scene                           quantity          reference      measured"
+          "     relative\n";
+    ts << "----------------------------------------------------------------------------"
+          "---------\n";
+    for (const RegressionDrift& d : drift) {
+        ts << d.scene.leftJustified(30).left(30) << "  "
+           << d.quantity.leftJustified(16).left(16) << "  "
+           << QString::number(d.reference, 'g', 10).rightJustified(13) << "  "
+           << QString::number(d.measured,  'g', 10).rightJustified(13) << "  "
+           << QString::number(100.0 * d.relative, 'g', 4).rightJustified(10) << "%\n";
+    }
+    ts << "----------------------------------------------------------------------------"
+          "---------\n";
+    ts << scenesChecked << " scene(s) checked, " << drift.size() << " drift(s).\n";
+    ts << "If the change was intended, bless the new values:\n";
+    ts << "    LuxTrace --regress bless <path>\n";
+    return out;
 }
 
 QString validationTable(const std::vector<ValidationCase>& cases) {

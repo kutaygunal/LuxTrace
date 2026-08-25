@@ -11,6 +11,8 @@ class QGroupBox;
 class QLabel;
 class QProgressBar;
 class QPushButton;
+class QListWidget;
+class QScrollArea;
 class QSpinBox;
 
 // Left-side controls: scene and its geometry parameters, source, physics model,
@@ -23,6 +25,15 @@ class ControlsPanel : public QWidget {
     Q_OBJECT
 public:
     explicit ControlsPanel(QWidget* parent = nullptr);
+
+    // As wide as the content, no wider. The column lives in a splitter, so this
+    // is only the width the window opens at; the user sets it after that.
+    QSize sizeHint() const override;
+    // And never narrower than the content. The scroll area inside scrolls
+    // vertically only, so a column narrower than its widest row slides sideways
+    // -- to keep a newly focused widget in view -- with no horizontal scrollbar
+    // to bring it back. Refusing the width is what stops the drift.
+    QSize minimumSizeHint() const override;
 
     SimConfig config() const;
     void      setConfig(const SimConfig& cfg);
@@ -61,6 +72,20 @@ private:
     void syncEnabledState();
     SceneParams currentParams() const;
 
+    // The measured ray set standing in for the primary source, and the extra
+    // sources beyond it. Held here rather than rebuilt from widgets because a
+    // ray set is tens of megabytes of measurement and a source spec is a
+    // structure, not a row of spin boxes.
+    void chooseRayFile();
+    void clearRayFile();
+    void refreshRayFileLabel();
+    void addSource();
+    void editSource();
+    void removeSource();
+    void refreshSourceList();
+
+    QScrollArea*  m_scroll   = nullptr;
+    QWidget*      m_body     = nullptr;
     QComboBox*    m_scene    = nullptr;
     QLabel*       m_importNote = nullptr;
     // Set while geometry from a file stands in for the selected scene, so a run
@@ -96,6 +121,17 @@ private:
     QDoubleSpinBox* m_roughOverride = nullptr;
     QDoubleSpinBox* m_scatterOverride = nullptr;
     QDoubleSpinBox* m_absorptionScale = nullptr;
+
+    QLabel*         m_rayFileNote   = nullptr;
+    QPushButton*    m_rayFileClear  = nullptr;
+    QDoubleSpinBox* m_rayFileScaleBox = nullptr;
+    QCheckBox*      m_rayFileLambda   = nullptr;
+    QListWidget*  m_sourceList  = nullptr;
+    QPushButton*  m_sourceEdit  = nullptr;
+    QPushButton*  m_sourceRemove = nullptr;
+
+    std::shared_ptr<const RayFileData> m_rayFile;
+    std::vector<SourceSpec> m_extraSources;
 
     QSpinBox*     m_rays     = nullptr;
     QSpinBox*     m_seed     = nullptr;

@@ -79,6 +79,23 @@ struct Surface {
     // for an exactly importance-sampled lobe, and the correction otherwise.
     bool sample(const Vec3& wi, const Vec3& n, const Vec3& spec,
                 std::uint64_t& rng, Vec3& out, double& weight) const;
+
+    // The microfacet this interaction happens at, the specular direction off
+    // it, and the visibility weight that makes the lobe energy conserving.
+    //
+    // Exposed separately from sample() because the facet is *where the
+    // interface is*, and both Fresnel and Snell have to be evaluated there: a
+    // rough interface is rough for the transmitted branch too. Evaluating the
+    // split at the smooth normal and then deflecting the outgoing ray -- which
+    // is what the Gaussian tilt this replaced did -- reflects a rough
+    // dielectric as though it were polished and then sends it somewhere else.
+    //
+    // The returned normal is guaranteed to face `wi`, so the caller can use it
+    // as the interaction normal without checking. Returns false when the draw
+    // would put the outgoing ray below the surface, in which case the smooth
+    // normal stands.
+    bool sampleMicrofacet(const Vec3& wi, const Vec3& n, std::uint64_t& rng,
+                          Vec3& micronormal, Vec3& reflected, double& weight) const;
 };
 
 // Scattering inside a medium rather than at its boundary.

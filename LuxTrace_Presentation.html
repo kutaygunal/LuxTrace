@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LuxTrace — Optical Design Studio · Interview Deck</title>
+<style>
+  :root{
+    --bg0:#05060A; --bg1:#0B0E16; --bg2:#111625;
+    --line:#273049; --line2:#2f3a58;
+    --blue:#3E8FD0; --blue2:#6FB6E8;
+    --amber:#FFA633; --amber2:#FFC36E; --cream:#FFEEC4;
+    --txt:#E8ECF7; --mut:#9aa6c4; --dim:#6b7796;
+    --green:#5fd99b; --red:#ff6b6b;
+    --font:'Segoe UI',system-ui,-apple-system,sans-serif;
+    --mono:'Cascadia Code','JetBrains Mono','Consolas',monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:var(--bg0);color:var(--txt);font-family:var(--font);overflow:hidden}
+  body{background:
+    radial-gradient(1200px 800px at 85% -10%, rgba(75,143,208,.14), transparent 60%),
+    radial-gradient(900px 700px at -10% 110%, rgba(255,166,51,.08), transparent 55%),
+    var(--bg0);}
+  .deck{position:fixed;inset:0}
+  .slide{position:absolute;inset:0;padding:48px 6vw 88px;display:flex;flex-direction:column;
+    justify-content:center;opacity:0;visibility:hidden;transform:translateX(42px);
+    transition:opacity .5s ease, transform .5s ease, visibility .5s;overflow:auto}
+  .slide.on{opacity:1;visibility:visible;transform:none;z-index:2}
+  .inner{max-width:1180px;width:100%;margin:0 auto}
+  .bar{position:fixed;top:0;left:0;right:0;height:3px;background:var(--line);z-index:50}
+  .bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--blue),var(--amber));transition:width .4s ease}
+  .hud{position:fixed;bottom:16px;right:24px;display:flex;gap:14px;align-items:center;
+    font-family:var(--mono);font-size:12.5px;color:var(--dim);z-index:60}
+  .hud .k{color:var(--dim);background:var(--bg2);border:1px solid var(--line);border-radius:6px;padding:3px 8px;font-size:11px}
+  .dots{position:fixed;bottom:22px;left:24px;display:flex;gap:8px;z-index:60;flex-wrap:wrap;max-width:62vw}
+  .dots button{width:9px;height:9px;border-radius:50%;border:1px solid var(--line2);background:transparent;cursor:pointer;padding:0;transition:.25s}
+  .dots button.on{background:var(--amber);border-color:var(--amber);width:22px;border-radius:6px}
+  h1{font-size:clamp(38px,5.4vw,74px);font-weight:800;letter-spacing:-.02em;line-height:1.02}
+  h2{font-size:clamp(26px,3.3vw,44px);font-weight:750;letter-spacing:-.01em;line-height:1.08}
+  h4{font-size:15.5px;font-weight:700;color:var(--cream);margin-bottom:6px}
+  p.lead{font-size:clamp(16px,1.65vw,22px);color:var(--mut);line-height:1.5;max-width:60ch}
+  .kicker{font-family:var(--mono);font-size:12.5px;letter-spacing:.18em;text-transform:uppercase;
+    color:var(--amber);margin-bottom:16px;font-weight:600}
+  .dim{color:var(--dim)} .mut{color:var(--mut)} .amber{color:var(--amber)} .blue{color:var(--blue2)}
+  .mono{font-family:var(--mono)}
+  .grid{display:grid;gap:16px;margin-top:26px}
+  .card{background:linear-gradient(180deg,var(--bg2),var(--bg1));border:1px solid var(--line);
+    border-radius:14px;padding:18px 20px;transition:.25s}
+  .card:hover{border-color:var(--line2);transform:translateY(-2px)}
+  .card p{font-size:13.5px;color:var(--mut);line-height:1.52}
+  .card .big{font-family:var(--mono);font-size:clamp(22px,2.5vw,34px);font-weight:700;color:var(--amber);line-height:1}
+  .tag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;
+    padding:2px 8px;border-radius:5px;background:rgba(75,143,208,.14);color:var(--blue2);
+    border:1px solid rgba(75,143,208,.3);text-transform:uppercase}
+  .tag.amb{background:rgba(255,166,51,.12);color:var(--amber);border-color:rgba(255,166,51,.32)}
+  .tag.grn{background:rgba(95,216,155,.12);color:var(--green);border-color:rgba(95,216,155,.32)}
+  .divider{height:1px;background:var(--line);margin:22px 0}
+  .bullet{display:flex;gap:12px;align-items:flex-start;color:var(--mut);font-size:14.5px;line-height:1.5;margin-top:10px}
+  .bullet b{color:var(--txt);font-weight:600}
+  .bullet .d{color:var(--amber);flex-shrink:0}
+  .stack{display:flex;flex-wrap:wrap;gap:10px;margin-top:26px;justify-content:center}
+  .badge{font-family:var(--mono);font-size:13px;padding:9px 15px;border-radius:9px;
+    background:var(--bg2);border:1px solid var(--line2);color:var(--txt)}
+  .badge b{color:var(--amber);font-weight:600}
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--dim);text-align:left;padding:8px 12px;border-bottom:1px solid var(--line2)}
+  td{padding:9px 12px;border-bottom:1px solid var(--line);color:var(--mut);vertical-align:top}
+  td b{color:var(--txt)}
+  td.acc{color:var(--green);font-family:var(--mono);font-weight:600;white-space:nowrap}
+  td.neg{color:var(--red)}
+  tr:hover td{background:rgba(79,143,208,.05)}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px}
+  .stat{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:18px;text-align:center}
+  .stat .v{font-family:var(--mono);font-size:clamp(22px,2.8vw,36px);font-weight:800;color:var(--amber)}
+  .stat .l{font-size:11.5px;color:var(--dim);margin-top:4px;text-transform:uppercase;letter-spacing:.07em}
+  .logo{width:150px;height:150px;margin:0 auto 18px;overflow:hidden;filter:drop-shadow(0 6px 26px rgba(255,166,51,.22))}
+  .logo-sm{width:104px;height:104px;margin:0 auto 16px;overflow:hidden;filter:drop-shadow(0 4px 18px rgba(255,166,51,.3))}
+  .logo svg{width:100%;height:100%;display:block}
+  .zone{position:fixed;top:0;bottom:0;width:20%;z-index:40;cursor:pointer;transition:background .2s}
+  .zone.nprev{left:0}.zone.nnext{right:0}
+  .zone.nprev:hover,.zone.nnext:hover{background:rgba(255,166,51,.05)}
+  .navbtn{position:fixed;bottom:16px;z-index:65;font-size:24px;line-height:1;color:var(--cream);
+    background:var(--bg2);border:1px solid var(--line2);border-radius:9px;width:42px;height:42px;
+    display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .2s}
+  .navbtn:hover{border-color:var(--amber);color:var(--amber);transform:translateY(-1px)}
+  .navbtn.bprev{left:50%;margin-left:-48px}
+  .navbtn.bnext{left:50%;margin-left:6px}
+  @media (max-width:720px){ .slide{padding:40px 16px 100px} .hud{display:none} }
+</style>
+</head>
+<body>
+<div class="bar"><i id="prog"></i></div>
+<div class="deck" id="deck"></div>
+<div class="dots" id="dots"></div>
+<div class="zone nprev" id="zprev" title="Previous slide"></div>
+<div class="zone nnext" id="znext" title="Next slide"></div>
+<button class="navbtn bprev" id="bprev" title="Previous (or press &larr;)">&#8249;</button>
+<button class="navbtn bnext" id="bnext" title="Next (or press &rarr;)">&#8250;</button>
+<div class="hud"><span><span class="k">&#8592;</span> <span class="k">&#8594;</span> navigate</span><span class="n" id="counter"></span></div>
+<script>
+const LOGO = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!-- LuxTrace application icon. Generated by resources/make_icon.py -- edit the\n     constants there rather than this file, so the SVG, the PNGs and the ICO\n     cannot drift apart. -->\n<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\" width=\"512\" height=\"512\">\n  <defs>\n    <linearGradient id=\"bg\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\">\n      <stop offset=\"0\" stop-color=\"#161923\"/>\n      <stop offset=\"1\" stop-color=\"#05060A\"/>\n    </linearGradient>\n    <radialGradient id=\"glow\">\n      <stop offset=\"0\" stop-color=\"#FFD98A\" stop-opacity=\"0.85\"/>\n      <stop offset=\"1\" stop-color=\"#FFD98A\" stop-opacity=\"0\"/>\n    </radialGradient>\n    <clipPath id=\"badge\">\n      <rect x=\"0.0350\" y=\"0.0350\" width=\"0.9300\" height=\"0.9300\"\n            rx=\"0.2250\" ry=\"0.2250\"/>\n    </clipPath>\n  </defs>\n\n  <g clip-path=\"url(#badge)\">\n    <rect x=\"0\" y=\"0\" width=\"1\" height=\"1\" fill=\"url(#bg)\"/>\n    <circle cx=\"0.8750\" cy=\"0.5000\" r=\"0.20\" fill=\"url(#glow)\"/>\n    <path d=\"M 0.4000 0.1600 A 0.6280 0.6280 0 0 0 0.4000 0.8400 A 0.6280 0.6280 0 0 0 0.4000 0.1600 Z\" fill=\"#3E8FD0\" fill-opacity=\"0.47\"\n          stroke=\"#B4E6FF\" stroke-width=\"0.016\" stroke-opacity=\"0.92\"/>\n    <polyline points=\"0.1050,0.2350 0.3587,0.2350 0.4529,0.2615\" stroke=\"#FFA633\" stroke-width=\"0.028\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n    <line x1=\"0.4529\" y1=\"0.2615\" x2=\"0.8750\" y2=\"0.5000\" stroke=\"#FFEEC4\" stroke-width=\"0.028\" stroke-linecap=\"round\"/>\n    <polyline points=\"0.1050,0.3675 0.3141,0.3675 0.4886,0.3807\" stroke=\"#FFA633\" stroke-width=\"0.028\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n    <line x1=\"0.4886\" y1=\"0.3807\" x2=\"0.8750\" y2=\"0.5000\" stroke=\"#FFEEC4\" stroke-width=\"0.028\" stroke-linecap=\"round\"/>\n    <polyline points=\"0.1050,0.5000 0.3000,0.5000 0.5000,0.5000\" stroke=\"#FFA633\" stroke-width=\"0.028\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n    <line x1=\"0.5000\" y1=\"0.5000\" x2=\"0.8750\" y2=\"0.5000\" stroke=\"#FFEEC4\" stroke-width=\"0.028\" stroke-linecap=\"round\"/>\n    <polyline points=\"0.1050,0.6325 0.3141,0.6325 0.4886,0.6192\" stroke=\"#FFA633\" stroke-width=\"0.028\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n    <line x1=\"0.4886\" y1=\"0.6192\" x2=\"0.8750\" y2=\"0.5000\" stroke=\"#FFEEC4\" stroke-width=\"0.028\" stroke-linecap=\"round\"/>\n    <polyline points=\"0.1050,0.7650 0.3587,0.7650 0.4529,0.7385\" stroke=\"#FFA633\" stroke-width=\"0.028\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n    <line x1=\"0.4529\" y1=\"0.7385\" x2=\"0.8750\" y2=\"0.5000\" stroke=\"#FFEEC4\" stroke-width=\"0.028\" stroke-linecap=\"round\"/>\n    <circle cx=\"0.8750\" cy=\"0.5000\" r=\"0.030\" fill=\"#FFFFFA\"/>\n  </g>\n  <rect x=\"0.0350\" y=\"0.0350\" width=\"0.9300\" height=\"0.9300\"\n        rx=\"0.2250\" ry=\"0.2250\"\n        fill=\"none\" stroke=\"#394155\" stroke-width=\"0.011\"/>\n</svg>";
+const SLIDES = [];
+const el = h => { const t=document.createElement('template'); t.innerHTML=h.trim(); return t.content.firstChild; };
+
+/* 0 - Title */
+SLIDES.push('<div class="inner" style="text-align:center">'
+ +'<div class="logo">'+LOGO+'</div>'
+ +'<div class="kicker" style="text-align:center">Interview Walkthrough · Portfolio Project</div>'
+ +'<h1>LuxTrace</h1>'
+ +'<p class="lead" style="margin:14px auto 0">A <b style="color:var(--txt)">Monte Carlo optical-design studio</b> in C++20 / Qt 6 / OpenCASCADE — a desktop tool that builds lens and mirror geometry, traces hundreds of thousands of light rays through it, and reports what a real design review asks for: <b style="color:var(--amber)">lux on a target, candela in the far field, and an honest error bar on every answer</b>.</p>'
+ +'<div class="stack">'
+ +'<span class="badge">C++<b>20</b></span><span class="badge">Qt <b>6.8.2</b></span><span class="badge">OpenCASCADE <b>7.8</b></span><span class="badge">OpenGL</span><span class="badge">MSVC <b>2022</b> · CMake</span><span class="badge">216 <b>tests</b> · 35 suites</span>'
+ +'</div>'
+ +'<p class="mono dim" style="margin-top:26px;font-size:12.5px">named after <b class="amber">lux</b> — the SI unit of illuminance it computes — and <b class="amber">trace</b>, for the ray tracing that gets there.</p>'
+ +'</div>');
+
+/* 1 - Pitch */
+SLIDES.push('<div class="inner">'
+ +'<div class="kicker">The pitch</div>'
+ +'<h2>A desktop app that behaves like a <span class="amber">commercial illumination-design package</span></h2>'
+ +'<p class="lead" style="margin-top:16px">LightTools, TracePro and OpticStudio cost thousands and lock the workflow in their UI. LuxTrace is a from-scratch <b style="color:var(--txt)">engine + UI</b> that competes on the physics people actually use — and is honest about every number it prints.</p>'
+ +'<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(250px,1fr))">'
+ +'<div class="card"><h4>Geometry</h4><p><b style="color:var(--txt)">25 parametric OCCT scenes</b> built as B-Rep solids, plus STEP/IGES import of a customer’s own CAD. One registry drives the UI, tests and CLI.</p></div>'
+ +'<div class="card"><h4>Optics</h4><p><b style="color:var(--txt)">Monte Carlo ray tracing</b> with Fresnel, dispersion, coatings, scattering, polarisation and volume media — each from the physics equations, not a tuned hack.</p></div>'
+ +'<div class="card"><h4>Measurement</h4><p><b style="color:var(--txt)">Lux / candela / watts</b>, MTF, wavefront error, tolerance yield — and an error bar that is actually calibrated.</p></div>'
+ +'</div></div>');
+
+/* 2 - Architecture */
+SLIDES.push('<div class="inner">'
+ +'<div class="kicker">Architecture</div>'
+ +'<h2>Clean layering, a pure core,<br>and a headless CLI that can’t lie</h2>'
+ +'<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin-top:26px">'
+ +'<div class="card" style="border-top:3px solid var(--blue)"><span class="tag">Static library</span><h4 style="margin-top:10px">optics_core</h4><p>Geometry, meshing, BVH, ray tracer, materials, analysis, studies, reporting. <b style="color:var(--txt)">No Qt Widgets</b> — tests link the exact objects the app runs.</p></div>'
+ +'<div class="card" style="border-top:3px solid var(--amber)"><span class="tag amb">App</span><h4 style="margin-top:10px">LuxTrace.exe</h4><p>Qt 6 UI + embedded <b style="color:var(--txt)">OCCT 3D viewport</b>. Seven analysis tabs, progressive rendering, async worker, one-click HTML report.</p></div>'
+ +'<div class="card" style="border-top:3px solid var(--green)"><span class="tag grn">Headless</span><h4 style="margin-top:10px">Diagnostics</h4><p><span class="mono">--smoke --validate --bench --study --cad</span> run every feature without a window — the engine is provable from CI.</p></div>'
+ +'</div>'
+ +'<div class="divider"></div>'
+ +'<div class="bullet" style="max-width:900px"><span class="d">◆</span><span>Every optical property lives in <b>one struct — <span class="mono">SurfaceOptics</span></b> — shared by the B-Rep, mesh and BVH surface forms, so a feature reaches the tracer with no conversion-loop edits.</span></div>'
+ +'</div>');
+
+/* 3 - Physics */
+SLIDES.push('<div class="inner">'
+ +'<div class="kicker">The physics engine</div>'
+ +'<h2>From equations, not hacks</h2>'
+ +'<p class="lead" style="margin-top:10px">Each effect is implemented from the closed form and then <b style="color:var(--txt)">verified against arithmetic derived outside the code</b>.</p>'
+ +'<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));margin-top:22px">'
+ +'<div class="card"><div class="big">Fresnel</div><p style="margin-top:8px">Angle-dependent R=(Rs+Rp)/2 — 4% at normal, 100% at grazing, exactly 1 past the critical angle. <b style="color:var(--txt)">No fixed 4/96 split.</b></p></div>'
+ +'<div class="card"><div class="big">Beer-Lambert</div><p style="margin-top:8px">exp(-α·t) over the true path inside each medium — the reason a 200 mm light guide is measurably dimmer than a 100 mm one.</p></div>'
+ +'<div class="card"><div class="big">Coatings</div><p style="margin-top:8px">Ideal AR/HR → measured R(λ) tables → a <b style="color:var(--txt)">characteristic-matrix thin-film solver</b>. Can never defeat total internal reflection.</p></div>'
+ +'<div class="card"><div class="big">Scattering</div><p style="margin-top:8px">GGX microfacet + Smith masking, ABg, measured BSDF, Lambertian, and Henyey-Greenstein <b style="color:var(--txt)">volume</b> scatter — each energy-conserving.</p></div>'
+ +'<div class="card"><div class="big">Media stack</div><p style="margin-top:8px">A priority stack resolves overlap: cemented doublets, immersed optics, clad guides, nested solids — each refracts against the right pair of indices.</p></div>'
+ +'<div class="card"><div class="big">Dispersion</div><p style="margin-top:8px">Sellmeier from a named glass catalogue (N-BK7, N-SF11, PMMA…); complex-index Fresnel for Al / Ag / Au metals.</p></div>'
+ +'<div class="card"><div class="big">Spectrum</div><p style="margin-top:8px">One wavelength per ray from a real SPD — blackbody, white-LED, D65 — so <b style="color:var(--txt)">lux needs a real spectrum</b> and lumens = watts × CIE V(λ).</p></div>'
+ +'<div class="card"><div class="big">Polarisation</div><p style="margin-top:8px">Stokes vectors × Mueller matrices, behind a switch. Brewster, polarisers, retarders, the phase of total internal reflection.</p></div>'
+ +'</div></div>');
+
+/* 4 - Scenes */
+SLIDES.push('<div class="inner">'
+ +'<div class="kicker">The scene library</div>'
+ +'<h2>25 scenes, all parametric, from one registry</h2>'
+ +'<p class="lead" style="margin-top:10px">Every scene is <b style="color:var(--txt)">built as real OCCT B-Rep</b>, enumerated from one registry, and validated numerically — two descriptions didn’t survive and were fixed.</p>'
+ +'<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin-top:22px;gap:12px">'
+ +'<div class="card"><h4>Reflective</h4><p>Parabola · ellipsoid · sphere · off-axis · trough · CPC · cone · Cassegrain · corner-cube</p></div>'
+ +'<div class="card"><h4>Refractive</h4><p>Ball · plano-convex · biconvex · concave · half-ball dome · rod · Fresnel · axicon · microlens array · prism</p></div>'
+ +'<div class="card"><h4>Total internal reflection</h4><p>Round / square / tapered light guides · Porro prism</p></div>'
+ +'<div class="card"><h4>Scattering</h4><p>Integrating sphere · diffuser plate</p></div>'
+ +'</div>'
+ +'<div class="divider"></div>'
+ +'<div class="bullet" style="max-width:960px"><span class="d">◆</span><span>Editing a dimension <b style="color:var(--txt)">moves the source to the optic’s new focus</b>. The receiver position is just the last parameter — no hardcoded scene-to-source switch.</span></div>'
+ +'<div style="margin-top:14px"><span class="tag grn">whole library</span> <span class="mono dim" style="margin-left:8px">25 scenes × 50,000 rays, full physics → <b style="color:var(--green)">0.51 s</b></span></div>'
+ +'</div>');
+
+/* 5 - Measurements */
+SLIDES.push('<div class="inner">'
+ +'<div class="kicker">Measurements, not impressions</div>'
+ +'<h2>Numbers a design review can sign</h2>'
+ +'<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));margin-top:22px">'
+ +'<div class="card"><h4>Spot metrics</h4><p>Peak, uniformity, centroid, RMS radius, D50/D86, FWHM — all as <b style="color:var(--txt)">densities</b>, so they don’t move when the receiver is re-binned.</p></div>'
+ +'<div class="card"><h4>Far-field intensity</h4><p>θ/φ bins <b style="color:var(--txt)">divided by solid angle</b> — otherwise an isotropic source reads dark at the poles. totalFlux = escaped + detector.</p></div>'
+ +'<div class="card"><h4>Absolute units</h4><p>W/m² or <b style="color:var(--txt)">lux</b>; W/sr or <b style="color:var(--txt)">candela</b> — a number that can actually go into a specification.</p></div>'
+ +'<div class="card"><h4>Monte-Carlo error bar</h4><p>One σ per run, measured across 16 independent scrambles of the Sobol sequence — because a low-discrepancy sequence is <b style="color:var(--txt)">not</b> a set of independent samples.</p></div>'
+ +'<div class="card"><h4>Image quality</h4><p>MTF (with diffraction limit), OPD map, RMS wavefront error, Strehl — flagged past the ¼-wave limit of Marechal’s approximation.</p></div>'
+ +'<div class="card"><h4>Through focus, one trace</h4><p>Arrivals propagate analytically to any plane — <b style="color:var(--txt)">one trace answers every plane</b>, refined by a parabolic fit.</p></div>'
+ +'<div class="card"><h4>Yield, not just performance</h4><p>Tolerance studies perturb every dimension and report <b style="color:var(--txt)">yield + a sensitivity ranking</b> — so the answer is which dimension to tighten.</p></div>'
+ +'<div class="card"><h4>A report, not a folder</h4><p>One HTML doc with scene, parameters, energy budget, every plot, metrics, studies — and the <b style="color:var(--txt)">seed stamped on it</b> so it can be regenerated exactly.</p></div>'
+ +'</div></div>');
+
+/* 6 - Performance */
+SLIDES.push('<div class="inner">'
+ +'<div class="kicker">Performance</div>'
+ +'<h2>A from-scratch tracer that got <span class="amber">~280×</span> faster</h2>'
+ +'<p class="lead" style="margin-top:10px">Originally a single-threaded brute-force scan of every triangle per ray, on the GUI thread. Same workload, before / after:</p>'
+ +'<table style="margin-top:18px;max-width:640px"><tr><th>Workload</th><th>Before</th><th>After</th></tr>'
+ +'<tr><td><b>3 scenes × 30,000 rays</b></td><td class="neg">48.1 s</td><td class="acc">0.17 s</td></tr>'
+ +'<tr><td><b>3 scenes × 1,000,000 rays</b></td><td class="neg">~27 min</td><td class="acc">1.35 s</td></tr></table>'
+ +'<div class="divider"></div>'
+ +'<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(210px,1fr))">'
+ +'<div class="card"><h4>SAH BVH</h4><p>Over the flattened triangles, replacing the O(rays × tris × depth) scan.</p></div>'
+ +'<div class="card"><h4>Multithreading</h4><p>512-ray dynamic chunks keep every core busy through uneven paths. 9–13× on 24 threads.</p></div>'
+ +'<div class="card"><h4>Cached geometry</h4><p>Tessellation + BVH built once per (scene, params) pair and reused.</p></div>'
+ +'<div class="card"><h4>Deterministic</h4><p>Per-ray seeded RNG + chunk-order reduction → <b style="color:var(--txt)">bit-identical at any thread count</b>. Asserted by --bench.</p></div>'
+ +'<div class="card"><h4>Better estimator</h4><p>Sobol + aiming + next-event + Russian roulette → error bars <b style="color:var(--txt)">1.5×–28× tighter</b> at the same ray count.</p></div>'
+ +'<div class="card"><h4>Instancing</h4><p>A 25-lens array = one lenslet, one hierarchy, 25 transforms — fine mesh, a third of the triangles.</p></div>'
+ +'</div></div>');
+
+/* 7 - Validation */
+SLIDES.push('<div class="inner">'
+ +'<div class="kicker">Validation &amp; testing</div>'
+ +'<h2>An error bar is only as good as its claim — so we prove it</h2>'
+ +'<div class="grid" style="grid-template-columns:1fr 1fr;margin-top:22px">'
+ +'<div><div class="card" style="margin-bottom:14px"><h4>Closed-form validation</h4><p><span class="mono">--validate</span> checks the tracer against <b style="color:var(--txt)">seven results derived entirely outside the code</b> — lensmaker’s equation, integrating-sphere multiplier, inverse-square cosine law, CPC concentration limit, prism deviation, Lambert’s law. Residuals: <b style="color:var(--green)">0.00% – 0.35%</b>.</p></div>'
+ +'<div class="card"><h4>The honest error bar</h4><p>A test checks the reported σ against the actual spread across <b style="color:var(--txt)">12 independent seeds</b>. Convergence asserted ≥ 1/√N over a 64× range. An error bar makes one claim, and this is it.</p></div></div>'
+ +'<div class="card" style="border-top:3px solid var(--green)"><h4>216 tests · 35 suites · no external framework</h4><p>Physics pinned to arithmetic, not to itself:</p>'
+ +'<div class="bullet"><span class="d">·</span><span>Fresnel vs Rs/Rp recomputed in-test over the full angular range</span></div>'
+ +'<div class="bullet"><span class="d">·</span><span>Complex-index metal reflectance against its closed form</span></div>'
+ +'<div class="bullet"><span class="d">·</span><span>Lambertian lobe vs sin²θ, microfacet energy conservation</span></div>'
+ +'<div class="bullet"><span class="d">·</span><span>Malus’s law, Brewster’s zero, quarter-wave → circular polarisation</span></div>'
+ +'<div class="bullet"><span class="d">·</span><span>BVH vs brute-force across 12,000 random rays per scene</span></div>'
+ +'<div class="bullet"><span class="d">·</span><span>STEP round-trip → "the imported file is what gets traced"</span></div>'
+ +'<div class="bullet"><span class="d">·</span><span>Synthetic discs/cones with closed-form RMS, D50, focus waist</span></div>'
+ +'</div></div></div>');
+
+/* 8 - Bugs */
+SLIDES.push('<div class="inner">'
+ +'<div class="kicker">Engineering craft</div>'
+ +'<h2>Bugs found by <span class="amber">measuring</span>, not guessing</h2>'
+ +'<div class="grid" style="grid-template-columns:1fr 1fr;margin-top:22px">'
+ +'<div class="card"><h4>Correlated RNG streams</h4><p>Two draws from consecutive rays were bit-identical — a hidden pairing that only surfaced by pairing two moments. Fixed by hashing the index; a regression test proves the old seed fails.</p></div>'
+ +'<div class="card"><h4>The prism was a Porro prism</h4><p>At its default apex the roof faces exceeded the critical angle, so it totally reflected instead of dispersing — a silent duplicate of the scene beside it. Fix: smaller apex. Efficiency 21% → 51%.</p></div>'
+ +'<div class="card"><h4>The mesh was too coarse to image</h4><p>A facet normal sits up to half the deflection off the true one; a mirror doubles it. Reading normals off the exact B-Rep took a reflector spot from <b style="color:var(--txt)">10.8 mm → 0.99 mm RMS</b>.</p></div>'
+ +'<div class="card"><h4>A claim that didn’t survive its own benchmark</h4><p>A four-wide BVH and float bounds were built, benchmarked, <b style="color:var(--txt)">found not to pay, and removed</b> — measurements kept in a comment. "A performance claim that does not survive its own benchmark is not an optimisation."</p></div>'
+ +'</div></div>');
+
+/* 9 - UI */
+SLIDES.push('<div class="inner">'
+ +'<div class="kicker">The application</div>'
+ +'<h2>A real OCCT 3D viewport, seven analysis tabs</h2>'
+ +'<div class="grid" style="grid-template-columns:1fr 1fr;margin-top:22px">'
+ +'<div><div class="card" style="margin-bottom:12px"><h4>3D View</h4><p>B-Rep geometry and ray paths coloured by energy / bounce / wavelength, a clipping plane, surface picking, and a receiver-paths-only filter.</p></div>'
+ +'<div class="card"><h4>Workflow</h4><p>Worker-thread run, frozen inputs, instant cancel that keeps finished rays, <b style="color:var(--txt)">progressive rendering</b> (the image forms as the error bar shrinks), and <b style="color:var(--txt)">Compare → Pin this run</b>.</p></div></div>'
+ +'<div><div class="card" style="margin-bottom:12px"><h4>Tabs</h4><p>3D View · Ray Diagram (X-Z) · Irradiance · Far-field polar · Studies · Design (sweep + Nelder–Mead / CMA-ES optimise) · Tolerance (yield + sensitivity).</p></div>'
+ +'<div class="card"><h4>Exports</h4><p>JSON config, CSV metrics, <b style="color:var(--txt)">IES LM-63 &amp; EULUMDAT</b> straight into DIALux / AGi32 / Relux, PNG of any view, one-click HTML report with the seed stamped on it.</p></div></div>'
+ +'</div>'
+ +'<div class="divider"></div>'
+ +'<p class="mut" style="max-width:900px">Live derived quantities (f-number, NA, acceptance angle, etendue) update under the parameter boxes <b style="color:var(--txt)">before anything is traced</b>.</p>'
+ +'</div>');
+
+/* 10 - Roadmap */
+SLIDES.push('<div class="inner">'
+ +'<div class="kicker">Roadmap · honest about limits</div>'
+ +'<h2>Where I’d take it next</h2>'
+ +'<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));margin-top:22px">'
+ +'<div class="card"><h4>Exact B-Rep intersection</h4><p>Ray–surface tests against the exact surface, with curvature- &amp; activity-driven adaptive meshing to cut triangles further.</p></div>'
+ +'<div class="card"><h4>Equal-solid-angle far field</h4><p>Finely resolve a 1.3° beam that now falls between uniform-θ bins.</p></div>'
+ +'<div class="card"><h4>Persistent CAD</h4><p>Imported STEP should live in the scene list, survive a parameter edit, and have an editable source axis/position after import.</p></div>'
+ +'<div class="card"><h4>More design depth</h4><p>Multi-element doublets (&gt;4 params), threaded detector grids at fine resolution, walkthrough collision, versioned config.</p></div>'
+ +'</div>'
+ +'<div class="divider"></div>'
+ +'<p class="mut" style="max-width:960px">Every limit in the README is stated out loud — <b style="color:var(--txt)">"the ray hit is the tessellation, position is what it costs"</b> — because an interview is won by knowing <i>both</i> what a tool does and where it stops.</p>'
+ +'</div>');
+
+/* 11 - Close */
+SLIDES.push('<div class="inner" style="text-align:center">'
+ +'<div class="logo logo-sm">'+LOGO+'</div>'
+ +'<div class="kicker" style="color:var(--amber)">LuxTrace — Optical Design Studio</div>'
+ +'<h2>Physics, proven — not claimed</h2>'
+ +'<p class="lead" style="margin:16px auto 0;max-width:62ch">A from-scratch Monte Carlo optics engine that is <b style="color:var(--txt)">fast enough to iterate on</b> (~280×), <b style="color:var(--txt)">honest enough to trust</b> (calibrated error bars, closed-form validation) and <b style="color:var(--txt)">deep enough to discuss for an hour</b> — Fresnel to polarisation, BVH to instancing, geometry to lux.</p>'
+ +'<div class="stats" style="max-width:820px;margin:28px auto 0">'
+ +'<div class="stat"><div class="v">25</div><div class="l">parametric scenes</div></div>'
+ +'<div class="stat"><div class="v">~280×</div><div class="l">speed-up</div></div>'
+ +'<div class="stat"><div class="v">28×</div><div class="l">tighter error bars</div></div>'
+ +'<div class="stat"><div class="v">216</div><div class="l">tests · 35 suites</div></div>'
+ +'<div class="stat"><div class="v">0.00–.35%</div><div class="l">closed-form residual</div></div>'
+ +'</div>'
+ +'<p class="mono dim" style="margin-top:28px;font-size:13px">C++20 · Qt 6.8.2 · OpenCASCADE 7.8 · CMake · headless CI diagnostics</p>'
+ +'<p class="tag amb" style="margin-top:16px">ask me about the estimator · the error bar · the bug hunt</p>'
+ +'</div>');
+
+/* render */
+const deck = document.getElementById('deck');
+SLIDES.forEach(s => {
+  const wrap = document.createElement('div');
+  wrap.classList.add('slide');
+  wrap.appendChild(el(s));
+  deck.appendChild(wrap);
+});
+let cur = 0;
+function show(n){
+  n = Math.max(0, Math.min(SLIDES.length-1, n));
+  deck.querySelectorAll('.slide').forEach((s,idx)=> s.classList.toggle('on', idx===n));
+  document.getElementById('counter').textContent = (n+1)+' / '+SLIDES.length;
+  document.getElementById('prog').style.width = ((n+1)/SLIDES.length*100)+'%';
+  document.querySelectorAll('.dots button').forEach((d,k)=> d.classList.toggle('on', k===n));
+  cur = n;
+}
+const dots = document.getElementById('dots');
+SLIDES.forEach((_,k)=>{ const b=document.createElement('button'); b.className='dot'; b.onclick=()=>show(k); dots.appendChild(b); });
+
+// keyboard — capture phase on both window and document so it works regardless of focus
+function onKey(e){
+  const k = e.key;
+  if(k==='ArrowRight'||k==='ArrowDown'||k==='PageDown'||k===' '||k==='Enter'){e.preventDefault();show(cur+1);}
+  else if(k==='ArrowLeft'||k==='ArrowUp'||k==='PageUp'||k==='Backspace'){e.preventDefault();show(cur-1);}
+  else if(k==='Home'){e.preventDefault();show(0);}
+  else if(k==='End'){e.preventDefault();show(SLIDES.length-1);}
+}
+// single capture-phase listener: one keypress advances exactly one slide
+document.addEventListener('keydown', onKey, true);
+
+// click zones + on-screen buttons
+document.getElementById('zprev').addEventListener('click', ()=>show(cur-1));
+document.getElementById('znext').addEventListener('click', ()=>show(cur+1));
+document.getElementById('bprev').addEventListener('click', ()=>show(cur-1));
+document.getElementById('bnext').addEventListener('click', ()=>show(cur+1));
+
+// swipe
+let x0=null;
+document.addEventListener('touchstart',e=>x0=e.touches[0].clientX,{passive:true});
+document.addEventListener('touchend',e=>{ if(x0===null)return; const dx=e.changedTouches[0].clientX-x0; if(dx<-40)show(cur+1); else if(dx>40)show(cur-1); x0=null; },{passive:true});
+
+// mouse wheel
+let locked=false;
+document.addEventListener('wheel', e=>{
+  if(locked||Math.abs(e.deltaY)<5) return;
+  locked=true;
+  if(e.deltaY>0) show(cur+1); else show(cur-1);
+  setTimeout(()=>locked=false, 450);
+}, {passive:true});
+
+show(0);
+</script>
+</body>
+</html>

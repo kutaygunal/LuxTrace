@@ -1,6 +1,11 @@
 # Unit tests for the optics core. No external test framework: TestMain.cpp
 # carries a small assertion harness, so the tests build wherever the app does.
-add_executable(optics_tests TestMain.cpp NewTests.inc)
+add_executable(optics_tests TestMain.cpp NewTests.inc AuditTests.inc)
+
+# The reference corpus lives beside the tests, and the test binary runs from the
+# build tree, so the path has to be baked in rather than guessed at run time.
+target_compile_definitions(optics_tests PRIVATE
+    LUXTRACE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
 target_link_libraries(optics_tests PRIVATE optics_core)
 
@@ -14,11 +19,11 @@ if(MSVC)
 endif()
 
 # One CTest entry per suite, so a failure names the area that broke.
-foreach(suite intersect bvh trace edge tir sampling detector worker patterns fresnel absorption scatter roughness spectral intensity metrics focus convergence source rays params config media material spectrum units detectors photometry validation estimator instances cad sweep optimise derived report overrides bsdf coating polarised imagequality tolerancing geometry)
+foreach(suite intersect bvh trace edge tir sampling detector worker patterns fresnel absorption scatter roughness spectral intensity metrics focus convergence source rays params config media material spectrum units detectors photometry validation estimator instances cad sweep optimise derived report overrides bsdf coating polarised imagequality tolerancing geometry channels diagnostics overridekeys polarisedmetal catalogue rayfile multisource regression configkeys scattermodel importaudit simd preview rayinspector)
     add_test(NAME ${suite} COMMAND optics_tests ${suite})
     set_tests_properties(${suite} PROPERTIES TIMEOUT 300)
 endforeach()
 
 # Qt needs its platform plugin resolved even for a console binary on Windows.
-set_tests_properties(intersect bvh trace edge tir sampling detector worker patterns fresnel absorption scatter roughness spectral intensity metrics focus convergence source rays params config media material spectrum units detectors photometry validation estimator instances cad sweep optimise derived report overrides bsdf coating polarised imagequality tolerancing geometry
+set_tests_properties(intersect bvh trace edge tir sampling detector worker patterns fresnel absorption scatter roughness spectral intensity metrics focus convergence source rays params config media material spectrum units detectors photometry validation estimator instances cad sweep optimise derived report overrides bsdf coating polarised imagequality tolerancing geometry channels diagnostics overridekeys polarisedmetal catalogue rayfile multisource regression configkeys scattermodel importaudit simd preview rayinspector
                      PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

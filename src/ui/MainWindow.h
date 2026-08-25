@@ -8,7 +8,9 @@
 #include "core/Studies.h"
 
 class ControlsPanel;
+class EnergyBarWidget;
 class RayDiagramWidget;
+class SurfaceInspector;
 class HeatmapWidget;
 class OcctViewWidget;
 class PlotWidget;
@@ -27,6 +29,8 @@ class QPushButton;
 class QTabWidget;
 class QTextBrowser;
 class QTimer;
+class QTreeWidget;
+class QTreeWidgetItem;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -64,9 +68,23 @@ private slots:
     void onClearPin();
     void onSurfaceEdited();
     void onResetSurface();
+    // The scene tree: picking through the 3D view alone cannot reach an
+    // internal surface -- the far wall of a light guide, a lens's second face.
+    void onSurfaceRowChanged();
+    void onSurfaceVisibilityChanged(QTreeWidgetItem* item, int column);
+    void onIsolateSurface();
+    void onShowAllSurfaces();
+    void onResetAllSurfaces();
+    // A single ray through the optic, with every interaction it had.
+    void onInspectRay();
 
     void onSaveConfig();
     void onLoadConfig();
+    // Reads a Zemax .agf glass catalogue or a refractiveindex.info entry into
+    // the material registry. Ten built-in materials is a demonstration; a
+    // catalogue is a tool, and the first thing a lens designer does is type a
+    // glass name.
+    void onLoadMaterialCatalogue();
     void onExportIrradianceCsv();
     void onExportIntensityCsv();
     void onExportMetricsCsv();
@@ -83,7 +101,14 @@ private:
     QWidget* buildStudiesTab();
     QWidget* buildDesignTab();
     QWidget* buildToleranceTab();
+    QWidget* buildSurfacesTab();
     void     buildMenus();
+    void     rebuildSurfaceTree();
+    void     refreshSurfaceTreeBadges();
+    // The optics this run would use for one surface: the scene's own, with any
+    // edit applied over it.
+    SurfaceOptics effectiveOptics(int surface) const;
+    bool          surfaceIsEdited(int surface) const;
 
     void rebuildGeometryView();
     void refreshDerivedViews();
@@ -159,13 +184,23 @@ private:
     PlotWidget*     m_mtfPlot     = nullptr;
 
     QLabel*         m_derived     = nullptr;
-    QGroupBox*      m_surfaceBox  = nullptr;
-    QLabel*         m_surfaceName = nullptr;
-    QDoubleSpinBox* m_surfReflect = nullptr;
-    QDoubleSpinBox* m_surfScatter = nullptr;
-    QDoubleSpinBox* m_surfRough   = nullptr;
-    QDoubleSpinBox* m_surfAbsorb  = nullptr;
-    QPushButton*    m_surfReset   = nullptr;
+
+    // ---- surfaces tab: the tree and the inspector --------------------------
+    QTreeWidget*      m_surfaceTree = nullptr;
+    SurfaceInspector* m_inspector   = nullptr;
+    QPushButton*      m_isolate     = nullptr;
+    QPushButton*      m_showAll     = nullptr;
+    QPushButton*      m_resetAll    = nullptr;
+    QPushButton*      m_inspectRay  = nullptr;
+    QTextBrowser*     m_rayLog      = nullptr;
+    QDoubleSpinBox*   m_probeX      = nullptr;
+    QDoubleSpinBox*   m_probeY      = nullptr;
+    // Set while the tree is being rebuilt, so its selection and check signals
+    // do not read back as user actions.
+    bool              m_loadingTree = false;
+
+    // Where the light went, drawn rather than printed.
+    EnergyBarWidget*  m_energyBar   = nullptr;
 
     SimulationWorker* m_worker = nullptr;
     StudyWorker*      m_study  = nullptr;

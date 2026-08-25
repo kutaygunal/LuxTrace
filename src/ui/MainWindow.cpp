@@ -9,7 +9,11 @@
 #include "core/Analysis.h"
 #include "core/CadImport.h"
 #include "core/Report.h"
+#include "EnergyBarWidget.h"
+#include "ImportDialog.h"
+#include "SurfaceInspector.h"
 #include "core/ConfigIO.h"
+#include "core/MaterialFile.h"
 #include "core/SimulationWorker.h"
 #include "core/StudyWorker.h"
 
@@ -36,6 +40,7 @@
 #include <QStatusBar>
 #include <QTabWidget>
 #include <QTextBrowser>
+#include <QTreeWidget>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -82,6 +87,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_tabs->addTab(buildStudiesTab(),    QStringLiteral("Studies"));
     m_tabs->addTab(buildDesignTab(),     QStringLiteral("Design"));
     m_tabs->addTab(buildToleranceTab(),  QStringLiteral("Tolerance"));
+    m_tabs->addTab(buildSurfacesTab(),   QStringLiteral("Surfaces"));
 
     m_metrics = new QTextBrowser(this);
     m_metrics->setOpenExternalLinks(false);
@@ -105,66 +111,34 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_derived->setStyleSheet(QStringLiteral("color:#9aa0b0; font-size:11px;"));
     m_derived->setVisible(false);
 
-    // The optics of whatever was last clicked in the viewport, editable.
-    m_surfaceBox = new QGroupBox(QStringLiteral("Picked surface"), this);
-    m_surfaceBox->setVisible(false);
-    {
-        auto* form = new QFormLayout(m_surfaceBox);
-        form->setContentsMargins(8, 6, 8, 6);
-        form->setSpacing(4);
-        m_surfaceName = new QLabel(this);
-        m_surfaceName->setStyleSheet(QStringLiteral("font-weight:600;"));
-
-        auto spin = [this](double max, double step, int decimals, const QString& suffix) {
-            auto* b = new QDoubleSpinBox(this);
-            b->setRange(0.0, max);
-            b->setSingleStep(step);
-            b->setDecimals(decimals);
-            b->setSuffix(suffix);
-            b->setKeyboardTracking(false);
-            connect(b, &QDoubleSpinBox::valueChanged, this, &MainWindow::onSurfaceEdited);
-            return b;
-        };
-        m_surfReflect = spin(1.0, 0.01, 3, QString());
-        m_surfReflect->setToolTip(QStringLiteral(
-            "Reflectance of this surface. Only meaningful on an opaque one; a "
-            "refractive surface takes its split from the Fresnel equations."));
-        m_surfScatter = spin(1.0, 0.05, 3, QString());
-        m_surfScatter->setToolTip(QStringLiteral(
-            "Fraction re-emitted cosine-weighted about the normal instead of "
-            "specularly. 0 is polished, 1 is a perfect Lambertian diffuser."));
-        m_surfRough = spin(0.5, 0.002, 4, QStringLiteral(" rad"));
-        m_surfRough->setToolTip(QStringLiteral(
-            "RMS surface slope error. A mirror spreads a reflected ray by twice it."));
-        m_surfAbsorb = spin(0.05, 0.0001, 5, QStringLiteral(" /mm"));
-        m_surfAbsorb->setToolTip(QStringLiteral(
-            "Beer-Lambert attenuation of the medium behind this surface."));
-
-        m_surfReset = new QPushButton(QStringLiteral("Restore scene optics"), this);
-        m_surfReset->setEnabled(false);
-        connect(m_surfReset, &QPushButton::clicked, this, &MainWindow::onResetSurface);
-
-        form->addRow(m_surfaceName);
-        form->addRow(QStringLiteral("Reflectance:"), m_surfReflect);
-        form->addRow(QStringLiteral("Scatter:"), m_surfScatter);
-        form->addRow(QStringLiteral("Roughness:"), m_surfRough);
-        form->addRow(QStringLiteral("Absorption:"), m_surfAbsorb);
-        form->addRow(m_surfReset);
-    }
+    // Where the light went, drawn rather than printed. It sits under the
+    // controls because it is the answer to the question the Run button asks.
+    m_energyBar = new EnergyBarWidget(this);
 
     auto* left = new QWidget(this);
     auto* lv = new QVBoxLayout(left);
     lv->setContentsMargins(0, 0, 0, 0);
     lv->addWidget(m_controls, 1);
     lv->addWidget(m_derived, 0);
-    lv->addWidget(m_surfaceBox, 0);
+    lv->addWidget(m_energyBar, 0);
     lv->addWidget(m_result, 0);
+
+    // The controls column is draggable against the viewport rather than pinned
+    // at whatever width it was built with: a long scene name, a wide parameter
+    // label or a set of derived quantities is a reason to give it more room,
+    // and the 3D view is where that room comes from.
+    auto* columns = new QSplitter(Qt::Horizontal, this);
+    columns->addWidget(left);
+    columns->addWidget(right);
+    columns->setStretchFactor(0, 0);   // the viewport takes the window's growth
+    columns->setStretchFactor(1, 1);
+    columns->setChildrenCollapsible(false);
+    columns->setSizes({left->sizeHint().width(), 1200});
 
     auto* central = new QWidget(this);
     auto* main = new QHBoxLayout(central);
     main->setContentsMargins(6, 6, 6, 6);
-    main->addWidget(left, 0);
-    main->addWidget(right, 1);
+    main->addWidget(columns);
     setCentralWidget(central);
 
     buildMenus();
@@ -705,12 +679,34 @@ void MainWindow::onSweepReady(const std::vector<studies::SweepPoint>& points) {
             best = i;
     m_sweepPlot->setMarkers({{points[best].parameter, QStringLiteral("best"),
                               QColor(140, 210, 140)}});
-    m_sweepPlot->setTitle(QStringLiteral("%1 against %2 — best %3 at %4 %5")
-                              .arg(studies::metricName(m_sweepMetricUsed), info.name,
-                                   QString::number(points[best].value, 'g', 4),
-                                   QString::number(points[best].parameter, 'f', info.decimals),
-                                   info.unit));
-    m_controls->setStatus(QStringLiteral("Sweep done"));
+
+    // Is the curve saying anything? A sweep whose whole travel sits inside its
+    // own error bars is a picture of the sampling, not of the design -- and
+    // reading a Monte Carlo wiggle as a trend is the classic misreading this
+    // app already has the number to prevent.
+    double lo = points[best].value, hi = points[best].value, worstErr = 0.0;
+    for (const auto& p : points) {
+        lo = std::min(lo, p.value);
+        hi = std::max(hi, p.value);
+        worstErr = std::max(worstErr, p.stdErr);
+    }
+    const bool insideNoise = worstErr > 0.0 && (hi - lo) < 2.0 * worstErr;
+
+    m_sweepPlot->setTitle(
+        insideNoise
+            ? QStringLiteral("%1 against %2 — the whole curve moves less than its own "
+                             "error bar (%3 over %4). Trace more rays or widen the range.")
+                  .arg(studies::metricName(m_sweepMetricUsed), info.name,
+                       QString::number(hi - lo, 'g', 3),
+                       QString::number(2.0 * worstErr, 'g', 3))
+            : QStringLiteral("%1 against %2 — best %3 at %4 %5")
+                  .arg(studies::metricName(m_sweepMetricUsed), info.name,
+                       QString::number(points[best].value, 'g', 4),
+                       QString::number(points[best].parameter, 'f', info.decimals),
+                       info.unit));
+    m_controls->setStatus(insideNoise
+                              ? QStringLiteral("Sweep done — but it is all noise")
+                              : QStringLiteral("Sweep done"));
 }
 
 void MainWindow::onRunOptimisation() {
@@ -754,13 +750,19 @@ void MainWindow::onOptimisationReady(const studies::OptimisationResult& result) 
     PlotSeries best;
     best.name  = QStringLiteral("best so far");
     best.color = QColor(255, 175, 90);
+    bool anyError = false;
     for (const auto& step : result.history) {
         tried.x.push_back(step.evaluation);
         tried.y.push_back(step.value);
+        tried.yErr.push_back(step.stdErr);
+        if (step.stdErr > 0.0) anyError = true;
         best.x.push_back(step.evaluation);
         best.y.push_back(m_objective.goal == studies::Objective::Goal::Maximise ? -step.merit
                                                                                 : step.merit);
     }
+    // A metric that reports no uncertainty gets no bars rather than bars of
+    // zero, which would read as a claim of exactness.
+    if (!anyError) tried.yErr.clear();
     m_optPlot->setSeries({tried, best});
     m_optPlot->setAxisLabels(QStringLiteral("evaluation"),
                              QStringLiteral("%1 [%2]")
@@ -839,32 +841,338 @@ const std::vector<OpticalSurface>& MainWindow::currentSurfaces() const {
     return m_sceneData ? m_sceneData->surfaces : kEmpty;
 }
 
+// ---- the surfaces tab ------------------------------------------------------
+//
+// Two things that were missing, side by side.
+//
+// A scene tree, because picking through the 3D view alone cannot reach an
+// internal surface at all: the far wall of a light guide, a lens's second face,
+// anything behind anything. And because an edited surface used to be
+// indistinguishable from an untouched one.
+//
+// The inspector, because SurfaceOptics carries roughly fifteen properties and
+// the editor exposed four -- so nearly every accuracy feature in the engine
+// existed and could not be driven from the application.
+
+QWidget* MainWindow::buildSurfacesTab() {
+    auto* page  = new QWidget(this);
+    auto* outer = new QVBoxLayout(page);
+    outer->setContentsMargins(6, 6, 6, 6);
+
+    auto* split = new QSplitter(Qt::Horizontal, page);
+
+    // ---- the tree -----------------------------------------------------------
+    auto* leftSide = new QWidget(split);
+    auto* lv       = new QVBoxLayout(leftSide);
+    lv->setContentsMargins(0, 0, 0, 0);
+
+    m_surfaceTree = new QTreeWidget(leftSide);
+    m_surfaceTree->setColumnCount(3);
+    m_surfaceTree->setHeaderLabels({QStringLiteral("Surface"), QStringLiteral("What it is"),
+                                    QStringLiteral("Edited")});
+    m_surfaceTree->setRootIsDecorated(false);
+    m_surfaceTree->setAlternatingRowColors(true);
+    m_surfaceTree->setToolTip(QStringLiteral(
+        "Every surface in the scene, whether or not it can be clicked in the 3D "
+        "view. The checkbox hides one; a surface carrying an edit is badged, so "
+        "an edited optic is not indistinguishable from an untouched one."));
+    lv->addWidget(m_surfaceTree, 1);
+
+    m_isolate  = new QPushButton(QStringLiteral("Isolate"), leftSide);
+    m_showAll  = new QPushButton(QStringLiteral("Show all"), leftSide);
+    m_resetAll = new QPushButton(QStringLiteral("Reset all edits"), leftSide);
+    m_isolate->setToolTip(QStringLiteral("Hide everything except the selected surface."));
+    m_resetAll->setToolTip(QStringLiteral(
+        "Put every surface back to the optics its scene declares."));
+    auto* buttons = new QHBoxLayout;
+    buttons->setContentsMargins(0, 0, 0, 0);
+    buttons->addWidget(m_isolate, 1);
+    buttons->addWidget(m_showAll, 1);
+    buttons->addWidget(m_resetAll, 1);
+    lv->addLayout(buttons);
+
+    // ---- the single-ray probe ----------------------------------------------
+    auto* probeBox  = new QGroupBox(QStringLiteral("Single ray"), leftSide);
+    auto* probeForm = new QFormLayout(probeBox);
+    probeBox->setToolTip(QStringLiteral(
+        "Fires one ray through the optic with the estimators switched off, so "
+        "the whole path tree is visible, and lists every interaction it had: "
+        "surface, angle of incidence, index pair, R and T, energy remaining and "
+        "cumulative optical path. This is the debugging tool every commercial "
+        "tracer has, over machinery that was already finished."));
+
+    m_probeX = new QDoubleSpinBox(probeBox);
+    m_probeX->setRange(-10000.0, 10000.0);
+    m_probeX->setDecimals(3);
+    m_probeX->setSuffix(QStringLiteral(" mm"));
+    m_probeY = new QDoubleSpinBox(probeBox);
+    m_probeY->setRange(-10000.0, 10000.0);
+    m_probeY->setDecimals(3);
+    m_probeY->setSuffix(QStringLiteral(" mm"));
+    for (QDoubleSpinBox* s : {m_probeX, m_probeY})
+        s->setToolTip(QStringLiteral(
+            "Where the ray leaves the source plane, across the optical axis. "
+            "The direction is the scene's own emission axis."));
+
+    m_inspectRay = new QPushButton(QStringLiteral("Trace one ray"), probeBox);
+
+    probeForm->addRow(QStringLiteral("Offset x:"), m_probeX);
+    probeForm->addRow(QStringLiteral("Offset y:"), m_probeY);
+    probeForm->addRow(m_inspectRay);
+    lv->addWidget(probeBox);
+
+    m_rayLog = new QTextBrowser(leftSide);
+    m_rayLog->setMinimumHeight(140);
+    m_rayLog->setHtml(QStringLiteral("<i>Trace one ray to see every interaction "
+                                     "it had.</i>"));
+    lv->addWidget(m_rayLog, 1);
+
+    // ---- the inspector ------------------------------------------------------
+    m_inspector = new SurfaceInspector(split);
+
+    split->addWidget(leftSide);
+    split->addWidget(m_inspector);
+    split->setStretchFactor(0, 3);
+    split->setStretchFactor(1, 2);
+    outer->addWidget(split);
+
+    connect(m_surfaceTree, &QTreeWidget::currentItemChanged, this,
+            [this](QTreeWidgetItem*, QTreeWidgetItem*) { onSurfaceRowChanged(); });
+    connect(m_surfaceTree, &QTreeWidget::itemChanged, this,
+            &MainWindow::onSurfaceVisibilityChanged);
+    connect(m_isolate,  &QPushButton::clicked, this, &MainWindow::onIsolateSurface);
+    connect(m_showAll,  &QPushButton::clicked, this, &MainWindow::onShowAllSurfaces);
+    connect(m_resetAll, &QPushButton::clicked, this, &MainWindow::onResetAllSurfaces);
+    connect(m_inspectRay, &QPushButton::clicked, this, &MainWindow::onInspectRay);
+    connect(m_inspector, &SurfaceInspector::edited, this, &MainWindow::onSurfaceEdited);
+    connect(m_inspector, &SurfaceInspector::resetRequested, this,
+            &MainWindow::onResetSurface);
+
+    return page;
+}
+
+SurfaceOptics MainWindow::effectiveOptics(int surface) const {
+    const auto& surfs = currentSurfaces();
+    if (surface < 0 || surface >= int(surfs.size())) return SurfaceOptics{};
+    SurfaceOptics o = surfs[std::size_t(surface)];
+    for (const SurfaceOverride& ov : m_overrides)
+        if (ov.surface == surface) o = ov.optics;
+    return o;
+}
+
+bool MainWindow::surfaceIsEdited(int surface) const {
+    for (const SurfaceOverride& ov : m_overrides)
+        if (ov.surface == surface) return true;
+    return false;
+}
+
+void MainWindow::rebuildSurfaceTree() {
+    if (!m_surfaceTree) return;
+    const auto& surfs = currentSurfaces();
+
+    m_loadingTree = true;
+    m_surfaceTree->clear();
+    for (std::size_t i = 0; i < surfs.size(); ++i) {
+        const OpticalSurface& s = surfs[i];
+        auto* item = new QTreeWidgetItem(m_surfaceTree);
+        item->setData(0, Qt::UserRole, int(i));
+        item->setText(0, s.label.isEmpty()
+                             ? QStringLiteral("Surface %1").arg(i + 1) : s.label);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(0, Qt::Checked);
+
+        QString what;
+        if (s.isDetector)          what = QStringLiteral("receiver");
+        else if (s.index > 0.0)    what = QStringLiteral("refractive, n_d %1")
+                                              .arg(s.index, 0, 'f', 3);
+        else if (s.material.isMetal()) what = QStringLiteral("metal mirror");
+        else                       what = QStringLiteral("mirror, R %1")
+                                              .arg(s.reflectivity, 0, 'f', 2);
+        item->setText(1, what);
+    }
+    m_surfaceTree->resizeColumnToContents(0);
+    m_loadingTree = false;
+
+    refreshSurfaceTreeBadges();
+    if (m_pickedSurface >= 0 && m_pickedSurface < int(surfs.size()))
+        m_surfaceTree->setCurrentItem(m_surfaceTree->topLevelItem(m_pickedSurface));
+    else
+        updateSurfacePanel();
+}
+
+void MainWindow::refreshSurfaceTreeBadges() {
+    if (!m_surfaceTree) return;
+    const bool wasLoading = m_loadingTree;
+    m_loadingTree = true;
+    for (int i = 0; i < m_surfaceTree->topLevelItemCount(); ++i) {
+        QTreeWidgetItem* item = m_surfaceTree->topLevelItem(i);
+        const bool edited = surfaceIsEdited(i);
+        item->setText(2, edited ? QStringLiteral("edited") : QString());
+        item->setForeground(2, QColor(176, 112, 24));
+    }
+    m_loadingTree = wasLoading;
+    if (m_resetAll) m_resetAll->setEnabled(!m_overrides.empty());
+}
+
+void MainWindow::onSurfaceRowChanged() {
+    if (m_loadingTree || !m_surfaceTree) return;
+    QTreeWidgetItem* item = m_surfaceTree->currentItem();
+    m_pickedSurface = item ? item->data(0, Qt::UserRole).toInt() : -1;
+    updateSurfacePanel();
+    // Keep the viewport's own idea of the selection in step, so clicking a row
+    // and clicking the solid mean the same thing.
+    m_view3d->setHighlightedSurface(m_pickedSurface);
+}
+
+void MainWindow::onSurfaceVisibilityChanged(QTreeWidgetItem* item, int column) {
+    if (m_loadingTree || !item || column != 0) return;
+    const int index = item->data(0, Qt::UserRole).toInt();
+    m_view3d->setSurfaceVisible(index, item->checkState(0) == Qt::Checked);
+}
+
+void MainWindow::onIsolateSurface() {
+    if (!m_surfaceTree) return;
+    const int keep = m_pickedSurface;
+    m_loadingTree = true;
+    for (int i = 0; i < m_surfaceTree->topLevelItemCount(); ++i) {
+        const bool show = (i == keep);
+        m_surfaceTree->topLevelItem(i)->setCheckState(0, show ? Qt::Checked : Qt::Unchecked);
+        m_view3d->setSurfaceVisible(i, show);
+    }
+    m_loadingTree = false;
+}
+
+void MainWindow::onShowAllSurfaces() {
+    if (!m_surfaceTree) return;
+    m_loadingTree = true;
+    for (int i = 0; i < m_surfaceTree->topLevelItemCount(); ++i) {
+        m_surfaceTree->topLevelItem(i)->setCheckState(0, Qt::Checked);
+        m_view3d->setSurfaceVisible(i, true);
+    }
+    m_loadingTree = false;
+}
+
+void MainWindow::onResetAllSurfaces() {
+    if (m_overrides.empty()) return;
+    m_overrides.clear();
+    refreshSurfaceTreeBadges();
+    updateSurfacePanel();
+    statusBar()->showMessage(
+        QStringLiteral("Every surface restored to the optics its scene declares"), 4000);
+}
+
+// ---- the single-ray inspector ----------------------------------------------
+
+void MainWindow::onInspectRay() {
+    if (!m_rayLog) return;
+    const SimConfig cfg = currentConfig();
+    const Simulation::SceneRef data = Simulation::dataFor(cfg);
+    if (!data) {
+        m_rayLog->setHtml(QStringLiteral("<i>No geometry to trace through.</i>"));
+        return;
+    }
+
+    // From the scene's own emitter, offset across the axis, along the axis it
+    // aims. One ray, no estimators, the whole path tree.
+    const gp_Dir axis = data->sourceAxis;
+    gp_Vec up(0, 0, 1);
+    if (std::fabs(axis.Dot(gp_Dir(0, 0, 1))) > 0.99) up = gp_Vec(1, 0, 0);
+    gp_Vec ex = gp_Vec(axis).Crossed(up);
+    if (ex.Magnitude() < 1e-9) ex = gp_Vec(1, 0, 0);
+    ex.Normalize();
+    gp_Vec ey = gp_Vec(axis).Crossed(ex);
+    if (ey.Magnitude() > 1e-9) ey.Normalize();
+
+    const gp_Pnt o0 = data->sourceOrigin;
+    const Vec3 origin(o0.X() + ex.X() * m_probeX->value() + ey.X() * m_probeY->value(),
+                      o0.Y() + ex.Y() * m_probeX->value() + ey.Y() * m_probeY->value(),
+                      o0.Z() + ex.Z() * m_probeX->value() + ey.Z() * m_probeY->value());
+
+    SimulationResult single;
+    RayTracer::traceSingleRay(data->scene, origin, Vec3(axis), single, 1.0,
+                              cfg.physics, cfg.spectrum.wavelengthNm);
+
+    QString html;
+    html += QStringLiteral(
+        "<p style='color:#7a7a7a'>One ray from (%1, %2, %3) along (%4, %5, %6), "
+        "%7 nm. Russian roulette and branch collapsing are off, so this is the "
+        "whole path tree rather than one draw from it.</p>")
+                .arg(origin.x, 0, 'f', 2).arg(origin.y, 0, 'f', 2).arg(origin.z, 0, 'f', 2)
+                .arg(axis.X(), 0, 'f', 3).arg(axis.Y(), 0, 'f', 3).arg(axis.Z(), 0, 'f', 3)
+                .arg(cfg.spectrum.wavelengthNm, 0, 'f', 1);
+
+    if (single.interactions.empty()) {
+        html += QStringLiteral("<p><b>The ray hit nothing.</b> It left the scene "
+                               "without meeting a surface.</p>");
+        m_rayLog->setHtml(html);
+        return;
+    }
+
+    html += QStringLiteral(
+        "<table cellspacing='0' cellpadding='3' style='font-size:11px'>"
+        "<tr style='color:#8a8a8a'><th align='left'>#</th><th align='left'>surface</th>"
+        "<th align='right'>angle</th><th align='right'>n1&rarr;n2</th>"
+        "<th align='right'>R</th><th align='right'>T</th>"
+        "<th align='right'>energy in</th><th align='right'>OPL</th>"
+        "<th align='left'>note</th></tr>");
+
+    int row = 0;
+    for (const RayInteraction& in : single.interactions) {
+        QStringList notes;
+        if (in.detector)  notes << QStringLiteral("<b>receiver</b>");
+        if (in.tir)       notes << QStringLiteral("TIR");
+        if (in.scattered) notes << QStringLiteral("scattered");
+        if (in.mediumDepth > 0)
+            notes << QStringLiteral("inside %1 medium(s)").arg(in.mediumDepth);
+
+        html += QStringLiteral("<tr>"
+                               "<td>%1</td><td>%2</td>"
+                               "<td align='right'>%3&deg;</td>"
+                               "<td align='right'>%4 &rarr; %5</td>"
+                               "<td align='right'>%6</td><td align='right'>%7</td>"
+                               "<td align='right'>%8</td><td align='right'>%9 mm</td>"
+                               "<td>%10</td></tr>")
+                    .arg(++row)
+                    .arg(in.label.isEmpty() ? QStringLiteral("surface %1").arg(in.surface)
+                                            : in.label.toHtmlEscaped())
+                    .arg(in.angleDeg, 0, 'f', 2)
+                    .arg(in.n1, 0, 'f', 4).arg(in.n2, 0, 'f', 4)
+                    .arg(in.detector ? QStringLiteral("-")
+                                     : QString::number(in.reflectance, 'f', 4))
+                    .arg(in.detector ? QStringLiteral("-")
+                                     : QString::number(in.transmittance, 'f', 4))
+                    .arg(in.energyIn, 0, 'g', 4)
+                    .arg(in.opl, 0, 'f', 2)
+                    .arg(notes.join(QStringLiteral(", ")));
+    }
+    html += QStringLiteral("</table>");
+    html += QStringLiteral(
+        "<p style='color:#7a7a7a'>Delivered %1 of the ray to the receiver; "
+        "%2 absorbed, %3 escaped, %4 truncated.</p>")
+                .arg(single.fluxDetector, 0, 'f', 5)
+                .arg(single.fluxAbsorbed, 0, 'f', 5)
+                .arg(single.fluxEscaped, 0, 'f', 5)
+                .arg(single.fluxTruncated, 0, 'f', 5);
+
+    m_rayLog->setHtml(html);
+    // The path this produced is worth looking at as well as reading.
+    m_view3d->setRays(single.raySegments);
+}
+
 void MainWindow::updateSurfacePanel() {
-    if (!m_surfaceBox) return;
+    if (!m_inspector) return;
     const auto& surfs = currentSurfaces();
     const bool have = !surfs.empty() && m_pickedSurface >= 0 &&
                       m_pickedSurface < int(surfs.size());
-    m_surfaceBox->setVisible(have);
-    if (!have) return;
+    if (!have) {
+        m_inspector->clearSurface();
+        return;
+    }
 
     const OpticalSurface& base = surfs[std::size_t(m_pickedSurface)];
-    SurfaceOptics optics = base;
-    for (const auto& ov : m_overrides)
-        if (ov.surface == m_pickedSurface) optics = ov.optics;
-
     m_loadingSurface = true;
-    m_surfaceName->setText(base.label);
-    m_surfReflect->setValue(optics.reflectivity);
-    m_surfScatter->setValue(optics.scatter);
-    m_surfRough->setValue(optics.roughness);
-    m_surfAbsorb->setValue(optics.absorption);
-    // A receiver has no optics to edit: it absorbs whatever reaches it.
-    const bool editable = !base.isDetector;
-    for (QWidget* w : std::initializer_list<QWidget*>{m_surfReflect, m_surfScatter,
-                                                      m_surfRough, m_surfAbsorb})
-        w->setEnabled(editable);
-    m_surfReflect->setEnabled(editable && base.index <= 0.0);
-    m_surfAbsorb->setEnabled(editable && base.index > 0.0);
+    m_inspector->setSurface(base.label, effectiveOptics(m_pickedSurface), base,
+                            surfaceIsEdited(m_pickedSurface));
     m_loadingSurface = false;
 }
 
@@ -876,23 +1184,34 @@ void MainWindow::onSurfaceEdited() {
     const OpticalSurface& base = surfs[std::size_t(m_pickedSurface)];
 
     SurfaceOverride ov;
+    // Keyed by what the surface *is*, not by where it sat, so a saved config
+    // reopened against changed geometry cannot land the edit on whatever now
+    // occupies the slot.
+    ov.label   = base.label;
     ov.surface = m_pickedSurface;
-    ov.optics  = base;
-    ov.optics.reflectivity = m_surfReflect->value();
-    ov.optics.scatter      = m_surfScatter->value();
-    ov.optics.roughness    = m_surfRough->value();
-    ov.optics.absorption   = m_surfAbsorb->value();
+    if (m_sceneData) ov.identity = m_sceneData->scene.surfaceIdentity(m_pickedSurface);
+    ov.optics  = m_inspector->optics();
 
     auto it = std::find_if(m_overrides.begin(), m_overrides.end(),
                            [&](const SurfaceOverride& o) { return o.surface == m_pickedSurface; });
     if (it != m_overrides.end()) *it = ov;
     else                         m_overrides.push_back(ov);
 
-    m_surfReset->setEnabled(true);
-    // None of these are geometry, so the cached tessellation and hierarchy stay
-    // exactly as they were: this costs a trace, not a rebuild.
-    statusBar()->showMessage(QStringLiteral("%1 edited — run to trace it (no rebuild needed)")
-                                 .arg(base.label), 4000);
+    refreshSurfaceTreeBadges();
+
+    // Whether this costs a trace or a rebuild depends on what was touched: a
+    // receiver's bin grid is baked into the geometry, and everything else is a
+    // ray-time property the cached tessellation and hierarchy do not care about.
+    const bool binsChanged = base.isDetector &&
+                             (ov.optics.detNX != base.detNX || ov.optics.detNY != base.detNY);
+    statusBar()->showMessage(
+        binsChanged
+            ? QStringLiteral("%1 edited — the bin grid is geometry, so this rebuilds")
+                  .arg(base.label)
+            : QStringLiteral("%1 edited — run to trace it (no rebuild needed)")
+                  .arg(base.label),
+        4000);
+    if (binsChanged) onGeometryChanged();
 }
 
 void MainWindow::onResetSurface() {
@@ -901,7 +1220,7 @@ void MainWindow::onResetSurface() {
                                          return o.surface == m_pickedSurface;
                                      }),
                       m_overrides.end());
-    m_surfReset->setEnabled(!m_overrides.empty());
+    refreshSurfaceTreeBadges();
     updateSurfacePanel();
     statusBar()->showMessage(QStringLiteral("Surface restored to the scene's own optics"), 3000);
 }
@@ -1082,6 +1401,10 @@ void MainWindow::onToleranceReady(const studies::ToleranceStudy& study) {
     for (std::size_t i = 0; i < study.binCentre.size(); ++i) {
         hist.x.push_back(study.binCentre[i]);
         hist.y.push_back(double(study.binCount[i]));
+        // A histogram bin is a count, so its uncertainty is the square root of
+        // it. Without that a hundred-sample ensemble looks like a smooth
+        // distribution rather than the handful of parts per bin it is.
+        hist.yErr.push_back(std::sqrt(double(std::max(0, study.binCount[i]))));
     }
     m_tolPlot->setSeries({hist});
     m_tolPlot->setAxisLabels(
@@ -1204,6 +1527,15 @@ void MainWindow::buildMenus() {
     file->addSeparator();
     file->addAction(QStringLiteral("E&xit"), QKeySequence::Quit, this, &QWidget::close);
 
+    file->addSeparator();
+    file->addAction(QStringLiteral("Load &material catalogue..."), this,
+                    &MainWindow::onLoadMaterialCatalogue)
+        ->setStatusTip(QStringLiteral(
+            "Read a Zemax .agf glass catalogue -- the format Schott, Ohara, CDGM, "
+            "Hoya and Sumita all publish in -- or a refractiveindex.info .yml "
+            "entry. Ten built-in materials is a demonstration; a catalogue is a "
+            "tool."));
+
     QMenu* run = menuBar()->addMenu(QStringLiteral("&Run"));
     run->addAction(QStringLiteral("&Trace"), QKeySequence(Qt::Key_F5), this, &MainWindow::onRun);
     run->addAction(QStringLiteral("&Cancel"), QKeySequence(Qt::Key_Escape),
@@ -1237,7 +1569,7 @@ void MainWindow::onSceneChanged() {
     // to the old one.
     m_overrides.clear();
     m_pickedSurface = -1;
-    if (m_surfReset) m_surfReset->setEnabled(false);
+    refreshSurfaceTreeBadges();
     updateSurfacePanel();
     refreshSweepAxes();
     refreshDerivedQuantities();
@@ -1290,6 +1622,16 @@ void MainWindow::onGeometryReady(Simulation::SceneRef data, quint64 generation) 
 
     m_sceneData = std::move(data);
     m_view3d->setScene(m_requestedScene, m_sceneData->surfaces);
+    // The surface list belongs to this geometry; a tree describing the previous
+    // one would let a click land on a surface that is no longer there.
+    rebuildSurfaceTree();
+    {
+        const SimConfig cfg = m_controls->config();
+        m_view3d->setSourceGlyph(m_sceneData->sourceOrigin, m_sceneData->sourceAxis,
+                                 cfg.halfAngleDeg,
+                                 cfg.source == SourceConfig::Type::Collimated,
+                                 cfg.beamRadius);
+    }
     // A pick indexes the surface list, and this is a new one.
     updateSurfacePanel();
 
@@ -1441,6 +1783,10 @@ void MainWindow::refreshDerivedViews() {
 
 void MainWindow::updateSummary() {
     const SimulationResult& res = m_last;
+    // Watching the bands settle while the error bar shrinks is the most
+    // persuasive thing a progressive tracer can show, so this follows the
+    // partial results too rather than only the finished one.
+    if (m_energyBar) m_energyBar->setResult(res);
     const double eff = 100.0 * res.efficiency;
     const double raysPerSec = res.traceSeconds > 0.0
                                   ? double(res.raysEmitted) / res.traceSeconds
@@ -1466,6 +1812,72 @@ void MainWindow::updateSummary() {
     if (res.buildSeconds > 0.0)
         text += QStringLiteral("\nGeometry build: %1 s (cached from now on)")
                     .arg(res.buildSeconds, 0, 'f', 3);
+
+    const double p = res.sourcePower > 0.0 ? res.sourcePower : 1.0;
+
+    // What each source delivered. One source is the ordinary case and needs no
+    // breakdown; more than one, and separating the signal from the stray light
+    // is the whole reason the second source was added.
+    if (res.sources.size() > 1) {
+        text += QStringLiteral("\n");
+        for (const SourceSummary& s : res.sources)
+            text += QStringLiteral("\n%1: %2 %3 delivered (%4 %)")
+                        .arg(s.label.isEmpty() ? QStringLiteral("source") : s.label)
+                        .arg(s.flux, 0, 'g', 4)
+                        .arg(QLatin1String(fluxUnitName(res.unit)))
+                        .arg(100.0 * s.efficiency(), 0, 'f', 2);
+    }
+
+    // Light a receiver refused is not light anything absorbed, and saying so is
+    // the difference between a loss budget and a wrong one.
+    if (res.fluxRejected > 0.0)
+        text += QStringLiteral("\nRefused by an acceptance cone: %1 % "
+                               "(a measurement condition, not a loss)")
+                    .arg(100.0 * res.fluxRejected / p, 0, 'f', 3);
+
+    // "Where did the missing 4 % go?" is the question the energy balance exists
+    // to answer, and it used to answer "somewhere".
+    if (res.truncationSignificant()) {
+        const TruncationBreakdown& t = res.truncation;
+        struct Reason { const char* name; double flux; };
+        const Reason reasons[] = {
+            {"the depth limit",      t.depthLimit},
+            {"a full branch stack",  t.stackOverflow},
+            {"degenerate directions", t.degenerate},
+            {"refused refractions",  t.refractFailed},
+            {"the energy cutoff",    t.energyCutoff},
+        };
+        const Reason* worst = &reasons[0];
+        for (const Reason& r : reasons) if (r.flux > worst->flux) worst = &r;
+        text += QStringLiteral("\nWARNING  %1 % of the source was truncated, "
+                               "mostly by %2")
+                    .arg(100.0 * res.fluxTruncated / p, 0, 'f', 2)
+                    .arg(QLatin1String(worst->name));
+    }
+
+    // Imported CAD is the path most likely to be geometrically imperfect, and a
+    // mesh that is not closed produces systematically wrong index pairs and a
+    // perfectly clean-looking result.
+    if (res.anomalies.any())
+        text += QStringLiteral("\nWARNING  %1 medium-tracking anomalies "
+                               "(%2 unmatched exits, %3 stack overflows, "
+                               "%4 guessed indices). The geometry may not be closed.")
+                    .arg(res.anomalies.total())
+                    .arg(res.anomalies.unmatchedExit)
+                    .arg(res.anomalies.stackOverflow)
+                    .arg(res.anomalies.guessedIndex);
+
+    // An edit that resolves to nothing is reported rather than dropped -- or,
+    // worse, applied to whatever surface now occupies the slot it was saved
+    // against.
+    if (!res.unmatchedOverrides.empty()) {
+        QStringList names;
+        for (const QString& s : res.unmatchedOverrides) names << s;
+        text += QStringLiteral("\nWARNING  %1 surface edit(s) matched no surface "
+                               "and were not applied: %2")
+                    .arg(names.size()).arg(names.join(QStringLiteral(", ")));
+    }
+
     m_result->setText(text);
 }
 
@@ -1505,19 +1917,50 @@ QString MainWindow::formatMetrics() const {
     html += QStringLiteral("</table><br>");
 
     html += QStringLiteral("<b>Energy budget</b><table>");
-    html += row(QStringLiteral("On the receiver"), pct(r.fluxDetector),
-                QStringLiteral("%1 %2").arg(r.fluxDetector, 0, 'g', 4).arg(fu));
+    // Every number that has an uncertainty is shown with it. A figure quoted to
+    // four digits when its error bar sits in the second is a claim the run
+    // cannot support, and the classic Monte Carlo misreading is exactly that.
+    html += row(QStringLiteral("On the receiver"),
+                QStringLiteral("%1 %2 %3 %")
+                    .arg(100.0 * r.efficiency, 0, 'f', 2)
+                    .arg(QChar(0x00B1))
+                    .arg(100.0 * r.efficiencyStdErr, 0, 'f', 3),
+                QStringLiteral("%1 %2, one standard error across independent "
+                               "scrambles").arg(r.fluxDetector, 0, 'g', 4).arg(fu));
     html += row(QStringLiteral("Absorbed at surfaces"),
                 pct(r.fluxAbsorbed - r.fluxBulkAbsorbed));
     html += row(QStringLiteral("Absorbed in the bulk"), pct(r.fluxBulkAbsorbed),
                 QStringLiteral("Beer-Lambert"));
     html += row(QStringLiteral("Escaped the scene"), pct(r.fluxEscaped));
+    if (r.fluxRejected > 0.0)
+        html += row(QStringLiteral("Refused by a receiver"), pct(r.fluxRejected),
+                    QStringLiteral("outside an acceptance cone: a measurement "
+                                   "condition, not a loss"));
     html += row(QStringLiteral("Truncated"), pct(r.fluxTruncated),
-                QStringLiteral("depth limit / degenerate branch"));
-    html += row(QStringLiteral("Roulette residual"), pct(r.fluxRoulette),
-                QStringLiteral("estimator noise, zero in expectation"));
+                r.truncationSignificant()
+                    ? QStringLiteral("<span style='color:#c88a30'>over %1 % of the "
+                                     "source</span>")
+                          .arg(100.0 * SimulationResult::kTruncationWarn, 0, 'g', 2)
+                    : QStringLiteral("depth limit / degenerate branch"));
+    html += row(QStringLiteral("Estimator residual"), pct(r.fluxRoulette),
+                QStringLiteral("roulette %1, aiming %2, next-event %3, BSDF %4")
+                    .arg(pct(r.residual.roulette), pct(r.residual.aiming),
+                         pct(r.residual.nextEvent + r.residual.neeSuppressed),
+                         pct(r.residual.bsdfWeight)));
     html += row(QStringLiteral("Accounted"), pct(r.fluxAccounted()));
     html += QStringLiteral("</table>");
+
+    if (r.sources.size() > 1) {
+        html += QStringLiteral("<br><b>Per source</b><table>");
+        for (const SourceSummary& s : r.sources)
+            html += row(s.label.isEmpty() ? QStringLiteral("source") : s.label,
+                        QStringLiteral("%1 %2").arg(s.flux, 0, 'g', 4).arg(fu),
+                        QStringLiteral("%1 %2 emitted, %3 %% delivered, %4 rays")
+                            .arg(s.power, 0, 'g', 4).arg(fu)
+                            .arg(100.0 * s.efficiency(), 0, 'f', 2)
+                            .arg(s.rays));
+        html += QStringLiteral("</table>");
+    }
 
     if (r.intensity.valid()) {
         html += QStringLiteral("<br><b>Far field</b><table>");
@@ -1631,6 +2074,13 @@ QString MainWindow::formatMetrics() const {
 }
 
 void MainWindow::onSurfacePicked(int index) {
+    // A pick and a row selection are the same act; the tree is the one place
+    // the selection lives.
+    if (m_surfaceTree && index >= 0 && index < m_surfaceTree->topLevelItemCount()) {
+        m_loadingTree = true;
+        m_surfaceTree->setCurrentItem(m_surfaceTree->topLevelItem(index));
+        m_loadingTree = false;
+    }
     const auto& surfs = currentSurfaces();
     if (surfs.empty() || index < 0 || index >= int(surfs.size())) {
         statusBar()->showMessage(QStringLiteral("No surface under the cursor"), 3000);
@@ -1783,12 +2233,50 @@ void MainWindow::onLoadConfig() {
     if (path.isEmpty()) return;
     SimConfig cfg;
     QString err;
-    if (!configio::load(path, cfg, &err)) {
+    QStringList warnings;
+    if (!configio::load(path, cfg, &err, &warnings)) {
         QMessageBox::warning(this, windowTitle(), QStringLiteral("Could not open: %1").arg(err));
         return;
     }
     m_controls->setConfig(cfg);
     statusBar()->showMessage(QStringLiteral("Loaded %1").arg(path), 4000);
+    // A ray file the config names and cannot reopen is the one failure a load
+    // must never be quiet about: the source falls back to the analytic emitter,
+    // and the run would otherwise trace an LED nobody chose.
+    if (!warnings.isEmpty())
+        QMessageBox::warning(this, windowTitle(),
+                             QStringLiteral("The configuration loaded, with:\n\n%1")
+                                 .arg(warnings.join(QStringLiteral("\n"))));
+}
+
+void MainWindow::onLoadMaterialCatalogue() {
+    const QString path = QFileDialog::getOpenFileName(
+        this, QStringLiteral("Load an optical material catalogue"), QString(),
+        materialfile::fileFilter());
+    if (path.isEmpty()) return;
+
+    const auto res = materialfile::load(path);
+    if (!res.ok) {
+        QMessageBox::warning(this, windowTitle(),
+                             QStringLiteral("Could not read %1:\n%2").arg(path, res.error));
+        return;
+    }
+    QString msg = QStringLiteral("Loaded %1 material(s).").arg(res.added);
+    if (res.skipped > 0)
+        msg += QStringLiteral("\n%1 record(s) used a dispersion formula this reader "
+                              "cannot represent and were left out rather than "
+                              "approximated.").arg(res.skipped);
+    // Named, because a glass catalogue is a list of names and the point of
+    // loading one is being able to type the name you wanted.
+    if (!res.names.isEmpty())
+        msg += QStringLiteral("\n\n%1%2")
+                   .arg(res.names.mid(0, 12).join(QStringLiteral(", ")),
+                        res.names.size() > 12
+                            ? QStringLiteral(", and %1 more").arg(res.names.size() - 12)
+                            : QString());
+    QMessageBox::information(this, windowTitle(), msg);
+    statusBar()->showMessage(
+        QStringLiteral("%1 materials from %2").arg(res.added).arg(path), 5000);
 }
 
 void MainWindow::onExportIrradianceCsv() {
@@ -1988,39 +2476,20 @@ void MainWindow::onImportCad() {
         this, QStringLiteral("Import CAD"), QString(), cadimport::fileFilter());
     if (path.isEmpty()) return;
 
-    // Units are the mismatch that bites first, and it is a multiplication rather
-    // than a re-export.
-    bool ok = false;
-    const double scale = QInputDialog::getDouble(
-        this, QStringLiteral("Import CAD"),
-        QStringLiteral("Scale factor to millimetres\n(1 if the file is already in mm, "
-                       "1000 if it is in metres):"),
-        1.0, 1e-6, 1e6, 4, &ok);
-    if (!ok) return;
+    // One dialog rather than three questions in a row, and it shows the answer
+    // to the one that used to be unaskable: does the tracer's model of a solid
+    // actually hold on this geometry? Units, illumination axis, material and a
+    // per-part audit all move together, because changing the unit changes what
+    // the geometry is and an audit of the previous read would be worse than none.
+    ImportDialog dlg(path, this);
+    if (dlg.exec() != QDialog::Accepted) return;
 
-    // Which way the light travels through the part. A CAD file has no
-    // preferred direction and the app's own optical axis is +Z, but a part
-    // whose interesting faces are on its side -- a prism is the obvious case --
-    // is a plain slab when it is lit down its extrusion axis, and no amount of
-    // tracing makes it deviate anything.
-    static const QStringList kAxisNames{
-        QStringLiteral("+Z (along the optical axis)"), QStringLiteral("-Z"),
-        QStringLiteral("+X"), QStringLiteral("-X"),
-        QStringLiteral("+Y"), QStringLiteral("-Y")};
-    static const gp_Dir kAxes[] = {gp_Dir(0, 0, 1),  gp_Dir(0, 0, -1),
-                                   gp_Dir(1, 0, 0),  gp_Dir(-1, 0, 0),
-                                   gp_Dir(0, 1, 0),  gp_Dir(0, -1, 0)};
-    const QString axisName = QInputDialog::getItem(
-        this, QStringLiteral("Import CAD"),
-        QStringLiteral("Illuminate the part along:"), kAxisNames, 0, false, &ok);
-    if (!ok) return;
-    const int axisIndex = std::max(0, int(kAxisNames.indexOf(axisName)));
-
-    const cadimport::ImportResult result = cadimport::read(path, scale);
+    const cadimport::ImportResult& result = dlg.result();
     if (!result.ok) {
         QMessageBox::warning(this, QStringLiteral("Import failed"), result.error);
         return;
     }
+    const QString axisName = dlg.axisName();
 
     double extent = 0.0;
     for (int a = 0; a < 3; ++a)
@@ -2032,8 +2501,8 @@ void MainWindow::onImportCad() {
     // trace, the analysis -- is the same code every built-in scene goes
     // through, on this geometry rather than on the registry's.
     auto setup = std::make_shared<GeometryProvider::SceneSetup>(
-        cadimport::makeScene(result, QStringLiteral("N-BK7"), /*reflective=*/false,
-                             m_controls->config().detectorBins, kAxes[axisIndex]));
+        cadimport::makeScene(result, dlg.materialName(), dlg.reflective(),
+                             m_controls->config().detectorBins, dlg.axis()));
     if (setup->surfaces.empty()) {
         QMessageBox::warning(this, QStringLiteral("Import failed"),
                              QStringLiteral("Nothing in the file could be turned into "
@@ -2041,41 +2510,20 @@ void MainWindow::onImportCad() {
         return;
     }
     setup->label       = QFileInfo(path).completeBaseName();
-    setup->description = QStringLiteral("Imported %1: %2 part(s), %3 face(s), "
-                                        "%4 x %5 x %6 mm, lit along %7.")
+    setup->description = QStringLiteral("Imported %1: %2, lit along %3. %4")
                              .arg(result.format)
-                             .arg(result.shapes.size())
-                             .arg(result.totalFaces)
-                             .arg(result.bboxMax[0] - result.bboxMin[0], 0, 'f', 1)
-                             .arg(result.bboxMax[1] - result.bboxMin[1], 0, 'f', 1)
-                             .arg(result.bboxMax[2] - result.bboxMin[2], 0, 'f', 1)
-                             .arg(axisName.left(2));
-
-    QMessageBox::information(
-        this, QStringLiteral("Imported"),
-        QStringLiteral("%1: %2 part(s), %3 face(s).\n\n"
-                       "Extent %4 x %5 x %6 mm.\n\n"
-                       "Every part is N-BK7 glass with Fresnel splitting; the receiver "
-                       "is %7 mm square and %8 mm past the far side, with the source "
-                       "the same distance before the near side, both on the %9 axis. "
-                       "Click a surface to give it different optics, then Run to trace "
-                       "this part — the scene list is not consulted while an import is "
-                       "loaded.")
-            .arg(result.format)
-            .arg(result.shapes.size())
-            .arg(result.totalFaces)
-            .arg(result.bboxMax[0] - result.bboxMin[0], 0, 'f', 1)
-            .arg(result.bboxMax[1] - result.bboxMin[1], 0, 'f', 1)
-            .arg(result.bboxMax[2] - result.bboxMin[2], 0, 'f', 1)
-            .arg(1.5 * std::max(1e-3, extent), 0, 'f', 1)
-            .arg(0.75 * std::max(1e-3, extent), 0, 'f', 1)
-            .arg(axisName.left(2)));
+                             .arg(result.auditSummary())
+                             .arg(axisName.left(2))
+                             .arg(dlg.reflective()
+                                      ? QStringLiteral("Every part is a mirror.")
+                                      : QStringLiteral("Every part is %1 with Fresnel "
+                                                       "splitting.").arg(dlg.materialName()));
 
     // Optical edits belonged to the surfaces of whatever was on screen before,
     // and an override is an index into that list: carried over, they would land
     // on unrelated faces of the imported part.
     m_overrides.clear();
-    if (m_surfReset) m_surfReset->setEnabled(false);
+    refreshSurfaceTreeBadges();
 
     m_imported        = std::move(setup);
     m_showingImported = true;
@@ -2090,6 +2538,14 @@ void MainWindow::onImportCad() {
     m_controls->setImportedGeometry(m_imported->label);
     refreshDerivedQuantities();
     m_view3d->setScene(GeometryProvider::Scene::Count, m_imported->surfaces);
+    rebuildSurfaceTree();
+    {
+        const SimConfig c = m_controls->config();
+        m_view3d->setSourceGlyph(m_imported->sourceOrigin, m_imported->sourceAxis,
+                                 c.halfAngleDeg,
+                                 c.source == SourceConfig::Type::Collimated,
+                                 c.beamRadius);
+    }
     m_view3d->resetView();
     // The rays on screen were traced through the previous geometry.
     m_view3d->setRays({});

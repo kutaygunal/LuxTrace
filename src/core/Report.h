@@ -61,4 +61,17 @@ QString html(const Content& content);
 
 bool write(const QString& path, const Content& content, QString* errorOut = nullptr);
 
+// The validation table as a document rather than as console output.
+//
+// A feature list is a claim. This is evidence, in a form that can be attached
+// to a design review or handed to somebody deciding whether to trust the tool:
+// every case names the closed form it was checked against, the tolerance it was
+// allowed and the residual it actually had.
+QString validationHtml(const std::vector<studies::ValidationCase>& cases,
+                       int rays);
+
+bool writeValidation(const QString& path,
+                     const std::vector<studies::ValidationCase>& cases,
+                     int rays, QString* errorOut = nullptr);
+
 } // namespace report

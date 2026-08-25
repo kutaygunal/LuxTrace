@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
+#include <mutex>
 
 namespace {
 
@@ -66,10 +68,26 @@ struct Entry {
     QString         name;
     QString         description;
     OpticalMaterial material;
+    QString         source;      // empty for a built-in
 };
 
-const std::vector<Entry>& catalogue() {
-    static const std::vector<Entry> c = [] {
+// The catalogue is mutable now, because ten materials is a demonstration and
+// the first thing a lens designer does is type a glass name. The built-ins are
+// still built once and still come first, so an index taken before a catalogue
+// file is loaded stays valid after one.
+//
+// Nothing on the trace hot path reads this: a material is copied into
+// SurfaceOptics at scene-build time, which is what the fixed-size POD is for.
+// The mutex therefore guards a load against a concurrent picker, not a trace.
+std::mutex& catalogueMutex() {
+    static std::mutex m;
+    return m;
+}
+
+std::size_t g_builtinCount = 0;
+
+std::vector<Entry>& catalogue() {
+    static std::vector<Entry> c = [] {
         std::vector<Entry> v;
 
         v.push_back({QStringLiteral("Vacuum"),
@@ -153,6 +171,7 @@ const std::vector<Entry>& catalogue() {
                            {1.658, 0.916, 0.247, 0.131, 0.156},
                            {1.956, 1.840, 2.980, 3.840, 4.740})});
 
+        g_builtinCount = v.size();
         return v;
     }();
     return c;
@@ -247,29 +266,73 @@ double metalReflectance(double n1, double n2, double k2, double cosI) {
     return std::clamp(0.5 * (Rs + Rp), 0.0, 1.0);
 }
 
+void metalAmplitudes(double n1, double n2, double k2, double cosI,
+                     double& rs, double& rp, double& phaseDelta) {
+    if (n1 <= 0.0) n1 = 1.0;
+    cosI = std::clamp(std::fabs(cosI), 0.0, 1.0);
+
+    // Relative complex index, n - i k, and the complex n_t cos(theta_t) that
+    // Snell's law gives for it. The principal branch of the square root is the
+    // physical one here: it has a non-negative real part, so the transmitted
+    // wave decays into the metal rather than growing out of it.
+    const std::complex<double> nt(n2 / n1, -k2 / n1);
+    const std::complex<double> ct = std::sqrt(nt * nt - (1.0 - cosI * cosI));
+
+    const std::complex<double> as = (cosI - ct) / (cosI + ct);
+    const std::complex<double> ap = (nt * nt * cosI - ct) / (nt * nt * cosI + ct);
+
+    rs = std::abs(as);
+    rp = std::abs(ap);
+    // The retardance the reflection introduces. It is zero for a dielectric
+    // below Brewster and pi above it -- which the complex form reproduces
+    // rather than special-cases -- and it moves continuously with angle for a
+    // metal, which is the whole effect.
+    phaseDelta = std::arg(ap) - std::arg(as);
+}
+
 namespace materials {
 
-int count() { return int(catalogue().size()); }
+int count() {
+    std::lock_guard<std::mutex> lock(catalogueMutex());
+    return int(catalogue().size());
+}
+
+int builtinCount() {
+    std::lock_guard<std::mutex> lock(catalogueMutex());
+    catalogue();                      // force the one-time build
+    return int(g_builtinCount);
+}
 
 const QString& name(int i) {
     static const QString empty;
+    std::lock_guard<std::mutex> lock(catalogueMutex());
     const auto& c = catalogue();
     return (i >= 0 && i < int(c.size())) ? c[std::size_t(i)].name : empty;
 }
 
 const QString& description(int i) {
     static const QString empty;
+    std::lock_guard<std::mutex> lock(catalogueMutex());
     const auto& c = catalogue();
     return (i >= 0 && i < int(c.size())) ? c[std::size_t(i)].description : empty;
 }
 
+const QString& source(int i) {
+    static const QString empty;
+    std::lock_guard<std::mutex> lock(catalogueMutex());
+    const auto& c = catalogue();
+    return (i >= 0 && i < int(c.size())) ? c[std::size_t(i)].source : empty;
+}
+
 OpticalMaterial at(int i) {
+    std::lock_guard<std::mutex> lock(catalogueMutex());
     const auto& c = catalogue();
     if (i < 0 || i >= int(c.size())) return OpticalMaterial{};
     return c[std::size_t(i)].material;
 }
 
 int indexOf(const QString& n) {
+    std::lock_guard<std::mutex> lock(catalogueMutex());
     const auto& c = catalogue();
     for (std::size_t i = 0; i < c.size(); ++i)
         if (c[i].name.compare(n, Qt::CaseInsensitive) == 0) return int(i);
@@ -279,6 +342,30 @@ int indexOf(const QString& n) {
 OpticalMaterial byName(const QString& n) {
     const int i = indexOf(n);
     return i < 0 ? OpticalMaterial{} : at(i);
+}
+
+int add(const QString& n, const QString& desc, const OpticalMaterial& m,
+        const QString& src) {
+    if (n.isEmpty() || !m.set) return -1;
+    std::lock_guard<std::mutex> lock(catalogueMutex());
+    auto& c = catalogue();
+    for (std::size_t i = 0; i < c.size(); ++i) {
+        if (c[i].name.compare(n, Qt::CaseInsensitive) != 0) continue;
+        // A built-in keeps its identity: loading a Schott file must not
+        // silently redefine what "N-BK7" means for every saved config in the
+        // project. Everything else is an update in place.
+        if (i < g_builtinCount) return int(i);
+        c[i] = Entry{n, desc, m, src};
+        return int(i);
+    }
+    c.push_back(Entry{n, desc, m, src});
+    return int(c.size() - 1);
+}
+
+void resetLoaded() {
+    std::lock_guard<std::mutex> lock(catalogueMutex());
+    auto& c = catalogue();
+    if (c.size() > g_builtinCount) c.resize(g_builtinCount);
 }
 
 } // namespace materials

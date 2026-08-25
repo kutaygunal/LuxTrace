@@ -313,29 +313,69 @@ TEST(scatter, a_diffuser_widens_the_pattern_it_transmits) {
 
 // ============================================================ roughness =====
 
-TEST(roughness, a_zero_slope_error_leaves_the_normal_alone) {
-    std::uint64_t state = 5u;
-    const Vec3 n(0.0, 0.6, 0.8);
-    const Vec3 p = optics::perturbNormal(n, 0.0, state);
-    CHECK_NEAR(p.x, n.x, 1e-15);
-    CHECK_NEAR(p.y, n.y, 1e-15);
-    CHECK_NEAR(p.z, n.z, 1e-15);
+TEST(roughness, a_zero_slope_error_leaves_the_surface_polished) {
+    SurfaceOptics s;
+    s.roughness = 0.0;
+    CHECK(s.effectiveBsdf().isSpecular());
 }
 
-TEST(roughness, tilts_the_normal_by_about_the_requested_sigma) {
-    std::uint64_t state = 11u;
-    const Vec3 n(0.0, 0.0, 1.0);
-    const double sigma = 0.02;
+TEST(roughness, a_slope_error_becomes_a_microfacet_of_the_same_rms_slope) {
+    // The number in the box still means the RMS slope it always meant. A
+    // Gaussian slope error of sigma per tangent axis is a Beckmann distribution
+    // of alpha = sqrt(2) sigma, and GGX is conventionally matched to Beckmann by
+    // equating the two alphas -- so a scene written against the old tilt keeps
+    // describing the same polish.
+    SurfaceOptics s;
+    s.roughness = 0.02;
+    const bsdf::Surface b = s.effectiveBsdf();
+    CHECK(b.model == bsdf::Model::Microfacet);
+    CHECK_NEAR(b.alpha, std::sqrt(2.0) * 0.02, 1e-12);
+    CHECK_NEAR(b.fraction, 1.0, 1e-12);
+
+    // And the lobe it produces really is that wide. The half-vector carries half
+    // the deviation, so the reflected ray spreads by about twice the facet tilt
+    // -- which is what a real polish tolerance does to a mirror.
+    std::uint64_t rng = optics::mix64(4242u);
+    const Vec3 n(0, 0, 1);
+    const Vec3 wi(0, 0, -1);            // normal incidence, so the geometry is clean
     double sumSq = 0.0;
-    const int N = 20000;
-    for (int i = 0; i < N; ++i) {
-        const Vec3 p = optics::perturbNormal(n, sigma, state);
-        CHECK_NEAR(p.length(), 1.0, 1e-12);
-        sumSq += std::acos(std::min(1.0, p.dot(n))) * std::acos(std::min(1.0, p.dot(n)));
+    int    taken = 0;
+    for (int i = 0; i < 40000; ++i) {
+        Vec3 h, o;
+        double w = 1.0;
+        if (!b.sampleMicrofacet(wi, n, rng, h, o, w)) continue;
+        CHECK_NEAR(h.length(), 1.0, 1e-9);
+        const double tilt = std::acos(std::min(1.0, h.dot(n)));
+        sumSq += tilt * tilt;
+        ++taken;
     }
-    // Two independent slope errors of sigma each, so the tilt off the original
-    // normal has RMS sqrt(2) sigma.
-    CHECK_NEAR(std::sqrt(sumSq / N), std::sqrt(2.0) * sigma, 0.2 * sigma);
+    CHECK(taken > 30000);
+    // GGX has heavy tails, so this is a scale check rather than an identity:
+    // the typical facet tilt sits within a factor of two of alpha.
+    const double rms = std::sqrt(sumSq / double(taken > 0 ? taken : 1));
+    CHECK(rms > 0.4 * b.alpha && rms < 2.5 * b.alpha);
+}
+
+TEST(roughness, a_real_bsdf_wins_over_both_shorthands) {
+    // A surface could once describe its scattering three ways at the same time,
+    // and all three ran side by side in one interaction. There is one model now,
+    // and this is the order it resolves in.
+    SurfaceOptics s;
+    s.roughness    = 0.05;
+    s.scatter      = 0.5;
+    s.bsdf.model   = bsdf::Model::Abg;
+    s.bsdf.abgA    = 1e-3;
+    s.bsdf.fraction = 1.0;
+    CHECK(s.effectiveBsdf().model == bsdf::Model::Abg);
+
+    // Without a BSDF, the Lambertian fraction wins over the slope error: a
+    // surface that says it diffuses half its light is not also slightly matte.
+    SurfaceOptics t;
+    t.roughness = 0.05;
+    t.scatter   = 0.5;
+    const bsdf::Surface tb = t.effectiveBsdf();
+    CHECK(tb.model == bsdf::Model::Lambertian);
+    CHECK_NEAR(tb.fraction, 0.5, 1e-12);
 }
 
 TEST(roughness, blurs_a_focus_more_the_rougher_it_gets) {

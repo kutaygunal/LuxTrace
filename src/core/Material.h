@@ -64,10 +64,26 @@ struct OpticalMaterial {
 // incidence, and not the same at 460 nm as at 620.
 double metalReflectance(double n1, double n2, double k2, double cosI);
 
+// The same interface, as amplitude reflectances and the phase between them.
+//
+// Metal reflection is the largest single source of polarisation change in most
+// reflective systems: aluminium at 60 degrees turns linear light elliptical,
+// which is why a periscope of two mirrors is not a null. The unpolarised
+// scalar above cannot express any of that, so a polarised trace bouncing off a
+// mirror used to report the source's own state back to itself.
+//
+// Reduces to the ordinary real-index amplitudes as k2 -> 0, so a "metal" with
+// no extinction is not a special case that behaves differently.
+void metalAmplitudes(double n1, double n2, double k2, double cosI,
+                     double& rs, double& rp, double& phaseDelta);
+
 namespace materials {
 
-// The catalogue, in registry order. Index 0 is always vacuum.
+// The catalogue, in registry order. Index 0 is always vacuum. The built-in
+// entries come first and keep their indices; anything loaded from a file is
+// appended, so an index taken before a load is still valid after one.
 int  count();
+int  builtinCount();
 const QString& name(int i);
 OpticalMaterial at(int i);
 
@@ -78,5 +94,24 @@ int             indexOf(const QString& name);
 
 // A short human description, for a tooltip in the material picker.
 const QString& description(int i);
+
+// Where this entry came from: empty for a built-in, the file's path otherwise.
+// Ten materials is a demonstration; a catalogue is a tool, and a user needs to
+// be able to see which of the two a number came from.
+const QString& source(int i);
+
+// Adds one resolved material. A name already in the catalogue is replaced --
+// loading a newer Schott file over an older one is an update, not a duplicate
+// -- and the returned index is where it landed.
+//
+// Registry mutation is guarded, because a load can happen while a study is
+// running. Nothing on the trace hot path reads the catalogue: a material is
+// copied into SurfaceOptics at scene-build time and read from there, which is
+// exactly why the struct is a fixed-size POD.
+int add(const QString& name, const QString& description,
+        const OpticalMaterial& material, const QString& source = QString());
+
+// Drops everything loaded from a file, leaving the built-ins.
+void resetLoaded();
 
 } // namespace materials

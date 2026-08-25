@@ -7,6 +7,51 @@
 #include "SimulationResult.h"
 #include "TraceScene.h"
 
+// One source beyond the one the scene places, described independently of it.
+//
+// SimConfig held exactly one source, placed by the scene, so a luminaire with
+// more than one LED -- and any system needing a stray-light source alongside
+// the signal source -- could not be built at all. A spec is placed *relative*
+// to the scene emitter by default, which is what makes a four-LED array four
+// copies of one spec at four offsets rather than four hand-placed sources.
+struct SourceSpec {
+    QString label;
+
+    SourceConfig::Type  type  = SourceConfig::Type::Lambertian;
+    SourceConfig::Shape shape = SourceConfig::Shape::PointLike;
+    SpectrumConfig      spectrum;
+
+    double halfAngleDeg = 90.0;
+    double sizeA        = 0.0;
+    double sizeB        = 0.0;
+    double beamRadius   = 25.0;
+
+    // In the run unit, which the first source fixes. Ray budgets are shared
+    // between sources in proportion to this, which is the variance-optimal
+    // split: a source contributing a tenth of the light gets a tenth of the
+    // rays and every source ends up with a comparable error bar.
+    double power = 1.0;
+
+    int polarisationState = 0;
+
+    // Where it sits. `offset` is millimetres from the scene emitter unless
+    // `absolute`, in which case it is a world position.
+    bool   absolute = false;
+    gp_Pnt offset{0, 0, 0};
+    // Emission axis. Empty means "whichever way the scene aims its emitter",
+    // so a second LED beside the first faces the same optic without anyone
+    // having to restate the geometry.
+    bool   useSceneAxis = true;
+    gp_Dir axis{0, 0, 1};
+
+    // A measured ray set standing in for the analytic emitter above.
+    std::shared_ptr<const RayFileData> rayFile;
+    double rayFileScale       = 1.0;
+    bool   rayFileWavelengths = true;
+
+    bool tracesRayFile() const { return rayFile && rayFile->valid(); }
+};
+
 // High-level simulation configuration: everything the UI can set, in one
 // serialisable struct.
 struct SimConfig {
@@ -63,6 +108,23 @@ struct SimConfig {
     // The polarisation state the source emits, on a polarised trace.
     // 0 unpolarised, 1 linear s, 2 linear p, 3 circular.
     int polarisationState = 0;
+
+    // A measured ray set for the primary source. With one loaded, the angular
+    // law, the emitter shape and the sizes above are not consulted: the file
+    // carries every ray already. This is what turns "model an LED" into "use
+    // this LED", and it is the interoperation an illumination engineer asks
+    // for first.
+    std::shared_ptr<const RayFileData> rayFile;
+    double rayFileScale       = 1.0;
+    bool   rayFileWavelengths = true;
+
+    // Everything beyond the primary source. Empty is the ordinary case, and a
+    // run with an empty list is bit-identical to what it was before there was
+    // a list at all.
+    std::vector<SourceSpec> extraSources;
+
+    // How many sources this configuration traces.
+    int sourceCount() const { return 1 + int(extraSources.size()); }
 
     // Receiver resolution. 0 keeps the mesher's default grid.
     int detectorBins = 0;
@@ -125,6 +187,13 @@ public:
     // The emission setup a scene uses at the given parameters. Exposed so tests
     // and the diagnostics paths do not have to duplicate the placement.
     static SourceConfig sourceFor(const SimConfig& cfg, const SceneData& data);
+
+    // Every source the configuration traces, placed and with the run ray budget
+    // already shared between them in proportion to power. The first entry is
+    // exactly what sourceFor returns, so a single-source configuration produces
+    // a one-element list carrying the whole budget.
+    static std::vector<SourceConfig> sourcesFor(const SimConfig& cfg,
+                                                const SceneData& data);
     static SourceConfig sourceFor(GeometryProvider::Scene scene,
                                   SourceConfig::Type type, int rays);
 

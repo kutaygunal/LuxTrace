@@ -55,6 +55,23 @@ public:
     // Replaces the displayed ray paths (pass an empty vector to clear them).
     void setRays(const std::vector<RaySegment>& segments);
 
+    // Where the light comes from and where it is measured, so the scene reads
+    // as an experiment rather than as a pile of grey solids.
+    //
+    // A first-time user cannot tell which of two translucent objects is the
+    // measurement plane, and no amount of documentation fixes that as cheaply
+    // as drawing it. `halfAngleDeg` >= 180 draws no cone.
+    void setSourceGlyph(const gp_Pnt& origin, const gp_Dir& axis, double halfAngleDeg,
+                        bool collimated, double beamRadius);
+    void clearSourceGlyph();
+    // Draw the corner axis triad and the scale bar.
+    void setOverlaysVisible(bool on);
+
+    // Hide one surface, so an internal face can be seen at all.
+    void setSurfaceVisible(int index, bool visible);
+    // Which surface the scene tree has selected, drawn so the two agree.
+    void setHighlightedSurface(int index);
+
     void fitAll();
     void resetView();
     void setRaysVisible(bool visible);
@@ -109,6 +126,7 @@ private:
     void applyWalk(double seconds);
     void freeLook(double dYaw, double dPitch);
     void rebuildRays();
+    void rebuildOverlay();
     void applyClip();
     void pickAt(const QPoint& pos);
     double sceneScale() const;
@@ -117,7 +135,12 @@ private:
     Handle(V3d_View)               m_view;
     Handle(AIS_InteractiveContext) m_context;
     std::vector<Handle(AIS_Shape)> m_shapes;
+    std::vector<bool>              m_visible;
     Handle(RayCloud)               m_rays;
+    // The source glyph, the receiver outlines, the axis triad and the scale
+    // bar, all as one line-primitive object for the same reason the rays are:
+    // a presentation per line would be a presentation per line.
+    Handle(RayCloud)               m_overlay;
     Handle(Graphic3d_ClipPlane)    m_clip;
 
     // The segments as traced, kept so a colour-mode or filter change can redraw
@@ -140,6 +163,23 @@ private:
     bool            m_initFailed  = false;
     RayColor        m_rayColor    = RayColor::Energy;
     bool            m_detectorOnly = false;
+    int             m_highlighted = -1;
+    bool            m_overlaysOn  = true;
+    bool            m_haveSource  = false;
+    gp_Pnt          m_sourceOrigin{0, 0, 0};
+    gp_Dir          m_sourceAxis{0, 0, 1};
+    double          m_sourceHalfAngle = 180.0;
+    bool            m_sourceCollimated = false;
+    double          m_sourceBeamRadius = 0.0;
+    // The receivers, as the frames the mesher gave them, so the overlay can
+    // outline them and draw their acceptance cones.
+    struct ReceiverGlyph {
+        gp_Pnt centre;
+        gp_Dir u, v, n;
+        double w = 0.0, h = 0.0;
+        double acceptanceDeg = 180.0;
+    };
+    std::vector<ReceiverGlyph> m_receivers;
     bool            m_clipOn      = false;
     int             m_clipAxis    = 0;
     double          m_clipPos     = 0.5;

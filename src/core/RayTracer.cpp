@@ -2,6 +2,7 @@
 #include "Material.h"
 #include "Sampling.h"
 #include "Optics.h"
+#include "ThreadPool.h"
 
 #include <algorithm>
 #include <array>
@@ -101,25 +102,66 @@ struct MediumStack {
             if (e[i] == std::int16_t(idx)) return true;
         return false;
     }
-    void push(int idx) {
-        if (n < kMediumDepth) e[n++] = std::int16_t(idx);
+    // False when the stack was already full, so the entry was dropped. The
+    // recovery is right and the silence was not: a mesh that nests more than
+    // kMediumDepth deep produces systematically wrong index pairs and a
+    // perfectly clean-looking result.
+    bool push(int idx) {
+        if (n >= kMediumDepth) return false;
+        e[n++] = std::int16_t(idx);
+        return true;
     }
     // Removes the innermost entry matching `idx`. A stack that never saw it is
     // left alone: exiting a body one was never recorded as entering is a
-    // modelling artefact, not a reason to corrupt the rest of the stack.
-    void popValue(int idx) {
+    // modelling artefact, not a reason to corrupt the rest of the stack -- but
+    // it is one worth counting, which is what the return value is for.
+    bool popValue(int idx) {
         for (int i = int(n) - 1; i >= 0; --i) {
             if (e[i] != std::int16_t(idx)) continue;
             for (int j = i + 1; j < int(n); ++j) e[j - 1] = e[j];
             --n;
-            return;
+            return true;
         }
+        return false;
     }
 };
+
+// Resolves every surface's scattering into the one model the tracer reads, and
+// writes it back over the run's own copy of the surfaces.
+//
+// Done once per run rather than per hit, so the inner loop reads one model
+// instead of choosing between three. It also puts the scene-wide overrides and
+// the physics switches in one place: `scattering` gates the redistribution
+// lobes and `roughness` gates the microfacet one, which is the split those two
+// switches always drove.
+//
+// After this, `SurfaceOptics::scatter` and `::roughness` are not read again by
+// the tracer at all. They are the way a scene *says* what it is; `bsdf` is what
+// the tracer *does*.
+void resolveScattering(std::vector<SceneSurface>& surfs, const PhysicsOptions& phys) {
+    for (SceneSurface& s : surfs) {
+        SurfaceOptics t = s;
+        if (phys.roughnessOverride >= 0.0) t.roughness = phys.roughnessOverride;
+        if (phys.scatterOverride   >= 0.0) t.scatter   = phys.scatterOverride;
+
+        bsdf::Surface b = t.effectiveBsdf();
+        const bool micro = (b.model == bsdf::Model::Microfacet);
+        if (( micro && !phys.roughness) ||
+            (!micro && !phys.scattering))
+            b = bsdf::Surface{};
+
+        s.bsdf = b;
+    }
+}
 
 // A path is a binary tree (reflected + transmitted branch), walked depth first,
 // so the pending stack never exceeds one entry per depth level.
 constexpr int kPathStack = kMaxDepth + 8;
+
+// How much memory the per-thread accumulators may take between them. Past this
+// the run uses fewer threads rather than more memory -- see the note where it is
+// applied.
+constexpr std::size_t kGridBudgetBytes = 256ull * 1024ull * 1024ull;
 
 // Rays are handed out in chunks so threads stay busy on wildly uneven paths
 // (a TIR bounce chain costs orders of magnitude more than an escaping ray)
@@ -275,6 +317,52 @@ EmittedRay sampleEmission(const EmissionBasis& basis, const SourceConfig& src,
     const double u4 = draw(3);
 
     EmittedRay ray;
+
+    // ---- a measured ray set ------------------------------------------------
+    // Everything the analytic emitter samples, the file already carries: the
+    // origin on the emitting surface, the direction, and the flux. So this is
+    // not another emitter shape -- it is the emitter, read rather than
+    // constructed, and it is why reading one needed no change to the engine.
+    if (src.tracesRayFile()) {
+        const RayFileData& rf = *src.rayFile;
+        const std::size_t n = rf.size();
+        // Cycled by index, so the run stays bit-reproducible and a budget
+        // larger than the file is a whole extra pass rather than a random
+        // resample. Each ray's own flux becomes its weight, and the run
+        // normalises by the emitted weight it actually accumulated, so an
+        // uneven number of passes over the set is accounted for exactly.
+        const SourceRay& fr = rf.rays[index % n];
+
+        // The file's frame placed by the source's: +Z onto `axis`, and the
+        // in-plane axes onto the same basis every other emitter uses.
+        const double s = src.rayFileScale;
+        const Vec3 p = basis.e1 * (fr.origin.x * s)
+                     + basis.e2 * (fr.origin.y * s)
+                     + basis.axis * (fr.origin.z * s);
+        ray.origin = Vec3(src.origin) + p;
+        ray.dir    = (basis.e1 * fr.dir.x + basis.e2 * fr.dir.y + basis.axis * fr.dir.z)
+                         .normalized();
+
+        const bool fromFile = src.rayFileWavelengths && fr.wavelengthNm > 0.0;
+        ray.wavelengthNm = fromFile ? fr.wavelengthNm
+                         : (rf.headerWavelengthNm > 0.0 && src.rayFileWavelengths)
+                               ? rf.headerWavelengthNm
+                               : (spec.monochromatic() || spec.rgbBands()
+                                      ? spec.sample(index, 0.0)
+                                      : spec.sample(index, draw(4)));
+
+        const double mean = rf.meanPower();
+        ray.weight = (mean > 0.0) ? fr.power / mean : 1.0;
+        // A set already quoted in lumens is already photometric; weighting it
+        // by V(lambda) a second time would count the eye twice. A set in watts
+        // traced photometrically gets the weighting like any other source.
+        if (src.fluxUnit == FluxUnit::Lumen && rf.unit != FluxUnit::Lumen)
+            ray.weight *= spec.photometricWeight(ray.wavelengthNm);
+        // Aiming is meaningless here: the directions are measured, not drawn,
+        // so there is no distribution to narrow.
+        return ray;
+    }
+
     // The spectral draw comes last, so adding it left every existing stream --
     // and therefore every monochromatic result -- bit-identical.
     ray.wavelengthNm = spec.monochromatic() || spec.rgbBands()
@@ -376,7 +464,12 @@ struct RayStats {
     Sum         fluxAbsorbed;
     Sum         fluxBulk;
     Sum         fluxEscaped;
-    Sum         fluxTruncated;
+    // Refused by a receiver's acceptance cone. Not a loss to anything physical:
+    // a measurement condition declined to record it, and folding that into
+    // absorption is a wrong loss budget.
+    Sum         fluxRejected;
+    std::size_t raysRejected = 0;
+
     // Estimator bookkeeping residual: positive for energy a killed branch took
     // away, negative for energy handed to a survivor. Zero in expectation, and
     // what keeps the physical buckets closed exactly.
@@ -384,7 +477,27 @@ struct RayStats {
     // Russian roulette, emission aiming and next-event estimation all book here,
     // for the same reason: each replaces a sampled quantity with an estimate of
     // it, so the two differ run to run and agree in expectation.
-    Sum         fluxRoulette;
+    //
+    // One channel each rather than one accumulator between them: the sum's
+    // expectation is zero even when one contributor is systematically wrong and
+    // another cancels it, and the closed energy balance is the codebase's
+    // strongest correctness argument. Split, each channel's mean has to lie
+    // inside its own error bar, and a test asserts it. It costs five doubles.
+    Sum         resRoulette;    // roulette kill / promotion
+    Sum         resAiming;      // emission aimed away, less the companion draw
+    Sum         resNee;         // the analytic direct term, entered negative
+    Sum         resSkipDet;     // the sampled direct hit NEE already counted
+    Sum         resBsdf;        // what a BSDF sampling weight created or destroyed
+
+    // Why flux was truncated. At a depth limit of 160 a light guide or an
+    // integrating sphere can put real flux here, and one number cannot say
+    // whether raising the limit would help.
+    Sum         truncDepth, truncStack, truncDegenerate, truncRefract, truncCutoff;
+    std::size_t nTruncDepth = 0, nTruncStack = 0, nTruncDegenerate = 0,
+                nTruncRefract = 0, nTruncCutoff = 0;
+
+    // Medium-tracking anomalies, counted rather than swallowed.
+    std::size_t medUnmatchedExit = 0, medStackOverflow = 0, medGuessedIndex = 0;
     // Total emitted weight. For a radiometric run every ray weighs one and this
     // is just the ray count; for a photometric one it is what the result is
     // normalised by, so the requested lumens come out exactly.
@@ -399,12 +512,41 @@ struct RayStats {
         fluxAbsorbed .merge(o.fluxAbsorbed);
         fluxBulk     .merge(o.fluxBulk);
         fluxEscaped  .merge(o.fluxEscaped);
-        fluxTruncated.merge(o.fluxTruncated);
-        fluxRoulette .merge(o.fluxRoulette);
+        fluxRejected .merge(o.fluxRejected);
+        resRoulette  .merge(o.resRoulette);
+        resAiming    .merge(o.resAiming);
+        resNee       .merge(o.resNee);
+        resSkipDet   .merge(o.resSkipDet);
+        resBsdf      .merge(o.resBsdf);
+        truncDepth     .merge(o.truncDepth);
+        truncStack     .merge(o.truncStack);
+        truncDegenerate.merge(o.truncDegenerate);
+        truncRefract   .merge(o.truncRefract);
+        truncCutoff    .merge(o.truncCutoff);
         weightEmitted.merge(o.weightEmitted);
         det          .merge(o.det);
-        raysHit  += o.raysHit;
-        raysDone += o.raysDone;
+        raysHit      += o.raysHit;
+        raysDone     += o.raysDone;
+        raysRejected += o.raysRejected;
+        nTruncDepth      += o.nTruncDepth;
+        nTruncStack      += o.nTruncStack;
+        nTruncDegenerate += o.nTruncDegenerate;
+        nTruncRefract    += o.nTruncRefract;
+        nTruncCutoff     += o.nTruncCutoff;
+        medUnmatchedExit += o.medUnmatchedExit;
+        medStackOverflow += o.medStackOverflow;
+        medGuessedIndex  += o.medGuessedIndex;
+    }
+
+    // The five estimator channels summed: what used to be `fluxRoulette`, and
+    // what still closes the energy balance.
+    double residualTotal() const {
+        return resRoulette.value() + resAiming.value() + resNee.value()
+             + resSkipDet.value() + resBsdf.value();
+    }
+    double truncatedTotal() const {
+        return truncDepth.value() + truncStack.value() + truncDegenerate.value()
+             + truncRefract.value() + truncCutoff.value();
     }
 };
 
@@ -437,6 +579,10 @@ struct ChunkOutput {
     // randomised-QMC error bar.
     std::vector<double>          replicaDet;
     std::vector<double>          replicaEmit;
+
+    // Detected flux per source. Scalars, so they reduce in chunk order like
+    // every other scalar and a two-source run stays bit-reproducible.
+    std::vector<double>          sourceDet;
 };
 
 // One branch of a path still waiting to be traced.
@@ -484,6 +630,9 @@ struct TraceContext {
     std::vector<double>* intensity  = nullptr;  // per-thread far-field bins
     RayStats*            stats      = nullptr;  // per-chunk scalar totals
     ChunkOutput*         chunk      = nullptr;
+    // Where to record what happened at each interaction, or null. Null on every
+    // Monte Carlo path, so the cost there is one predictable branch.
+    std::vector<RayInteraction>* log = nullptr;
     std::size_t          segmentCap = 0;
     std::size_t          arrivalCap = 0;
     std::size_t          bandCells  = 0;        // cells of receiver 0
@@ -498,6 +647,7 @@ struct TraceContext {
     double        bandW[3] = {0.0, 0.0, 0.0};
     bool          bands  = false;
     int           replica = -1;   // which Owen scramble this ray belongs to
+    int           source  = 0;    // which source emitted this ray
     // Flux-weighted Stokes sum of what reached the receiver, on a polarised run.
     double        detStokes[4] = {0.0, 0.0, 0.0, 0.0};
     // The state the source emits, normalised to unit intensity.
@@ -628,13 +778,19 @@ double nextEventEstimate(TraceContext& ctx, const Vec3& p, const Vec3& n, double
         // Is the receiver actually the first thing along the connection? A pane
         // of glass in the way means the direct term really is zero -- the
         // sampled path would hit the glass first too, and is not suppressed.
+        //
+        // An any-hit query, not a nearest-hit one. The question is whether
+        // anything is in the way, and a single occluder anywhere along the
+        // segment answers it: walking the hierarchy to completion to find the
+        // *nearest* occluder is work spent learning something the first one
+        // already said. On an integrating sphere or behind a diffuser -- the
+        // scenes next-event estimation exists for -- a connection is fired at
+        // nearly every bounce, so this is a large share of the whole trace.
         const double r = std::sqrt(r2);
         const Vec3   o = p + n * surfaceEps(p);
-        RayHit h;
-        if (!scene.nearestHit(o, w, h, surfaceEps(o))) continue;
-        if (scene.detectorOfSurface(scene.surfaceIndexOf(h)) != int(di))
-            continue;
-        if (h.t < r * 0.5 || h.t > r * 1.5) continue;
+        // Just short of the receiver, so its own far face cannot occlude the
+        // connection to its near one.
+        if (scene.occluded(o, w, r * (1.0 - 1e-9), det.surf, surfaceEps(o))) continue;
 
         conn[di].hit    = true;
         conn[di].q      = q;
@@ -694,6 +850,7 @@ double nextEventEstimate(TraceContext& ctx, const Vec3& p, const Vec3& n, double
             a.wavelengthNm = float(ctx.lambda);
             a.opl          = float(opl + travelIndex * conn[di].range);
             a.detector     = int(di);
+            a.source       = ctx.source;
             ChunkOutput& co = *ctx.chunk;
             ++co.arrivalSeen;
             if (co.arrivals.size() < ctx.arrivalCap) {
@@ -731,19 +888,25 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
 
     // Pushes a branch, or books its energy as truncated if it cannot be taken.
     auto push = [&](const PathState& st) {
-        if (sp < kPathStack) stack[sp++] = st;
-        else                 ts.fluxTruncated.add(st.energy);
+        if (sp < kPathStack) { stack[sp++] = st; return; }
+        ts.truncStack.add(st.energy);
+        ++ts.nTruncStack;
     };
 
     while (sp > 0) {
         PathState s = stack[--sp];
 
-        if (s.depth > kMaxDepth) { ts.fluxTruncated.add(s.energy); continue; }
+        if (s.depth > kMaxDepth) {
+            ts.truncDepth.add(s.energy);
+            ++ts.nTruncDepth;
+            continue;
+        }
         if (s.energy <= 0.0) continue;
         // With the estimator switches off there is no roulette to thin the
         // tree, so the old hard cutoff is the only thing that ends a path.
         if (!phys.varianceReduction && s.energy < kRoulette) {
-            ts.fluxTruncated.add(s.energy);
+            ts.truncCutoff.add(s.energy);
+            ++ts.nTruncCutoff;
             continue;
         }
 
@@ -753,10 +916,10 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
         if (phys.varianceReduction && s.energy < kRoulette) {
             const double p = s.energy / kRoulette;
             if (uniform01(ctx.rng) >= p) {
-                ts.fluxRoulette.add(s.energy);
+                ts.resRoulette.add(s.energy);
                 continue;
             }
-            ts.fluxRoulette.add(-(kRoulette - s.energy));
+            ts.resRoulette.add(-(kRoulette - s.energy));
             s.energy = kRoulette;
         }
 
@@ -820,6 +983,7 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
                         rs.energy = float(e);
                         rs.wavelengthNm = float(ctx.lambda);
                         rs.depth = std::uint16_t(std::min(s.depth, 65535));
+                        rs.source = std::uint16_t(std::max(0, ctx.source));
                         st.seg = int(ctx.chunk->segments.size());
                         ctx.chunk->segments.push_back(rs);
                         ctx.chunk->parent.push_back(s.seg);
@@ -857,6 +1021,7 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
             rs.energy       = float(e);
             rs.wavelengthNm = float(ctx.lambda);
             rs.depth        = std::uint16_t(std::min(s.depth, 65535));
+            rs.source       = std::uint16_t(std::max(0, ctx.source));
             ctx.chunk->segments.push_back(rs);
             ctx.chunk->parent.push_back(s.seg);
         }
@@ -868,8 +1033,24 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
 
             // A receiver only counts what arrives inside its acceptance cone,
             // which is how a real photometer and a real fibre behave.
+            // Refused by the acceptance cone. That light was not absorbed by
+            // anything -- it was refused by a measurement condition -- so it
+            // gets its own channel, and whether the branch stops here is the
+            // receiver's to say. An absorbing photometer head stops it; a
+            // recording plane, a photometer behind a window, lets it through.
             if (!det.accepts(s.d)) {
-                ts.fluxAbsorbed.add(e);
+                if (!det.rejectPasses) {
+                    ts.fluxRejected.add(e);
+                    ++ts.raysRejected;
+                    continue;
+                }
+                PathState st = s;
+                st.o      = p + s.d * surfaceEps(p);
+                st.energy = e;
+                st.opl    = opl;
+                st.depth  = s.depth + 1;
+                st.seg    = segIdx;
+                push(st);
                 continue;
             }
             // The diffuse bounce this branch came from already estimated its
@@ -878,7 +1059,7 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
             // residual -- the same place the roulette's does, and zero in
             // expectation for the same reason.
             if (s.skipDetector) {
-                ts.fluxRoulette.add(e);
+                ts.resSkipDet.add(e);
                 continue;
             }
             int bx = 0, by = 0;
@@ -894,6 +1075,20 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
                         (*ctx.bandGrid)[std::size_t(b) * ctx.bandCells + cell] +=
                             e * ctx.bandW[b];
                 }
+            }
+            if (ctx.log) {
+                RayInteraction in;
+                in.point         = p;
+                in.surface       = surfIdx;
+                in.depth         = s.depth;
+                in.angleDeg      = std::acos(std::clamp(std::fabs(s.d.dot(triN)), 0.0, 1.0))
+                                   / kDegRad;
+                in.energyIn      = e;
+                in.opl           = opl;
+                in.mediumSurface = s.medium;
+                in.mediumDepth   = int(s.media.n);
+                in.detector      = true;
+                ctx.log->push_back(in);
             }
             ts.fluxDetector.add(e);
             rayDetector     += e;
@@ -920,6 +1115,7 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
                 a.wavelengthNm = float(ctx.lambda);
                 a.opl          = float(opl);
                 a.detector     = di < 0 ? 0 : di;
+                a.source       = ctx.source;
                 ChunkOutput& co = *ctx.chunk;
                 ++co.arrivalSeen;
                 if (co.arrivals.size() < ctx.arrivalCap) {
@@ -935,8 +1131,18 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
             }
             // Mark every leg back to the emitter, so the viewer can show only
             // the rays that actually delivered energy.
-            for (int k = segIdx; k >= 0; k = ctx.chunk->parent[std::size_t(k)])
-                ctx.chunk->segments[std::size_t(k)].flags |= RaySegment::ReachedDetector;
+            //
+            // Stopping at the first leg that is already marked is not an
+            // optimisation that trades anything away: the walk always runs to
+            // the emitter, so a marked leg means every leg above it is marked
+            // too. On a path that arrives fifty times -- a light guide, an
+            // integrating sphere -- the walk was re-marking the same chain from
+            // the receiver to the source on every one of them.
+            for (int k = segIdx; k >= 0; k = ctx.chunk->parent[std::size_t(k)]) {
+                RaySegment& leg = ctx.chunk->segments[std::size_t(k)];
+                if (leg.reachedDetector()) break;
+                leg.flags |= RaySegment::ReachedDetector;
+            }
             continue;
         }
 
@@ -956,19 +1162,51 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
         // the facet normal is the only one that keeps the ray outside the solid.
         if (n.dot(s.d) > 0.0 || !n.normalize()) n = ng;
 
-        const double surfRough = phys.roughnessOverride >= 0.0 ? phys.roughnessOverride
-                                                                : surf.roughness;
-        const double surfScatter = phys.scatterOverride >= 0.0 ? phys.scatterOverride
-                                                               : surf.scatter;
-        // A real BSDF supersedes the Gaussian tilt where one is set. The tilt
-        // stays for the scenes built against it: it is the simplest possible
-        // statement of "not quite polished", and it is what those scenes mean.
-        const bool useBsdf = phys.scattering && !surf.bsdf.isSpecular();
-        if (!useBsdf && phys.roughness && surfRough > 0.0) {
-            const Vec3 rough = perturbNormal(n, surfRough, ctx.rng);
-            // A slope error large enough to tip the normal past the ray would put
-            // the outgoing ray inside the surface; there, keep the smooth normal.
-            if (rough.dot(s.d) < 0.0) n = rough;
+        // ---- one scattering model -------------------------------------------
+        //
+        // Resolved at trace setup, so there is a single model here rather than
+        // three running side by side. The two forms it can take are different
+        // kinds of thing and are treated as such:
+        //
+        //   a microfacet lobe is a *geometry*. It says which facet of the rough
+        //   interface this ray actually met, so Fresnel and Snell are evaluated
+        //   at that facet's normal and both branches leave from it. A rough
+        //   interface is rough for the transmitted ray too.
+        //
+        //   a redistribution lobe -- Lambertian, ABg, a measured table -- leaves
+        //   the interface smooth and changes where the energy goes after the
+        //   split.
+        //
+        // What used to happen was neither: the normal was jittered, the energy
+        // was whatever specular Fresnel gave it at the *smooth* normal, and the
+        // ray then left in a diffuse direction.
+        const bsdf::Surface& lobe = surf.bsdf;
+        const bool microfacet   = (lobe.model == bsdf::Model::Microfacet) &&
+                                  !lobe.isSpecular();
+        const bool redistributes = !lobe.isSpecular() && !microfacet;
+        const double lobeTis = lobe.isSpecular() ? 0.0 : lobe.totalIntegratedScatter();
+
+        // The facet this interaction happens at, and the specular direction off
+        // it. `n` becomes that facet, so everything below reads one normal.
+        Vec3 microRefl;
+        bool haveMicro = false;
+        if (microfacet && lobeTis > 0.0 &&
+            uniform01(ctx.rng) < (lobeTis < 1.0 ? lobeTis : 1.0)) {
+            Vec3 h;
+            double w = 1.0;
+            if (lobe.sampleMicrofacet(s.d, n, ctx.rng, h, microRefl, w)) {
+                n = h;
+                haveMicro = true;
+                // How much of that facet is actually visible, shadowing and
+                // masking included. It scales the whole interaction rather than
+                // one branch of it, because it is a property of the facet and
+                // not of where the light goes next.
+                if (w != 1.0) {
+                    const double before = e;
+                    e *= w;
+                    ts.resBsdf.add(before - e);
+                }
+            }
         }
 
         const bool   refracts = surf.index > 0.0;
@@ -1010,9 +1248,19 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
             // idiom again, where the entrance and the exit are different
             // surfaces -- pops whatever the ray *is* in rather than a body the
             // stack never held.
-            if (leaving) afterStack.popValue(onStack ? surfIdx : s.medium);
-            else         afterStack.push(surfIdx);
+            if (leaving) {
+                if (!afterStack.popValue(onStack ? surfIdx : s.medium))
+                    ++ts.medUnmatchedExit;
+            } else {
+                if (!afterStack.push(surfIdx)) ++ts.medStackOverflow;
+            }
             afterMed = effectiveMedium(ctx, afterStack);
+
+            // Crossing a face outward while recorded as being in vacuum: the
+            // incident index has to be guessed. Legitimate for a bare sheet,
+            // and a symptom of a self-intersecting or non-manifold mesh
+            // otherwise -- which is exactly what imported CAD produces.
+            if (s.medium < 0 && geoLeaving && !onStack) ++ts.medGuessedIndex;
 
             n1 = (s.medium >= 0) ? mediumIndex(ctx, s.medium)
                                  : (leaving ? nSurf : 1.0);
@@ -1115,13 +1363,64 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
             // aluminium at normal incidence, and neither is the same at 460 nm
             // as at 620. A plain mirror keeps its fixed number.
             double R = surf.reflectivity;
-            if (phys.fresnel && surf.material.isMetal()) {
-                R = metalReflectance(mediumIndex(ctx, s.medium),
-                                     surf.material.indexAt(ctx.lambda),
-                                     surf.material.extinctionAt(ctx.lambda), cosI);
+            const bool metal = phys.fresnel && surf.material.isMetal();
+            const double nIn  = mediumIndex(ctx, s.medium);
+            const double nMet = surf.material.indexAt(ctx.lambda);
+            const double kMet = surf.material.extinctionAt(ctx.lambda);
+            if (metal) R = metalReflectance(nIn, nMet, kMet, cosI);
+
+            // The polarised path at a mirror. This branch used to leave
+            // `havePol` false, so the reflected branch inherited the incoming
+            // Stokes vector verbatim: a polarised run bouncing off an aluminium
+            // reflector reported the source's polarisation rather than the
+            // mirror's. Metal reflection is the largest single source of
+            // polarisation change in most reflective systems, and the machinery
+            // it needs was already written and already tested.
+            if (phys.polarised && metal) {
+                double as = 0.0, ap = 0.0, phase = 0.0;
+                metalAmplitudes(nIn, nMet, kMet, cosI, as, ap, phase);
+
+                polState = s.stokes;
+                if (s.polFrame.lengthSquared() > 0.0) {
+                    const double turn = polarisation::frameRotation(s.d, s.polFrame, ng);
+                    polState = polarisation::Mueller::rotation(turn).apply(polState);
+                }
+                const polarisation::Stokes outS =
+                    polarisation::Mueller::fromFresnel(as, ap, phase).apply(polState);
+                // The reflectance the *state* sees, which is what makes an
+                // s-polarised beam and a p-polarised one leave a mirror with
+                // different energies rather than the same average.
+                const double total = std::max(1e-18, polState.i);
+                R = std::clamp(outS.i / total, 0.0, 1.0);
+                reflState = (outS.i > 1e-15) ? outS.scaled(1.0 / outS.i)
+                                             : polarisation::Stokes::unpolarised();
+                havePol = true;
             }
+
             reflE = e * R;
             ts.fluxAbsorbed.add(e - reflE);
+        }
+
+        if (ctx.log) {
+            // Before the splitting control below, deliberately: what a reader
+            // wants to see is the reflectance the surface actually has, not the
+            // collapsed single branch the estimator chose to follow.
+            RayInteraction in;
+            in.point         = p;
+            in.surface       = surfIdx;
+            in.depth         = s.depth;
+            in.angleDeg      = std::acos(std::clamp(cosI, 0.0, 1.0)) / kDegRad;
+            in.n1            = n1;
+            in.n2            = n2;
+            in.reflectance   = e > 0.0 ? reflE / e : 0.0;
+            in.transmittance = e > 0.0 ? transE / e : 0.0;
+            in.energyIn      = e;
+            in.opl           = opl;
+            in.mediumSurface = s.medium;
+            in.mediumDepth   = int(s.media.n);
+            in.tir           = tir;
+            in.scattered     = redistributes || haveMicro;
+            ctx.log->push_back(in);
         }
 
         // ---- splitting control ---------------------------------------------
@@ -1139,8 +1438,6 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
             }
         }
 
-        const bool canScatter = phys.scattering && surfScatter > 0.0;
-
         // Spawn a branch offset along the geometric normal, on the side it is
         // actually leaving on. Offsetting along the ray instead leaves a grazing
         // branch a hair above the surface it just left.
@@ -1148,7 +1445,11 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
         auto spawn = [&](Vec3 outDir, double outE, const MediumStack& media,
                          int med, bool skipDet = false,
                          const polarisation::Stokes* pol = nullptr) {
-            if (!outDir.normalize()) { ts.fluxTruncated.add(outE); return; }
+            if (!outDir.normalize()) {
+                ts.truncDegenerate.add(outE);
+                ++ts.nTruncDegenerate;
+                return;
+            }
             const Vec3 off = ng * std::copysign(eps, outDir.dot(ng));
             PathState st;
             st.o      = p + off;
@@ -1177,19 +1478,27 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
                 // is which.
                 if (tD.dot(ng) >= 0.0 && !refract(s.d, ng, n1 / n2,
                                                   std::clamp(-s.d.dot(ng), 0.0, 1.0), tD)) {
-                    ts.fluxTruncated.add(transE);
+                    ts.truncRefract.add(transE);
+                    ++ts.nTruncRefract;
                     tD = Vec3();
                 }
                 if (tD.lengthSquared() > 0.0) {
                     bool diffuse = false;
-                    if (canScatter && uniform01(ctx.rng) < surfScatter) {
-                        // A transmissive diffuser re-emits cosine-weighted about
-                        // the far side of the surface. The geometric normal, not
-                        // the jittered one: a polish tolerance and a Lambertian
-                        // scatter are different mechanisms, and the cosine lobe
-                        // belongs to the surface rather than to its microfacets.
-                        tD = cosineHemisphere(-ng, uniform01(ctx.rng), uniform01(ctx.rng));
-                        diffuse = true;
+                    // A transmissive diffuser re-emits about the far side of the
+                    // surface, through the same lobe the reflected branch uses.
+                    // The geometric normal, not the facet: a redistribution lobe
+                    // belongs to the surface rather than to its microfacets.
+                    if (redistributes && lobeTis > 0.0 &&
+                        uniform01(ctx.rng) < (lobeTis < 1.0 ? lobeTis : 1.0)) {
+                        Vec3 o;
+                        double w = 1.0;
+                        if (lobe.sample(s.d, -ng, tD, ctx.rng, o, w)) {
+                            tD = o;
+                            const double before = transE;
+                            transE *= w;
+                            ts.resBsdf.add(before - transE);
+                            diffuse = (lobe.model == bsdf::Model::Lambertian);
+                        }
                     }
                     bool estimated = false;
                     if (diffuse) {
@@ -1197,7 +1506,7 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
                             nextEventEstimate(ctx, p, -ng, transE, opl, afterMed);
                         estimated = (direct >= 0.0);
                         if (direct > 0.0) {
-                            ts.fluxRoulette.add(-direct);
+                            ts.resNee.add(-direct);
                             rayDetector += direct;
                         }
                     }
@@ -1214,40 +1523,33 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
 
         // Specular (or diffuse) reflection, staying in the current medium.
         if (doRefl && reflE > 0.0) {
-            Vec3 refl = reflect(s.d, n);
+            // Off the facet where there was one, off the smooth normal where
+            // there was not.
+            Vec3 refl = haveMicro ? microRefl : reflect(s.d, n);
             if (refl.dot(ng) <= 0.0) refl = reflect(s.d, ng);
             bool diffuse = false;
-            if (useBsdf) {
-                // The BSDF decides both whether this ray scatters and where it
-                // goes, with the weight that keeps the lobe energy conserving.
-                // Sampling the outgoing direction is what makes it a
-                // distribution rather than a tilt with a rejection branch.
-                const double tis = surf.bsdf.totalIntegratedScatter();
-                if (tis > 0.0 && uniform01(ctx.rng) < std::min(1.0, tis)) {
-                    Vec3 o;
-                    double w = 1.0;
-                    if (surf.bsdf.sample(s.d, ng, refl, ctx.rng, o, w)) {
-                        refl = o;
-                        // The weight is a ratio of the lobe to its own sampling
-                        // density, so it multiplies the branch's energy. Anything
-                        // it creates or destroys is the estimator's, and booked
-                        // where the rest of the estimator's residual goes.
-                        const double before = reflE;
-                        reflE *= w;
-                        ts.fluxRoulette.add(before - reflE);
-                        diffuse = (surf.bsdf.model == bsdf::Model::Lambertian);
-                    }
+            if (redistributes && lobeTis > 0.0 &&
+                uniform01(ctx.rng) < (lobeTis < 1.0 ? lobeTis : 1.0)) {
+                Vec3 o;
+                double w = 1.0;
+                if (lobe.sample(s.d, ng, refl, ctx.rng, o, w)) {
+                    refl = o;
+                    // The weight is a ratio of the lobe to its own sampling
+                    // density, so it multiplies the branch's energy. Anything it
+                    // creates or destroys is the estimator's, and booked where
+                    // the rest of the estimator's residual goes.
+                    const double before = reflE;
+                    reflE *= w;
+                    ts.resBsdf.add(before - reflE);
+                    diffuse = (lobe.model == bsdf::Model::Lambertian);
                 }
-            } else if (canScatter && uniform01(ctx.rng) < surfScatter) {
-                refl = cosineHemisphere(ng, uniform01(ctx.rng), uniform01(ctx.rng));
-                diffuse = true;
             }
             bool estimated = false;
             if (diffuse) {
                 const double direct = nextEventEstimate(ctx, p, ng, reflE, opl, s.medium);
                 estimated = (direct >= 0.0);
                 if (direct > 0.0) {
-                    ts.fluxRoulette.add(-direct);
+                    ts.resNee.add(-direct);
                     rayDetector += direct;
                 }
             }
@@ -1260,6 +1562,9 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
     if (ctx.chunk && ctx.replica >= 0 &&
         std::size_t(ctx.replica) < ctx.chunk->replicaDet.size())
         ctx.chunk->replicaDet[std::size_t(ctx.replica)] += rayDetector;
+    if (ctx.chunk && ctx.source >= 0 &&
+        std::size_t(ctx.source) < ctx.chunk->sourceDet.size())
+        ctx.chunk->sourceDet[std::size_t(ctx.source)] += rayDetector;
 }
 
 
@@ -1324,6 +1629,36 @@ namespace {
 
 // The receiver frames of a scene, copied onto a result. Every readout that maps
 // a bin back to world millimetres reads these rather than assuming +Z.
+// Copies the named channels off the accumulators onto a result. Shared by the
+// single-ray path, the final reduction and every progressive snapshot, so a
+// preview reports the same breakdown the finished run does.
+void fillDiagnostics(SimulationResult& r, const RayStats& t) {
+    r.fluxTruncated = t.truncatedTotal();
+    r.fluxRejected  = t.fluxRejected.value();
+    r.fluxRoulette  = t.residualTotal();
+
+    r.residual.roulette      = t.resRoulette.value();
+    r.residual.aiming        = t.resAiming.value();
+    r.residual.nextEvent     = t.resNee.value();
+    r.residual.neeSuppressed = t.resSkipDet.value();
+    r.residual.bsdfWeight    = t.resBsdf.value();
+
+    r.truncation.depthLimit    = t.truncDepth.value();
+    r.truncation.stackOverflow = t.truncStack.value();
+    r.truncation.degenerate    = t.truncDegenerate.value();
+    r.truncation.refractFailed = t.truncRefract.value();
+    r.truncation.energyCutoff  = t.truncCutoff.value();
+    r.truncation.depthLimitCount    = t.nTruncDepth;
+    r.truncation.stackOverflowCount = t.nTruncStack;
+    r.truncation.degenerateCount    = t.nTruncDegenerate;
+    r.truncation.refractFailedCount = t.nTruncRefract;
+    r.truncation.energyCutoffCount  = t.nTruncCutoff;
+
+    r.anomalies.unmatchedExit = t.medUnmatchedExit;
+    r.anomalies.stackOverflow = t.medStackOverflow;
+    r.anomalies.guessedIndex  = t.medGuessedIndex;
+}
+
 void fillDetectorFrames(const TraceScene& scene, SimulationResult& out) {
     const auto& dets = scene.detectors();
     out.detectors.assign(dets.size(), DetectorFrame{});
@@ -1407,7 +1742,8 @@ void RayTracer::traceSingleRay(const TraceScene& scene, const Vec3& origin,
     std::vector<DetectorInfo> dets = scene.detectors();
     if (dets.empty()) dets.push_back(DetectorInfo{});
 
-    const std::vector<SceneSurface> surfs = scene.surfaces();
+    std::vector<SceneSurface> surfs = scene.surfaces();
+    resolveScattering(surfs, physics);
 
     RayStats stats;
     std::vector<double> grid(std::max<std::size_t>(1, scene.detectorCells()), 0.0);
@@ -1436,6 +1772,7 @@ void RayTracer::traceSingleRay(const TraceScene& scene, const Vec3& origin,
     // single draw, so they are off here whatever the caller asked for.
     ctx.physics.varianceReduction = false;
     ctx.lambda     = wavelengthNm;
+    ctx.log        = &out.interactions;
     ctx.emitted    = polarisation::Stokes::unpolarised();
     ctx.rng        = mix64(kInteractionSalt);
     chunk.arrivalRng = mix64(kReservoirSalt);
@@ -1448,8 +1785,7 @@ void RayTracer::traceSingleRay(const TraceScene& scene, const Vec3& origin,
     out.fluxAbsorbed     = stats.fluxAbsorbed.value();
     out.fluxBulkAbsorbed = stats.fluxBulk.value();
     out.fluxEscaped      = stats.fluxEscaped.value();
-    out.fluxTruncated    = stats.fluxTruncated.value();
-    out.fluxRoulette     = stats.fluxRoulette.value();
+    fillDiagnostics(out, stats);
     out.raysHitDetector  = stats.raysHit;
     scatterDetectorGrids(scene, grid, out);
     for (std::size_t i = 0; i < out.detectors.size() && i < chunk.detFlux.size(); ++i) {
@@ -1461,6 +1797,9 @@ void RayTracer::traceSingleRay(const TraceScene& scene, const Vec3& origin,
     out.raySegments      = std::move(chunk.segments);
     out.arrivals         = std::move(chunk.arrivals);
     out.efficiency       = (energy > 0.0) ? (out.fluxDetector / energy) : 0.0;
+    // The tracer knows surfaces by index; a reader knows them by name.
+    for (RayInteraction& in : out.interactions)
+        in.label = scene.surfaceLabel(in.surface);
 }
 
 void RayTracer::trace(const MeshList& meshes, const SourceConfig& src,
@@ -1482,7 +1821,15 @@ namespace {
 // preview is for looking at, the result is the bit-reproducible one.
 struct PreviewSlot {
     std::atomic<std::uint32_t> published{0};   // publication counter, acquire/release
+    // Cumulative: the scalars are a handful of doubles and re-reading them is
+    // cheaper than differencing them.
     RayStats            stats;
+    // What this worker has accumulated *since its last publication*. A snapshot
+    // of the whole grid meant the preview copied it once into the slot, once
+    // again into a per-tick temporary, and then reduced every thread's entire
+    // history from scratch -- three passes over threads x cells, every tick,
+    // for a picture that had changed by one tick's worth of rays. A delta is
+    // added straight into a running total the previewer keeps.
     std::vector<double> grid;
     std::vector<double> bandGrid;
     std::vector<double> angleGrid;
@@ -1493,7 +1840,23 @@ struct PreviewSlot {
 void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
                       SimulationResult& out, const TraceOptions& opt,
                       const TraceControl& ctl) {
+    trace(scene, std::vector<SourceConfig>{src}, out, opt, ctl);
+}
+
+void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& sourcesIn,
+                      SimulationResult& out, const TraceOptions& opt,
+                      const TraceControl& ctl) {
     const auto tStart = std::chrono::steady_clock::now();
+
+    // At least one source, so nothing downstream has to branch on the count.
+    std::vector<SourceConfig> srcs = sourcesIn;
+    if (srcs.empty()) srcs.push_back(SourceConfig{});
+    const std::size_t nSrc = srcs.size();
+    // Every source reports in the same unit. Mixing watts and lumens in one run
+    // is not something a single result can be expressed in, so the first
+    // source governs and the rest are read in its unit.
+    const FluxUnit runUnit = srcs.front().fluxUnit;
+    for (SourceConfig& s : srcs) s.fluxUnit = runUnit;
 
     const DetectorInfo& det = scene.detector();
     const int  nx       = (det.valid && det.nx > 0) ? det.nx : 1;
@@ -1501,11 +1864,70 @@ void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
     const int  nTheta   = std::max(0, opt.nTheta);
     const int  nPhi     = nTheta > 0 ? std::max(1, opt.nPhi) : 0;
 
-    // The spectrum is resolved once per run: an inverse CDF, a luminous
-    // efficacy and a mean wavelength, all of which every ray then reads.
-    SampledSpectrum spec;
-    spec.build(src.spectrum);
-    const bool spectral = !spec.monochromatic();
+    // Each source resolves its own spectrum once per run: an inverse CDF, a
+    // luminous efficacy and a mean wavelength, all of which its rays then read.
+    std::vector<SampledSpectrum> specs(nSrc);
+    bool spectral = false;
+    for (std::size_t s = 0; s < nSrc; ++s) {
+        specs[s].build(srcs[s].spectrum);
+        if (!specs[s].monochromatic()) spectral = true;
+    }
+
+    // Where each source occupies the global ray index space, and what one of
+    // its rays is worth.
+    //
+    // Emitting a ray of source s already carrying power_s / rays_s is what lets
+    // one shared receiver grid hold every source correctly weighted -- a
+    // two-source run costs one grid rather than two. For a single source the
+    // factor divides straight back out in the normalisation below, so the
+    // one-source answer is bit-identical to what it was before there were
+    // several.
+    std::vector<std::size_t> offset(nSrc + 1, 0);
+    std::vector<double>      kScale(nSrc, 1.0);
+    double totalPower = 0.0;
+    for (std::size_t s = 0; s < nSrc; ++s) {
+        const std::size_t r = srcs[s].rays > 0 ? std::size_t(srcs[s].rays) : 0;
+        offset[s + 1] = offset[s] + r;
+        totalPower   += srcs[s].power;
+    }
+    // The weight is *relative* to what a ray of the run as a whole is worth,
+    // not the absolute power per ray. Two reasons, and the second is the one
+    // that bites: Russian roulette's cutoff is an absolute energy, so scaling
+    // every ray by the source power would make the estimator's behaviour --
+    // and therefore the random stream -- depend on whether the user typed
+    // watts or milliwatts. Relative weights leave a one-source run carrying
+    // exactly 1, which is what it always carried.
+    {
+        const std::size_t totalR = offset[nSrc];
+        const double mean = (totalR > 0 && totalPower > 0.0)
+                                ? totalPower / double(totalR) : 0.0;
+        for (std::size_t s = 0; s < nSrc; ++s) {
+            const std::size_t r = offset[s + 1] - offset[s];
+            kScale[s] = (mean > 0.0 && r > 0)
+                            ? (srcs[s].power / double(r)) / mean
+                            : 1.0;
+        }
+    }
+
+    // Power-weighted, because that is what the combined beam is: two sources of
+    // different colour give the run one efficacy, and it is the one a
+    // photometer would read.
+    double efficacy = 0.0, meanLambda = 0.0;
+    for (std::size_t s = 0; s < nSrc; ++s) {
+        const double w = totalPower > 0.0 ? srcs[s].power / totalPower
+                                          : 1.0 / double(nSrc);
+        efficacy   += w * specs[s].efficacy();
+        meanLambda += w * specs[s].meanWavelength();
+    }
+
+    // Which source a global ray index belongs to. Linear over the source list,
+    // which is the right shape: a run has a handful of sources, and a binary
+    // search over three entries costs more than it saves.
+    auto sourceOfRay = [&](std::size_t i) {
+        std::size_t s = 0;
+        while (s + 1 < nSrc && i >= offset[s + 1]) ++s;
+        return s;
+    };
 
     out = SimulationResult{};
     out.nx = nx; out.ny = ny;
@@ -1521,15 +1943,24 @@ void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
     fillDetectorFrames(scene, out);
     out.irradiance.assign(std::size_t(nx) * std::size_t(ny), 0.0);
     if (spectral) out.bandIrradiance.assign(out.irradiance.size() * 3, 0.0);
-    out.sourcePower      = src.power;
-    out.unit             = src.fluxUnit;
-    out.luminousEfficacy = spec.efficacy();
-    out.meanWavelengthNm = spec.meanWavelength();
+    out.sourcePower      = totalPower;
+    out.unit             = runUnit;
+    out.luminousEfficacy = efficacy;
+    out.meanWavelengthNm = meanLambda;
 
-    const std::size_t totalRays = src.rays > 0 ? std::size_t(src.rays) : 0;
+    out.sources.resize(nSrc);
+    for (std::size_t s = 0; s < nSrc; ++s) {
+        SourceSummary& sum = out.sources[s];
+        sum.label   = srcs[s].label;
+        sum.power   = srcs[s].power;
+        sum.rays    = offset[s + 1] - offset[s];
+        sum.rayFile = srcs[s].tracesRayFile();
+    }
+
+    const std::size_t totalRays = offset[nSrc];
     if (totalRays == 0 || scene.empty()) {
         // Nothing to intersect: all emitted energy escapes.
-        out.fluxEscaped = (totalRays > 0) ? src.power : 0.0;
+        out.fluxEscaped = (totalRays > 0) ? totalPower : 0.0;
         out.raysEmitted = totalRays;
         if (ctl.progress) ctl.progress(totalRays, totalRays);
         out.traceSeconds = std::chrono::duration<double>(
@@ -1541,9 +1972,19 @@ void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
     // what lets a user edit the optic they just clicked on and re-trace without
     // re-tessellating anything.
     std::vector<SceneSurface> surfs = scene.surfaces();
-    for (const auto& ov : opt.surfaceOverrides)
-        if (ov.surface >= 0 && ov.surface < int(surfs.size()))
-            surfs[std::size_t(ov.surface)] = ov.optics;
+    // Overrides resolve by label first and by stored index only as a hint, so a
+    // config saved against an older registry -- or against a different CAD
+    // import -- cannot land an optical edit on whatever surface now occupies
+    // the slot. An edit that matches nothing is reported, not dropped silently.
+    for (const auto& ov : opt.surfaceOverrides) {
+        const int idx = scene.resolveSurface(ov.label, ov.identity, ov.surface);
+        if (idx >= 0 && idx < int(surfs.size())) surfs[std::size_t(idx)] = ov.optics;
+        else out.unmatchedOverrides.push_back(
+            ov.label.isEmpty() ? QStringLiteral("surface %1").arg(ov.surface) : ov.label);
+    }
+    // After the edits, not before: a surface whose scatter a user just changed
+    // has to resolve to the model that change implies.
+    resolveScattering(surfs, opt.physics);
 
     // A detector frame is kept even when the scene has no detector, so the
     // tracer never has to branch on validity in the inner loop.
@@ -1554,7 +1995,26 @@ void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
         dets.push_back(d);
     }
 
-    const EmissionBasis basis(src.axis);
+    // A receiver's acceptance cone and what it does with a ray it refuses are
+    // ray-time properties, exactly like roughness -- so an override of them has
+    // to reach the frame the tracer reads, not just the surface record. It did
+    // not, which made "narrow the acceptance angle" an edit with no effect.
+    //
+    // The bin grid is not here on purpose: it is baked into the flat
+    // all-receivers layout, so changing it is a geometry rebuild and goes
+    // through detectorBins instead.
+    for (DetectorInfo& d : dets) {
+        if (d.surf < 0 || d.surf >= int(surfs.size())) continue;
+        const SceneSurface& s = surfs[std::size_t(d.surf)];
+        d.cosAcceptance = (s.detAcceptanceDeg >= 180.0)
+                              ? -1.0
+                              : std::cos(std::clamp(s.detAcceptanceDeg, 0.0, 180.0) * kDegRad);
+        d.rejectPasses  = (s.detRejectMode == SurfaceOptics::RejectMode::Pass);
+    }
+
+    std::vector<EmissionBasis> bases;
+    bases.reserve(nSrc);
+    for (const SourceConfig& s : srcs) bases.emplace_back(s.axis);
 
     // The ray budget is split into independent Owen scrambles, so the spread
     // across them measures the error the quasi-Monte Carlo estimator actually
@@ -1564,28 +2024,70 @@ void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
                                    std::max(2, std::min(opt.estimator.replicas, 256)),
                                    totalRays))
                              : 1;
-    const std::size_t perReplica = (totalRays + std::size_t(replicas) - 1) /
-                                   std::size_t(replicas);
-
-    // What the source emits, on a polarised run. Unpolarised is the default and
-    // the only state an ordinary illumination source is in.
-    polarisation::Stokes emittedState = polarisation::Stokes::unpolarised();
-    switch (src.polarisationState) {
-    case 1: emittedState = polarisation::Stokes::linearS(); break;
-    case 2: emittedState = polarisation::Stokes::linearP(); break;
-    case 3: emittedState = polarisation::Stokes::circular(); break;
-    default: break;
+    // Replicas partition each source block rather than the run as a whole, so
+    // every replica holds a proportional share of every source and the spread
+    // across them still measures the error of the combined answer.
+    std::vector<std::size_t> perReplica(nSrc, 1);
+    for (std::size_t s = 0; s < nSrc; ++s) {
+        const std::size_t r = offset[s + 1] - offset[s];
+        perReplica[s] = std::max<std::size_t>(1, (r + std::size_t(replicas) - 1) /
+                                                     std::size_t(replicas));
     }
 
-    // Emission aiming needs the extent of everything a ray could hit.
+    // What each source emits, on a polarised run. Unpolarised is the default
+    // and the only state an ordinary illumination source is in.
+    std::vector<polarisation::Stokes> emittedState(nSrc,
+                                                   polarisation::Stokes::unpolarised());
+    for (std::size_t s = 0; s < nSrc; ++s) {
+        switch (srcs[s].polarisationState) {
+        case 1: emittedState[s] = polarisation::Stokes::linearS(); break;
+        case 2: emittedState[s] = polarisation::Stokes::linearP(); break;
+        case 3: emittedState[s] = polarisation::Stokes::circular(); break;
+        default: break;
+        }
+    }
+
+    // Emission aiming needs the extent of everything a ray could hit. A source
+    // reading a measured ray file declines it: those directions were measured,
+    // not drawn, so there is no distribution left to narrow.
     const Vec3   sceneCenter = scene.boundsCenter();
     const double aimRadius   = opt.estimator.aimAtScene ? scene.boundsRadius() : 0.0;
-    const Vec3*  aimCenter   = opt.estimator.aimAtScene ? &sceneCenter : nullptr;
+    std::vector<const Vec3*> aimCenter(nSrc, nullptr);
+    for (std::size_t s = 0; s < nSrc; ++s)
+        aimCenter[s] = (opt.estimator.aimAtScene && !srcs[s].tracesRayFile())
+                           ? &sceneCenter : nullptr;
 
     const std::size_t numChunks = (totalRays + kChunkRays - 1) / kChunkRays;
     unsigned threads = opt.threads;
     if (threads == 0) threads = std::max(1u, std::thread::hardware_concurrency());
     threads = unsigned(std::max<std::size_t>(1, std::min<std::size_t>(threads, numChunks)));
+
+    // Bound what the per-thread accumulators can cost.
+    //
+    // Every thread holds a full copy of the all-receivers grid, and with a
+    // progressive preview enabled its slot holds another. At a fine grid across
+    // several receivers on a many-core machine that is hundreds of megabytes,
+    // and nothing stopped it.
+    //
+    // The fix is to spend fewer threads rather than more memory, which is a
+    // trade this tracer can make and most cannot: the scalar totals reduce in
+    // chunk order and the grids are reduced in thread-index order, so the
+    // answer does not depend on the thread count at all -- there is a test that
+    // says so. A capped run is slower and identical, not slower and different.
+    {
+        const std::size_t perThreadCells =
+            std::max<std::size_t>(1, scene.detectorCells()) +
+            (spectral ? std::size_t(nx) * std::size_t(ny) * 3 : 0) +
+            std::size_t(nTheta) * std::size_t(nPhi);
+        // A preview doubles it: the worker's own accumulator plus the delta it
+        // publishes.
+        const std::size_t copies = ctl.partial ? 2 : 1;
+        const std::size_t bytes  = perThreadCells * copies * sizeof(double);
+        if (bytes > 0) {
+            const std::size_t affordable = std::max<std::size_t>(1, kGridBudgetBytes / bytes);
+            threads = unsigned(std::min<std::size_t>(threads, affordable));
+        }
+    }
 
     // Irradiance and far-field bins stay per thread (a per-chunk grid would cost
     // tens of KB per chunk); the scalar totals are per chunk so they reduce in a
@@ -1653,13 +2155,13 @@ void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
                         const std::vector<double>& detFlux,
                         const std::vector<std::size_t>& detHits,
                         const std::vector<double>& repDetIn,
-                        const std::vector<double>& repEmitIn) {
+                        const std::vector<double>& repEmitIn,
+                        const std::vector<double>& srcDetIn) {
         r.fluxDetector     = total.fluxDetector.value();
         r.fluxAbsorbed     = total.fluxAbsorbed.value();
         r.fluxBulkAbsorbed = total.fluxBulk.value();
         r.fluxEscaped      = total.fluxEscaped.value();
-        r.fluxTruncated    = total.fluxTruncated.value();
-        r.fluxRoulette     = total.fluxRoulette.value();
+        fillDiagnostics(r, total);
         r.raysHitDetector  = total.raysHit;
         r.raysEmitted      = total.raysDone;
         r.bandIrradiance   = std::move(bandBins);
@@ -1680,16 +2182,22 @@ void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
         // The divisor is the emitted *weight*, not the ray count: a photometric
         // run gives each ray V(lambda) at emission, so dividing by the count
         // would leave the total short of the lumens the user asked for.
+        for (std::size_t s = 0; s < r.sources.size() && s < srcDetIn.size(); ++s)
+            r.sources[s].flux = srcDetIn[s];
+
         const double emittedWeight = total.weightEmitted.value();
         if (r.raysEmitted > 0 && emittedWeight > 0.0) {
             const double n     = double(r.raysEmitted);
-            const double scale = src.power / emittedWeight;
+            const double scale = totalPower / emittedWeight;
             r.fluxDetector     *= scale;
             r.fluxAbsorbed     *= scale;
             r.fluxBulkAbsorbed *= scale;
             r.fluxEscaped      *= scale;
             r.fluxTruncated    *= scale;
+            r.fluxRejected     *= scale;
             r.fluxRoulette     *= scale;
+            r.residual.scale(scale);
+            r.truncation.scale(scale);
             for (auto& v : r.irradiance)     v *= scale;
             for (auto& v : r.bandIrradiance) v *= scale;
             for (auto& v : angleBins)        v *= scale;
@@ -1697,7 +2205,8 @@ void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
                 d.flux *= scale;
                 for (auto& v : d.grid) v *= scale;
             }
-            r.efficiency = (src.power > 0.0) ? (r.fluxDetector / src.power) : 0.0;
+            for (auto& s : r.sources) s.flux *= scale;
+            r.efficiency = (totalPower > 0.0) ? (r.fluxDetector / totalPower) : 0.0;
 
             // The Welford moments are over per-ray *detected weight*, so the
             // error on the detected fraction divides by the mean emitted weight.
@@ -1733,6 +2242,14 @@ void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
             }
         }
 
+        // A run that emitted nothing accounts for nothing. Reporting the power
+        // that was *asked* for beside buckets that are all zero is an energy
+        // balance that does not close, and this is reachable: cancelling
+        // between the opening progress callback and the first chunk leaves
+        // every worker breaking out before it traces anything. Pooled workers
+        // start fast enough that it happens in practice.
+        if (r.raysEmitted == 0) r.sourcePower = 0.0;
+
         if (angles) finishIntensity(r.intensity, std::move(angleBins), nTheta, nPhi);
     };
 
@@ -1746,12 +2263,30 @@ void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
     // simply contributes its previous snapshot, which is a slightly older but
     // entirely consistent view of its own work.
     auto lastPartial = std::chrono::steady_clock::now();
+    // Running totals, carried across ticks so a snapshot adds one tick's worth
+    // of work rather than re-reducing the whole run.
+    std::vector<double>        previewGrid(wantPartial ? allCells : 0, 0.0);
+    std::vector<double>        previewBand(wantPartial && spectral ? cells * 3 : 0, 0.0);
+    std::vector<double>        previewAngle(wantPartial ? angles : 0, 0.0);
+    std::vector<RayStats>      previewStats(wantPartial ? threads : 0);
+
     std::function<void(std::chrono::steady_clock::time_point, std::size_t)> emitPartial;
     if (wantPartial) {
         emitPartial = [&](std::chrono::steady_clock::time_point now, std::size_t) {
+            // The interval backs off as the run gets longer. Early on the
+            // picture changes fast and a tick is worth its cost; ten seconds in,
+            // one tick's rays move nothing a human can see, and the copy is
+            // pure overhead taken out of the trace. Doubling every two seconds
+            // to a two-second ceiling.
+            const double elapsed =
+                std::chrono::duration<double>(now - tStart).count();
+            const double growth  = 1.0 + 0.5 * elapsed;
+            const long long interval = std::min<long long>(
+                2000, static_cast<long long>(std::max(50, ctl.partialIntervalMs) * growth));
+
             const auto since =
                 std::chrono::duration_cast<std::chrono::milliseconds>(now - lastPartial).count();
-            if (since < std::max(50, ctl.partialIntervalMs)) return;
+            if (since < interval) return;
             lastPartial = now;
 
             const std::uint32_t epoch =
@@ -1767,25 +2302,33 @@ void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
                 std::this_thread::yield();
             }
 
+            // Only a slot published for *this* epoch is safe to read: a worker
+            // publishes at most once per epoch, so one that has answered the
+            // current one is provably not writing its buffer. A worker that has
+            // not answered yet contributes the cumulative scalars from its last
+            // publication, and its unpublished work arrives in the next delta --
+            // nothing is lost, and nothing is counted twice.
+            auto accumulate = [](std::vector<double>& into, const std::vector<double>& add) {
+                const std::size_t n = std::min(into.size(), add.size());
+                for (std::size_t i = 0; i < n; ++i) into[i] += add[i];
+            };
+
             RayStats total;
-            std::vector<std::vector<double>> pg, pb, pa;
-            pg.reserve(threads);
             for (unsigned t = 0; t < threads; ++t) {
                 PreviewSlot& slot = preview[t];
-                if (slot.published.load(std::memory_order_acquire) == 0) continue;
-                total.add(slot.stats);
-                pg.push_back(slot.grid);
-                if (spectral && !slot.bandGrid.empty())  pb.push_back(slot.bandGrid);
-                if (angles   && !slot.angleGrid.empty()) pa.push_back(slot.angleGrid);
+                if (slot.published.load(std::memory_order_acquire) == epoch) {
+                    previewStats[t] = slot.stats;
+                    accumulate(previewGrid, slot.grid);
+                    if (spectral) accumulate(previewBand, slot.bandGrid);
+                    if (angles)   accumulate(previewAngle, slot.angleGrid);
+                }
+                total.add(previewStats[t]);
             }
             if (total.raysDone == 0) return;
 
-            std::vector<double> allBins(allCells, 0.0);
-            std::vector<double> bandBins(spectral ? cells * 3 : 0, 0.0);
-            std::vector<double> angleBins(angles, 0.0);
-            reduceGrid(pg, allBins);
-            reduceGrid(pb, bandBins);
-            reduceGrid(pa, angleBins);
+            std::vector<double> allBins  = previewGrid;
+            std::vector<double> bandBins = previewBand;
+            std::vector<double> angleBins = previewAngle;
 
             // Per-receiver and per-replica scalars come from the chunks that
             // have finished; a chunk in flight simply is not in the sum yet.
@@ -1793,6 +2336,7 @@ void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
             std::vector<std::size_t> detHits(dets.size(), 0);
             std::vector<double>      repDet(std::size_t(replicas), 0.0);
             std::vector<double>      repEmit(std::size_t(replicas), 0.0);
+            std::vector<double>      srcDet(nSrc, 0.0);
             const std::size_t doneChunks = std::min(numChunks,
                                                     nextChunk.load(std::memory_order_relaxed));
             for (std::size_t c = 0; c < doneChunks; ++c) {
@@ -1805,6 +2349,8 @@ void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
                     if (k < co.replicaDet.size())  repDet[k]  += co.replicaDet[k];
                     if (k < co.replicaEmit.size()) repEmit[k] += co.replicaEmit[k];
                 }
+                for (std::size_t k = 0; k < srcDet.size() && k < co.sourceDet.size(); ++k)
+                    srcDet[k] += co.sourceDet[k];
             }
 
             SimulationResult snap;
@@ -1814,15 +2360,16 @@ void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
             snap.detZ  = det.center.z;
             snap.detU  = det.u; snap.detV = det.v; snap.detN = det.n;
             snap.spectral         = spectral;
-            snap.sourcePower      = src.power;
-            snap.unit             = src.fluxUnit;
-            snap.luminousEfficacy = spec.efficacy();
-            snap.meanWavelengthNm = spec.meanWavelength();
+            snap.sourcePower      = totalPower;
+            snap.unit             = runUnit;
+            snap.luminousEfficacy = efficacy;
+            snap.meanWavelengthNm = meanLambda;
             snap.partial          = true;
             snap.raysRequested    = totalRays;
+            snap.sources          = out.sources;
             fillDetectorFrames(scene, snap);
             finalise(snap, total, std::move(allBins), std::move(bandBins),
-                     std::move(angleBins), detFlux, detHits, repDet, repEmit);
+                     std::move(angleBins), detFlux, detHits, repDet, repEmit, srcDet);
             snap.traceSeconds = std::chrono::duration<double>(now - tStart).count();
             ctl.partial(snap);
         };
@@ -1844,13 +2391,15 @@ void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
         ctx.nPhi      = nPhi;
         ctx.physics   = opt.physics;
         ctx.estimator = opt.estimator;
-        ctx.emitted   = emittedState;
 
         auto lastReport = std::chrono::steady_clock::now();
         // Running total of the chunks this thread has finished, so a snapshot is
         // one copy rather than a walk over every chunk in the run.
         RayStats     mine;
         std::uint32_t seenEpoch = 0;
+        // What this worker had at its last publication, so the next one can be
+        // expressed as a difference.
+        std::vector<double> lastGrid, lastBand, lastAngle;
 
         // Copied back at the end of the worker, so the inner loop touches only
         // its own context.
@@ -1861,9 +2410,22 @@ void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
                     seenEpoch = epoch;
                     PreviewSlot& slot = preview[tid];
                     slot.stats = mine;
-                    slot.grid  = grids[tid];
-                    if (spectral) slot.bandGrid  = bandGrids[tid];
-                    if (angles)   slot.angleGrid = angleGrids[tid];
+                    // The difference since the last publication, and the new
+                    // baseline, in one pass over each accumulator.
+                    auto publishDelta = [](const std::vector<double>& now,
+                                           std::vector<double>& last,
+                                           std::vector<double>& delta) {
+                        if (now.empty()) return;
+                        if (last.size() != now.size()) last.assign(now.size(), 0.0);
+                        delta.resize(now.size());
+                        for (std::size_t i = 0; i < now.size(); ++i) {
+                            delta[i] = now[i] - last[i];
+                            last[i]  = now[i];
+                        }
+                    };
+                    publishDelta(grids[tid], lastGrid, slot.grid);
+                    if (spectral) publishDelta(bandGrids[tid], lastBand, slot.bandGrid);
+                    if (angles)   publishDelta(angleGrids[tid], lastAngle, slot.angleGrid);
                     // Release: everything above is visible to whoever sees this.
                     slot.published.store(epoch, std::memory_order_release);
                 }
@@ -1889,22 +2451,37 @@ void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
             chunkOut[chunk].detHits.assign(dets.size(), 0);
             chunkOut[chunk].replicaDet.assign(std::size_t(replicas), 0.0);
             chunkOut[chunk].replicaEmit.assign(std::size_t(replicas), 0.0);
+            chunkOut[chunk].sourceDet.assign(nSrc, 0.0);
             for (std::size_t i = begin; i < end; ++i) {
                 const bool recordSeg = (chunk < segmentChunks) && (i < opt.segmentRays);
                 ctx.segmentCap = recordSeg ? chunkSegmentCap : 0;
                 ctx.rng        = mix64(opt.seed ^ (std::uint64_t(i) * kInteractionSalt));
 
+                // Which source emitted this ray, and where it sits inside that
+                // source own block. Everything sampled from here on is indexed
+                // by the local number, so adding a second source leaves the
+                // first one emitting exactly the rays it emitted alone.
+                const std::size_t sIdx  = sourceOfRay(i);
+                const std::size_t local = i - offset[sIdx];
+                const SourceConfig& srcS = srcs[sIdx];
+                ctx.source  = int(sIdx);
+                ctx.emitted = emittedState[sIdx];
+
                 const std::size_t rep = std::min<std::size_t>(std::size_t(replicas) - 1,
-                                                              i / perReplica);
+                                                              local / perReplica[sIdx]);
                 ctx.replica = int(rep);
                 const EmittedRay ray = sampleEmission(
-                    basis, src, spec, i, opt.seed, opt.estimator.lowDiscrepancy,
-                    aimCenter, aimRadius, i - rep * perReplica,
+                    bases[sIdx], srcS, specs[sIdx], local, opt.seed,
+                    opt.estimator.lowDiscrepancy,
+                    aimCenter[sIdx], aimRadius, local - rep * perReplica[sIdx],
                     std::uint32_t(mix64(opt.seed ^ ((rep + 1) * kEmissionSalt)) >> 32));
-                ctx.chunk->replicaEmit[rep] += ray.weight;
+                // A source ray is worth power_s / rays_s, applied at emission so
+                // one shared grid holds every source correctly weighted.
+                const double k = kScale[sIdx];
+                ctx.chunk->replicaEmit[rep] += ray.weight * k;
                 ctx.lambda = ray.wavelengthNm;
-                if (spectral) spec.bandWeights(ray.wavelengthNm, ctx.bandW);
-                ctx.stats->weightEmitted.add(ray.weight);
+                if (spectral) specs[sIdx].bandWeights(ray.wavelengthNm, ctx.bandW);
+                ctx.stats->weightEmitted.add(ray.weight * k);
                 // The share of the source's distribution that was aimed away
                 // points at nothing at all, so it escapes by construction rather
                 // than by being traced into empty space. It is booked through
@@ -1915,13 +2492,13 @@ void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
                 if (ray.aimWeight < 1.0) {
                     double booked = 0.0;
                     if (ray.missed) {
-                        ctx.stats->fluxEscaped.add(ray.weight);
-                        binDirection(ctx, ray.missDir, ray.weight);
-                        booked = ray.weight;
+                        ctx.stats->fluxEscaped.add(ray.weight * k);
+                        binDirection(ctx, ray.missDir, ray.weight * k);
+                        booked = ray.weight * k;
                     }
-                    ctx.stats->fluxRoulette.add(ray.weight * (1.0 - ray.aimWeight) - booked);
+                    ctx.stats->resAiming.add(ray.weight * k * (1.0 - ray.aimWeight) - booked);
                 }
-                tracePath(ctx, ray.origin, ray.dir, ray.weight * ray.aimWeight);
+                tracePath(ctx, ray.origin, ray.dir, ray.weight * k * ray.aimWeight);
             }
 
             chunkStats[chunk].raysDone = end - begin;
@@ -1941,15 +2518,14 @@ void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
         for (int k = 0; k < 4; ++k) threadStokes[tid][std::size_t(k)] = ctx.detStokes[k];
     };
 
-    // The calling thread takes part in the work instead of parking on a join.
-    std::vector<std::thread> pool;
-    pool.reserve(threads - 1);
-    for (unsigned t = 1; t < threads; ++t) pool.emplace_back(worker, t, false);
-
+    // The calling thread takes part in the work instead of parking on a join,
+    // and the rest come from a pool the process keeps rather than from threads
+    // spawned and destroyed per trace. A tolerance study of 200 samples paid
+    // that spawn 200 times, against traces short enough for it to matter.
     if (ctl.progress) ctl.progress(0, totalRays);
-    worker(0, ctl.progress != nullptr);
-
-    for (auto& t : pool) t.join();
+    ThreadPool::shared().runParallel(threads, [&](unsigned tid) {
+        worker(tid, tid == 0 && ctl.progress != nullptr);
+    });
 
     // ---- reduce ------------------------------------------------------------
     // Chunk order, so the totals do not depend on which thread ran what.
@@ -1969,6 +2545,7 @@ void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
     std::vector<std::size_t> detHits(dets.size(), 0);
     std::vector<double>      repDet(std::size_t(replicas), 0.0);
     std::vector<double>      repEmit(std::size_t(replicas), 0.0);
+    std::vector<double>      srcDet(nSrc, 0.0);
     for (const auto& c : chunkOut) {
         for (std::size_t i = 0; i < detFlux.size() && i < c.detFlux.size(); ++i) {
             detFlux[i] += c.detFlux[i];
@@ -1978,6 +2555,8 @@ void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
             if (k < c.replicaDet.size())  repDet[k]  += c.replicaDet[k];
             if (k < c.replicaEmit.size()) repEmit[k] += c.replicaEmit[k];
         }
+        for (std::size_t k = 0; k < srcDet.size() && k < c.sourceDet.size(); ++k)
+            srcDet[k] += c.sourceDet[k];
     }
 
     std::size_t segs = 0, arrs = 0;
@@ -1991,7 +2570,7 @@ void RayTracer::trace(const TraceScene& scene, const SourceConfig& src,
 
     out.cancelled = stopped.load(std::memory_order_relaxed);
     finalise(out, total, std::move(allBins), std::move(bandBins), std::move(angleBins),
-             detFlux, detHits, repDet, repEmit);
+             detFlux, detHits, repDet, repEmit, srcDet);
 
     if (opt.physics.polarised) {
         polarisation::Stokes arrived;

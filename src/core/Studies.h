@@ -73,6 +73,16 @@ QString metricName(Metric m);
 QString metricUnit(Metric m, FluxUnit unit);
 QString metricTip(Metric m);
 double  metricValue(const SimulationResult& res, Metric m);
+
+// One standard error on that metric, where the run reports one.
+//
+// Efficiency has an honest error bar: replica-based, measured across
+// independent Owen scrambles, so it says what the estimator actually achieved.
+// The spot metrics do not -- an RMS radius computed from a reservoir of
+// arrivals has a sampling error nobody here has derived, and inventing one
+// would be worse than drawing none. Zero means "this metric does not report an
+// uncertainty", and a plot draws no bar rather than a bar of zero.
+double  metricStdErr(const SimulationResult& res, Metric m);
 // Whether a bigger number is a better design, for the axis labels and for the
 // optimiser's default direction.
 bool    metricBiggerIsBetter(Metric m);
@@ -146,6 +156,11 @@ struct Objective {
 struct OptimisationStep {
     SceneParams params;
     double      value = 0.0;   // the metric at those parameters
+    // One standard error on `value`, from the run that produced it. An
+    // optimisation history without it is a curve whose wiggles cannot be told
+    // from its noise -- and an optimiser that is chasing noise looks exactly
+    // like one that is making progress.
+    double      stdErr = 0.0;
     double      merit = 0.0;   // best merit seen up to and including this step
     int         evaluation = 0;
 };
@@ -292,5 +307,70 @@ struct ValidationCase {
 std::vector<ValidationCase> validate(int rays = 200000);
 
 QString validationTable(const std::vector<ValidationCase>& cases);
+
+// ---- regression corpus -----------------------------------------------------
+
+// One scene's reference result, at a fixed ray budget and a fixed seed.
+//
+// The tests assert bands -- "reflector efficiency between 0.78 and 0.90" --
+// which catches a scene that stops working and nothing else. Because a run is
+// bit-reproducible, a reference value can be asserted to the last few digits
+// instead, and any behavioural drift at all becomes visible. That is the payoff
+// for the determinism work, and almost no commercial tracer can offer it.
+struct ReferencePoint {
+    QString       scene;
+    int           rays = 0;
+    std::uint64_t seed = 0;
+
+    double efficiency    = 0.0;
+    double fluxDetector  = 0.0;
+    double fluxAbsorbed  = 0.0;
+    double fluxEscaped   = 0.0;
+    double fluxTruncated = 0.0;
+    double fluxRejected  = 0.0;
+    double residual      = 0.0;
+};
+
+// One quantity that moved.
+struct RegressionDrift {
+    QString scene;
+    QString quantity;
+    double  reference = 0.0;
+    double  measured  = 0.0;
+    double  relative  = 0.0;    // signed, relative to the reference
+};
+
+// Traces every scene in the registry at its default parameters and returns the
+// reference points. Deterministic: the same build gives the same numbers, to
+// the bit, at any thread count.
+std::vector<ReferencePoint> referenceCorpus(int rays = 20000,
+                                            std::uint64_t seed = 12345u,
+                                            const TraceControl& ctl = TraceControl{});
+
+// The corpus as a text file, one scene per line. Deliberately not JSON: a
+// reference file is read by a human deciding whether a change was intended, and
+// a diff of it should be legible.
+bool writeCorpus(const QString& path, const std::vector<ReferencePoint>& pts,
+                 QString* errorOut = nullptr);
+bool readCorpus(const QString& path, std::vector<ReferencePoint>& out,
+                QString* errorOut = nullptr);
+
+// Every quantity whose relative movement exceeds `tolerance`, plus an entry for
+// any scene present in one list and missing from the other. An empty result is
+// the pass.
+//
+// The tolerance is relative and deliberately tight. It is not zero because a
+// different compiler, a different instruction set or a different OCCT build can
+// move the last bits of a tessellation; it is small enough that any change in
+// what the tracer does shows up.
+constexpr double kRegressionTolerance = 1e-9;
+
+std::vector<RegressionDrift> compareCorpus(const std::vector<ReferencePoint>& reference,
+                                           const std::vector<ReferencePoint>& measured,
+                                           double tolerance = kRegressionTolerance);
+
+QString regressionTable(const std::vector<RegressionDrift>& drift,
+                        std::size_t scenesChecked);
+
 
 } // namespace studies

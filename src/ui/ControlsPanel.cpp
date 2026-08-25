@@ -8,10 +8,17 @@
 #include <QGroupBox>
 #include <QLabel>
 #include <QProgressBar>
+#include <QFileDialog>
+#include <QListWidget>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSpinBox>
+#include <QStyle>
 #include <QVBoxLayout>
+
+#include "SourceDialog.h"
+#include "core/RayFile.h"
 
 #include <cmath>
 #include <initializer_list>
@@ -40,19 +47,30 @@ QGroupBox* group(const QString& title, QWidget* parent) {
 } // namespace
 
 ControlsPanel::ControlsPanel(QWidget* parent) : QWidget(parent) {
-    setFixedWidth(330);
+    // How wide this column is, is the window's decision -- it sits in a
+    // splitter the user can drag. It used to be nailed to 330 px, which is
+    // narrower than the widest row it holds (the flux value and its unit, side
+    // by side). The scroll area below scrolls vertically only, so that surplus
+    // became a horizontal offset with no scrollbar to undo it, and every run
+    // pushed it further: disabling Run moves the keyboard focus, and a scroll
+    // area scrolls sideways to keep the focused widget in view. That is how the
+    // labels and the checkbox indicators ended up off the left edge.
+    //
+    // minimumSizeHint() below is what stops it for good -- refusing to be drawn
+    // narrower than the content leaves nothing to scroll sideways.
 
     // The panel outgrew a fixed column once the physics and source blocks
     // arrived, so it scrolls rather than squeezing every row.
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
-    auto* scroll = new QScrollArea(this);
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    auto* body = new QWidget(scroll);
-    scroll->setWidget(body);
-    outer->addWidget(scroll, 1);
+    m_scroll = new QScrollArea(this);
+    m_scroll->setWidgetResizable(true);
+    m_scroll->setFrameShape(QFrame::NoFrame);
+    m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    auto* body = new QWidget(m_scroll);
+    m_body = body;
+    m_scroll->setWidget(body);
+    outer->addWidget(m_scroll, 1);
 
     auto* layout = new QVBoxLayout(body);
     layout->setContentsMargins(6, 6, 6, 6);
@@ -192,6 +210,64 @@ ControlsPanel::ControlsPanel(QWidget* parent) : QWidget(parent) {
     powerRow->addWidget(m_power, 1);
     powerRow->addWidget(m_powerUnit, 1);
 
+    // ---- the measured ray set, and the sources beyond the first ----------
+    //
+    // A vendor ray file replaces the analytic emitter entirely; the extra
+    // sources are everything a luminaire has that one emitter cannot describe.
+    // Both sit under Source rather than in their own tab because they are the
+    // same question -- what is emitting -- asked twice.
+    m_rayFileNote = new QLabel(srcBox);
+    m_rayFileNote->setWordWrap(true);
+
+    auto* rayPick  = new QPushButton(QStringLiteral("Ray file..."), srcBox);
+    rayPick->setToolTip(QStringLiteral(
+        "Load a measured source ray file (Zemax or TracePro binary, ASAP .dis, "
+        "or a text ray file). It carries every ray's position on the emitting "
+        "surface, its direction and its flux, so the emitter description above "
+        "is not consulted at all."));
+    m_rayFileClear = new QPushButton(QStringLiteral("Clear"), srcBox);
+    auto* rayRow = new QHBoxLayout;
+    rayRow->setContentsMargins(0, 0, 0, 0);
+    rayRow->addWidget(rayPick, 1);
+    rayRow->addWidget(m_rayFileClear, 0);
+
+    m_rayFileScaleBox = dspin(srcBox, 0.001, 1000.0, 0.1, 4, 1.0, QString());
+    m_rayFileScaleBox->setToolTip(QStringLiteral(
+        "Extra scale on the ray positions, on top of whatever the file's own "
+        "dimension code already applied. 1 is the ordinary case; this is for a "
+        "set whose header does not say what unit it was written in."));
+    m_rayFileLambda = new QCheckBox(QStringLiteral("Use the file's wavelengths"), srcBox);
+    m_rayFileLambda->setChecked(true);
+    m_rayFileLambda->setToolTip(QStringLiteral(
+        "Off pins the whole set to the spectrum above, which is what comparing a "
+        "measured white LED against an idealised one needs."));
+
+    m_sourceList = new QListWidget(srcBox);
+    m_sourceList->setToolTip(QStringLiteral(
+        "Sources beyond the one the scene places. The ray budget is shared "
+        "between all of them in proportion to power, and the run reports what "
+        "each one delivered."));
+    m_sourceList->setMaximumHeight(90);
+
+    auto* addSrc    = new QPushButton(QStringLiteral("Add"), srcBox);
+    m_sourceEdit    = new QPushButton(QStringLiteral("Edit"), srcBox);
+    m_sourceRemove  = new QPushButton(QStringLiteral("Remove"), srcBox);
+    auto* srcBtnRow = new QHBoxLayout;
+    srcBtnRow->setContentsMargins(0, 0, 0, 0);
+    srcBtnRow->addWidget(addSrc, 1);
+    srcBtnRow->addWidget(m_sourceEdit, 1);
+    srcBtnRow->addWidget(m_sourceRemove, 1);
+
+    connect(rayPick, &QPushButton::clicked, this, &ControlsPanel::chooseRayFile);
+    connect(m_rayFileClear, &QPushButton::clicked, this, &ControlsPanel::clearRayFile);
+    connect(addSrc, &QPushButton::clicked, this, &ControlsPanel::addSource);
+    connect(m_sourceEdit, &QPushButton::clicked, this, &ControlsPanel::editSource);
+    connect(m_sourceRemove, &QPushButton::clicked, this, &ControlsPanel::removeSource);
+    connect(m_sourceList, &QListWidget::itemDoubleClicked, this,
+            [this](QListWidgetItem*) { editSource(); });
+    connect(m_sourceList, &QListWidget::currentRowChanged, this,
+            [this](int) { syncEnabledState(); });
+
     srcForm->addRow(QStringLiteral("Type:"), m_source);
     srcForm->addRow(QStringLiteral("Cone half-angle:"), m_halfAngle);
     srcForm->addRow(QStringLiteral("Beam radius:"), m_beamRadius);
@@ -202,6 +278,12 @@ ControlsPanel::ControlsPanel(QWidget* parent) : QWidget(parent) {
     srcForm->addRow(QStringLiteral("Spectrum:"), m_spectrum);
     srcForm->addRow(QStringLiteral("Wavelength:"), m_wavelength);
     srcForm->addRow(QStringLiteral("Colour temp:"), m_cct);
+    srcForm->addRow(QStringLiteral("Measured rays:"), rayRow);
+    srcForm->addRow(m_rayFileNote);
+    srcForm->addRow(QStringLiteral("Ray position scale:"), m_rayFileScaleBox);
+    srcForm->addRow(m_rayFileLambda);
+    srcForm->addRow(QStringLiteral("More sources:"), m_sourceList);
+    srcForm->addRow(srcBtnRow);
     layout->addWidget(srcBox);
 
     // ---- physics -----------------------------------------------------------
@@ -389,15 +471,39 @@ ControlsPanel::ControlsPanel(QWidget* parent) : QWidget(parent) {
     connect(m_cct, &QDoubleSpinBox::valueChanged, this, settings);
     connect(m_power, &QDoubleSpinBox::valueChanged, this, settings);
     for (QDoubleSpinBox* s : {m_halfAngle, m_sizeA, m_sizeB, m_beamRadius, m_wavelength,
-                              m_roughOverride, m_scatterOverride, m_absorptionScale})
+                              m_roughOverride, m_scatterOverride, m_absorptionScale,
+                              m_rayFileScaleBox})
         connect(s, &QDoubleSpinBox::valueChanged, this, settings);
-    for (QCheckBox* c : {m_fresnel, m_absorption, m_scattering, m_roughness, m_dispersion})
+    for (QCheckBox* c : {m_fresnel, m_absorption, m_scattering, m_roughness, m_dispersion,
+                         m_rayFileLambda})
         connect(c, &QCheckBox::toggled, this, settings);
     for (QSpinBox* s : {m_rays, m_seed, m_threads})
         connect(s, &QSpinBox::valueChanged, this, settings);
 
     rebuildParamRows();
     syncEnabledState();
+}
+
+QSize ControlsPanel::minimumSizeHint() const {
+    QSize base = QWidget::minimumSizeHint();
+    if (!m_body || !m_scroll) return base;
+    // The narrowest this column can be drawn with all of it on screen: the
+    // widest row it holds, plus the vertical scrollbar beside it.
+    //
+    // Answered on demand rather than stored, because the number moves: a
+    // scene's parameter names set the width of the label column, and none of
+    // the font metrics behind any of it are final until the widget is polished.
+    m_body->ensurePolished();
+    base.setWidth(m_body->minimumSizeHint().width() +
+                  style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, this) +
+                  2 * m_scroll->frameWidth());
+    return base;
+}
+
+QSize ControlsPanel::sizeHint() const {
+    // Exactly as wide as the content needs, and no wider. The splitter opens
+    // the window at this and hands the width over to the user from there.
+    return QSize(minimumSizeHint().width(), QWidget::sizeHint().height());
 }
 
 void ControlsPanel::rebuildParamRows() {
@@ -424,17 +530,37 @@ void ControlsPanel::rebuildParamRows() {
     m_paramBox->setVisible(!m_params.empty());
 
     m_loading = wasLoading;
+    // A scene's parameter names set the width of the label column, and the
+    // column may not fit what it did a moment ago.
+    updateGeometry();
 }
 
 void ControlsPanel::syncEnabledState() {
     const auto type  = SourceConfig::Type(m_source->currentIndex());
     const auto shape = SourceConfig::Shape(m_shape->currentIndex());
     const bool collimated = (type == SourceConfig::Type::Collimated);
+    // A measured ray set carries every ray's origin, direction and flux, so the
+    // analytic description of the emitter is not consulted at all. Greying it
+    // out states that, rather than leaving live boxes that change nothing --
+    // which is how somebody ends up believing they set a cone angle.
+    const bool measured = (m_rayFile != nullptr);
 
-    m_halfAngle->setEnabled(!collimated);
-    m_beamRadius->setEnabled(collimated);
-    m_sizeA->setEnabled(shape != SourceConfig::Shape::PointLike);
-    m_sizeB->setEnabled(shape == SourceConfig::Shape::Rect);
+    m_source->setEnabled(!measured);
+    m_shape->setEnabled(!measured);
+    m_halfAngle->setEnabled(!measured && !collimated);
+    m_beamRadius->setEnabled(!measured && collimated);
+    m_sizeA->setEnabled(!measured && shape != SourceConfig::Shape::PointLike);
+    m_sizeB->setEnabled(!measured && shape == SourceConfig::Shape::Rect);
+    if (m_rayFileClear)     m_rayFileClear->setEnabled(measured);
+    if (m_rayFileScaleBox)  m_rayFileScaleBox->setEnabled(measured);
+    if (m_rayFileLambda)    m_rayFileLambda->setEnabled(measured);
+
+    if (m_sourceList) {
+        const bool picked = m_sourceList->currentRow() >= 0 &&
+                            m_sourceList->currentRow() < int(m_extraSources.size());
+        if (m_sourceEdit)   m_sourceEdit->setEnabled(picked);
+        if (m_sourceRemove) m_sourceRemove->setEnabled(picked);
+    }
     const auto kind = SpectrumConfig::Kind(m_spectrum->currentIndex());
     m_wavelength->setEnabled(kind == SpectrumConfig::Kind::Monochromatic);
     m_cct->setEnabled(kind == SpectrumConfig::Kind::Blackbody ||
@@ -465,6 +591,118 @@ GeometryProvider::Scene ControlsPanel::scene() const {
     return GeometryProvider::Scene(m_scene->currentIndex());
 }
 
+
+// ---- sources ---------------------------------------------------------------
+//
+// A measured ray set and the sources beyond the first are structures rather
+// than rows of spin boxes, so they live on the panel and the widgets only
+// display them. A ray set is also tens of megabytes of somebody's measurement,
+// which is a thing to hold once and share, not to rebuild from a form.
+
+void ControlsPanel::chooseRayFile() {
+    const QString path = QFileDialog::getOpenFileName(
+        this, QStringLiteral("Open a measured source ray file"), QString(),
+        rayfile::fileFilter());
+    if (path.isEmpty()) return;
+
+    const auto res = rayfile::load(path);
+    if (!res.ok) {
+        QMessageBox::warning(this, QStringLiteral("Ray file"), res.error);
+        return;
+    }
+    m_rayFile = res.data;
+    refreshRayFileLabel();
+    syncEnabledState();
+    if (!m_loading) emit settingsChanged();
+}
+
+void ControlsPanel::clearRayFile() {
+    if (!m_rayFile) return;
+    m_rayFile.reset();
+    refreshRayFileLabel();
+    syncEnabledState();
+    if (!m_loading) emit settingsChanged();
+}
+
+void ControlsPanel::refreshRayFileLabel() {
+    if (!m_rayFileNote) return;
+    if (!m_rayFile) {
+        m_rayFileNote->clear();
+        m_rayFileNote->setVisible(false);
+        return;
+    }
+    m_rayFileNote->setVisible(true);
+    m_rayFileNote->setText(QStringLiteral("%1 - %2")
+                               .arg(m_rayFile->label, m_rayFile->summary()));
+    m_rayFileNote->setToolTip(QStringLiteral("%1\n%2")
+                                  .arg(m_rayFile->format, m_rayFile->path));
+}
+
+void ControlsPanel::addSource() {
+    SourceDialog dlg(this);
+    SourceSpec seed;
+    // A new source starts where the scene emitter is, aimed the way it aims,
+    // carrying the same flux -- because "another one of these" is what adding a
+    // source almost always means, and moving it is one number.
+    seed.power = m_power->value();
+    seed.label = QStringLiteral("Source %1").arg(m_extraSources.size() + 2);
+    dlg.setSpec(seed);
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    m_extraSources.push_back(dlg.spec());
+    refreshSourceList();
+    m_sourceList->setCurrentRow(int(m_extraSources.size()) - 1);
+    syncEnabledState();
+    if (!m_loading) emit settingsChanged();
+}
+
+void ControlsPanel::editSource() {
+    const int row = m_sourceList ? m_sourceList->currentRow() : -1;
+    if (row < 0 || row >= int(m_extraSources.size())) return;
+
+    SourceDialog dlg(this);
+    dlg.setSpec(m_extraSources[std::size_t(row)]);
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    m_extraSources[std::size_t(row)] = dlg.spec();
+    refreshSourceList();
+    m_sourceList->setCurrentRow(row);
+    if (!m_loading) emit settingsChanged();
+}
+
+void ControlsPanel::removeSource() {
+    const int row = m_sourceList ? m_sourceList->currentRow() : -1;
+    if (row < 0 || row >= int(m_extraSources.size())) return;
+    m_extraSources.erase(m_extraSources.begin() + row);
+    refreshSourceList();
+    syncEnabledState();
+    if (!m_loading) emit settingsChanged();
+}
+
+void ControlsPanel::refreshSourceList() {
+    if (!m_sourceList) return;
+    const int keep = m_sourceList->currentRow();
+    m_sourceList->clear();
+    int n = 2;
+    for (const SourceSpec& s : m_extraSources) {
+        QString text = s.label.isEmpty() ? QStringLiteral("Source %1").arg(n) : s.label;
+        text += QStringLiteral("  %1").arg(s.power, 0, 'g', 4);
+        text += (m_powerUnit->currentIndex() == 1) ? QStringLiteral(" lm")
+                                                   : QStringLiteral(" W");
+        if (s.tracesRayFile()) text += QStringLiteral("  [ray file]");
+        if (!s.absolute && (s.offset.X() != 0.0 || s.offset.Y() != 0.0 ||
+                            s.offset.Z() != 0.0))
+            text += QStringLiteral("  offset %1, %2, %3 mm")
+                        .arg(s.offset.X(), 0, 'g', 3)
+                        .arg(s.offset.Y(), 0, 'g', 3)
+                        .arg(s.offset.Z(), 0, 'g', 3);
+        m_sourceList->addItem(text);
+        ++n;
+    }
+    m_sourceList->setCurrentRow(std::min(keep, int(m_extraSources.size()) - 1));
+    m_sourceList->setVisible(!m_extraSources.empty());
+}
+
 SimConfig ControlsPanel::config() const {
     SimConfig cfg;
     cfg.scene            = scene();
@@ -483,6 +721,11 @@ SimConfig ControlsPanel::config() const {
     cfg.power        = m_power->value();
     cfg.fluxUnit     = FluxUnit(m_powerUnit->currentIndex());
     cfg.detectorBins = m_detBins->currentData().toInt();
+
+    cfg.rayFile            = m_rayFile;
+    cfg.rayFileScale       = m_rayFileScaleBox->value();
+    cfg.rayFileWavelengths = m_rayFileLambda->isChecked();
+    cfg.extraSources       = m_extraSources;
 
     cfg.physics.fresnel    = m_fresnel->isChecked();
     cfg.physics.absorption = m_absorption->isChecked();
@@ -546,6 +789,13 @@ void ControlsPanel::setConfig(const SimConfig& cfg) {
     m_scatterOverride->setValue(cfg.physics.scatterOverride < 0.0
                                     ? m_scatterOverride->minimum() : cfg.physics.scatterOverride);
     m_absorptionScale->setValue(cfg.physics.absorptionScale);
+
+    m_rayFile      = cfg.rayFile;
+    m_extraSources = cfg.extraSources;
+    m_rayFileScaleBox->setValue(cfg.rayFileScale);
+    m_rayFileLambda->setChecked(cfg.rayFileWavelengths);
+    refreshRayFileLabel();
+    refreshSourceList();
 
     m_rays->setValue(cfg.rays);
     m_seed->setValue(int(cfg.seed & 0x7FFFFFFFull));

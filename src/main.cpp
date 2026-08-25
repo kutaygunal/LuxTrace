@@ -18,13 +18,19 @@
 #include "core/CadImport.h"
 #include "core/GeometryProvider.h"
 #include "core/Material.h"
+#include "core/MaterialFile.h"
 #include "core/MeshBuilder.h"
+#include "core/RayFile.h"
+#include "core/Report.h"
 #include "core/Simulation.h"
 #include "core/Studies.h"
 #include "core/TraceScene.h"
 #include "ui/MainWindow.h"
 
 namespace {
+
+// Defined below, next to the run reports that share it.
+void printDiagnostics(QTextStream& out, const SimulationResult& res);
 
 QString sceneName(int s) {
     return GeometryProvider::info(GeometryProvider::Scene(s)).name;
@@ -184,17 +190,37 @@ int bench(int rays) {
 int cad(const QString& path, double scale, int rays, const gp_Dir& axis) {
     QTextStream out(stdout);
 
-    const cadimport::ImportResult r = cadimport::read(path, scale);
+    cadimport::ImportOptions io;
+    // A scale of exactly 1 is what the caller gets by default, and it is
+    // indistinguishable from "I did not say". Asking the file first is right in
+    // both cases: a STEP file that states millimetres gives 1 anyway.
+    io.scale = (std::fabs(scale - 1.0) < 1e-12) ? 0.0 : scale;
+    io.audit = true;
+
+    const cadimport::ImportResult r = cadimport::read(path, io);
     if (!r.ok) {
         out << "import failed: " << r.error << Qt::endl;
         return 1;
     }
     out << "file:  " << path << Qt::endl;
     out << "format " << r.format << ", " << r.shapes.size() << " part(s), "
-        << r.totalFaces << " face(s), scale " << scale << Qt::endl;
-    for (const auto& sh : r.shapes)
-        out << "  " << sh.label.leftJustified(16) << " faces=" << sh.faceCount
+        << r.totalFaces << " face(s)" << Qt::endl;
+    out << "units  " << QString::number(r.appliedScale, 'g', 6) << " mm per file unit"
+        << (r.unitFromHeader ? QStringLiteral("  (the file says %1)").arg(r.unitName)
+                             : QStringLiteral("  (the file does not say)"))
+        << Qt::endl;
+    out << Qt::endl << "geometry check" << Qt::endl;
+    for (const auto& sh : r.shapes) {
+        out << "  " << QString::fromLatin1(sh.audit.statusName()).leftJustified(8)
+            << sh.label.leftJustified(16) << " faces=" << sh.faceCount
             << " size=" << QString::number(sh.size(), 'f', 2) << " mm" << Qt::endl;
+        for (const QString& note : sh.audit.notes)
+            out << "           " << note << Qt::endl;
+    }
+    if (r.worstStatus == cadimport::GeometryAudit::Status::Bad)
+        out << "  WARNING  a ray can enter a part that is not closed without ever "
+               "being recorded as leaving it, so every index pair it refracts "
+               "against becomes a guess. It will still trace." << Qt::endl;
     out << "bounds ["
         << QString::number(r.bboxMin[0], 'f', 2) << ", "
         << QString::number(r.bboxMin[1], 'f', 2) << ", "
@@ -304,11 +330,15 @@ int study(int sceneIndex, int rays) {
     out << "  surface absorbed " << pct(res.fluxAbsorbed - res.fluxBulkAbsorbed) << Qt::endl;
     out << "  bulk absorbed    " << pct(res.fluxBulkAbsorbed) << Qt::endl;
     out << "  escaped          " << pct(res.fluxEscaped) << Qt::endl;
+    out << "  rejected         " << pct(res.fluxRejected)
+        << "   (refused by a receiver acceptance cone, not absorbed)" << Qt::endl;
     out << "  truncated        " << pct(res.fluxTruncated) << Qt::endl;
-    out << "  roulette residual" << pct(res.fluxRoulette) << Qt::endl;
+    out << "  estimator residl " << pct(res.fluxRoulette) << Qt::endl;
     out << "  accounted        " << pct(res.fluxAccounted()) << Qt::endl;
     out << "  efficiency       " << pct(res.efficiency) << " +- "
         << pct(res.efficiencyStdErr) << Qt::endl;
+
+    printDiagnostics(out, res);
 
     if (m.valid) {
         out << Qt::endl << "spot on the receiver" << Qt::endl;
@@ -589,13 +619,172 @@ int imageQuality(int sceneIndex, int rays) {
     return 0;
 }
 
+// The named channels behind the two figures that used to be one number each.
+//
+// "Where did the missing 4 % go?" is the question the energy balance exists to
+// answer, and it used to answer "somewhere". Each estimator channel has an
+// expectation of exactly zero, so a channel that is not small is a channel that
+// is wrong -- which is what splitting them turns from a hope into a check.
+void printDiagnostics(QTextStream& out, const SimulationResult& res) {
+    const double p = res.sourcePower > 0.0 ? res.sourcePower : 1.0;
+    auto share = [&](double v) { return QString::number(100.0 * v / p, 'f', 4) + "%"; };
+
+    out << Qt::endl << "estimator residual by channel (each is zero in expectation)"
+        << Qt::endl;
+    out << "  russian roulette " << share(res.residual.roulette) << Qt::endl;
+    out << "  emission aiming  " << share(res.residual.aiming) << Qt::endl;
+    out << "  next-event est.  " << share(res.residual.nextEvent) << Qt::endl;
+    out << "  NEE suppression  " << share(res.residual.neeSuppressed) << Qt::endl;
+    out << "  BSDF weights     " << share(res.residual.bsdfWeight) << Qt::endl;
+
+    if (res.fluxTruncated > 0.0) {
+        const auto& t = res.truncation;
+        out << Qt::endl << "truncated flux by reason" << Qt::endl;
+        auto reason = [&](const char* name, double v, std::size_t n) {
+            out << "  " << QString::fromLatin1(name).leftJustified(18) << share(v)
+                << "  (" << n << " branches)" << Qt::endl;
+        };
+        reason("depth limit",       t.depthLimit,    t.depthLimitCount);
+        reason("branch stack",      t.stackOverflow, t.stackOverflowCount);
+        reason("degenerate dir",    t.degenerate,    t.degenerateCount);
+        reason("refraction failed", t.refractFailed, t.refractFailedCount);
+        reason("energy cutoff",     t.energyCutoff,  t.energyCutoffCount);
+        if (res.truncationSignificant())
+            out << "  WARNING          more than "
+                << QString::number(100.0 * SimulationResult::kTruncationWarn, 'g', 2)
+                << "% of the source was truncated. Raising the depth limit helps "
+                   "only where the depth-limit line above carries it." << Qt::endl;
+    }
+
+    if (res.anomalies.any()) {
+        out << Qt::endl << "medium-tracking anomalies" << Qt::endl;
+        out << "  unmatched exits  " << res.anomalies.unmatchedExit
+            << "  (left a solid the branch was never recorded entering)" << Qt::endl;
+        out << "  stack overflows  " << res.anomalies.stackOverflow
+            << "  (more nested media at once than the stack holds)" << Qt::endl;
+        out << "  guessed indices  " << res.anomalies.guessedIndex
+            << "  (crossed a face outward from vacuum)" << Qt::endl;
+        out << "  These are recovered from, not errors. A count that scales with "
+               "the ray budget on imported geometry means the mesh is not closed."
+            << Qt::endl;
+    }
+
+    if (!res.unmatchedOverrides.empty()) {
+        out << Qt::endl << "surface overrides that matched no surface" << Qt::endl;
+        for (const QString& s : res.unmatchedOverrides)
+            out << "  " << s << Qt::endl;
+    }
+
+    if (res.sources.size() > 1) {
+        out << Qt::endl << "per source" << Qt::endl;
+        for (const SourceSummary& s : res.sources)
+            out << "  " << s.label.leftJustified(22).left(22)
+                << QString::number(s.power, 'g', 5).rightJustified(10) << " "
+                << fluxUnitName(res.unit) << " emitted, "
+                << QString::number(s.flux, 'g', 5).rightJustified(10) << " delivered ("
+                << QString::number(100.0 * s.efficiency(), 'f', 2) << "%), "
+                << s.rays << " rays" << (s.rayFile ? ", from a ray file" : "")
+                << Qt::endl;
+    }
+}
+
+// The reference corpus: every scene at a fixed seed and budget, compared
+// against the stored values or blessed as the new ones.
+//
+// This is the payoff for the determinism work. The band assertions the unit
+// tests carry catch a scene that stops working; this catches a scene whose
+// answer moved at all.
+int regress(const QString& mode, const QString& path, int rays) {
+    QTextStream out(stdout);
+    const bool bless = (mode.compare(QLatin1String("bless"), Qt::CaseInsensitive) == 0);
+
+    out << "Tracing " << GeometryProvider::count() << " scenes at " << rays
+        << " rays, seed 12345 ..." << Qt::endl;
+    const auto measured = studies::referenceCorpus(rays);
+
+    if (bless) {
+        QString err;
+        if (!studies::writeCorpus(path, measured, &err)) {
+            out << "could not write " << path << ": " << err << Qt::endl;
+            return 1;
+        }
+        out << "blessed " << measured.size() << " scene(s) into " << path << Qt::endl;
+        return 0;
+    }
+
+    std::vector<studies::ReferencePoint> reference;
+    QString err;
+    if (!studies::readCorpus(path, reference, &err)) {
+        out << "could not read " << path << ": " << err << Qt::endl;
+        out << "Generate it with: LuxTrace --regress bless " << path << Qt::endl;
+        return 2;
+    }
+
+    const auto drift = studies::compareCorpus(reference, measured);
+    out << studies::regressionTable(drift, measured.size());
+    return drift.empty() ? 0 : 1;
+}
+
+// What a measured source ray file holds, and what tracing it through a scene
+// gives. This is the interoperation an illumination engineer asks for first:
+// it turns "model an LED" into "use this LED".
+int inspectRayFile(const QString& path, int scene, int rays) {
+    QTextStream out(stdout);
+    const auto load = rayfile::load(path);
+    if (!load.ok) {
+        out << "could not read " << path << ": " << load.error << Qt::endl;
+        return 1;
+    }
+    const RayFileData& rf = *load.data;
+    out << "ray file    " << path << Qt::endl;
+    out << "  format    " << rf.format << Qt::endl;
+    out << "  label     " << rf.label << Qt::endl;
+    out << "  " << rf.summary() << Qt::endl;
+    if (rf.sourceFlux > 0.0 && std::fabs(rf.sourceFlux - rf.raySetFlux) >
+                                   1e-6 * std::fabs(rf.sourceFlux))
+        out << "  note      the header declares a source flux of "
+            << QString::number(rf.sourceFlux, 'g', 5) << " "
+            << fluxUnitName(rf.unit) << ", so this set is a sampled subset of it"
+            << Qt::endl;
+
+    SimConfig cfg;
+    cfg.scene    = GeometryProvider::Scene(std::clamp(scene, 0, GeometryProvider::count() - 1));
+    cfg.rays     = rays;
+    cfg.rayFile  = load.data;
+    cfg.fluxUnit = rf.unit;
+    cfg.power    = rf.raySetFlux > 0.0 ? rf.raySetFlux : 1.0;
+
+    out << Qt::endl << "tracing through " << cfg.sceneName() << Qt::endl;
+    const SimulationResult res = Simulation::run(cfg);
+    out << "  rays          " << res.raysEmitted << Qt::endl;
+    out << "  delivered     " << QString::number(res.fluxDetector, 'g', 6) << " "
+        << fluxUnitName(res.unit) << Qt::endl;
+    out << "  efficiency    " << QString::number(100.0 * res.efficiency, 'f', 3)
+        << " % +- " << QString::number(100.0 * res.efficiencyStdErr, 'f', 3) << " %"
+        << Qt::endl;
+    out << "  energy closed " << QString::number(res.fluxAccounted() / res.sourcePower, 'f', 9)
+        << Qt::endl;
+    printDiagnostics(out, res);
+    return 0;
+}
+
 // Checks the tracer against optics derived outside it, and prints the residuals.
 // A feature list is a claim; this table is evidence.
-int validate(int rays) {
+int validate(int rays, const QString& htmlPath) {
     QTextStream out(stdout);
     out << "LuxTrace validation against closed-form optics" << Qt::endl << Qt::endl;
     const auto cases = studies::validate(rays);
     out << studies::validationTable(cases);
+
+    // A feature list is a claim; this table is evidence. As a document it is
+    // evidence somebody can attach to a design review.
+    if (!htmlPath.isEmpty()) {
+        QString err;
+        if (report::writeValidation(htmlPath, cases, rays, &err))
+            out << Qt::endl << "wrote " << htmlPath << Qt::endl;
+        else
+            out << Qt::endl << "could not write " << htmlPath << ": " << err << Qt::endl;
+    }
     out.flush();
     for (const auto& c : cases)
         if (!c.passed) return 1;
@@ -604,8 +793,20 @@ int validate(int rays) {
 
 // The material catalogue, so the numbers behind a name can be read without
 // opening the app.
-int listMaterials() {
+int listMaterials(const QString& catalogueFile = QString()) {
     QTextStream out(stdout);
+    if (!catalogueFile.isEmpty()) {
+        const auto res = materialfile::load(catalogueFile);
+        if (!res.ok) {
+            out << "could not read " << catalogueFile << ": " << res.error << Qt::endl;
+            return 1;
+        }
+        out << "loaded " << res.added << " material(s) from " << catalogueFile;
+        if (res.skipped > 0)
+            out << " (" << res.skipped << " record(s) used a dispersion formula this "
+                                          "reader cannot represent)";
+        out << Qt::endl << Qt::endl;
+    }
     out << "name                  n_d      Abbe    alpha 1/mm   n(460)   n(546)   n(620)"
         << Qt::endl;
     for (int i = 0; i < materials::count(); ++i) {
@@ -636,7 +837,10 @@ int listMaterials() {
                 << " %";
         }
         out << Qt::endl;
-        out << "    " << materials::description(i) << Qt::endl;
+        out << "    " << materials::description(i);
+        if (!materials::source(i).isEmpty())
+            out << "  [" << materials::source(i) << "]";
+        out << Qt::endl;
     }
     return 0;
 }
@@ -674,7 +878,7 @@ int main(int argc, char** argv) {
     if (argc >= 2 && QLatin1String(argv[1]) == QLatin1String("--validate")) {
         int rays = argc >= 3 ? std::atoi(argv[2]) : 0;
         if (rays <= 0) rays = 400000;
-        return validate(rays);
+        return validate(rays, argc >= 4 ? QString::fromLocal8Bit(argv[3]) : QString());
     }
     if (argc >= 2 && QLatin1String(argv[1]) == QLatin1String("--sweep")) {
         const int scene  = argc >= 3 ? std::atoi(argv[2]) : 0;
@@ -734,7 +938,27 @@ int main(int argc, char** argv) {
         return cad(QString::fromLocal8Bit(argv[2]), scale > 0.0 ? scale : 1.0, rays, axis);
     }
     if (argc >= 2 && QLatin1String(argv[1]) == QLatin1String("--materials")) {
-        return listMaterials();
+        return listMaterials(argc >= 3 ? QString::fromLocal8Bit(argv[2]) : QString());
+    }
+    if (argc >= 2 && QLatin1String(argv[1]) == QLatin1String("--regress")) {
+        const QString mode = argc >= 3 ? QString::fromLatin1(argv[2])
+                                       : QStringLiteral("check");
+        const QString path = argc >= 4 ? QString::fromLocal8Bit(argv[3])
+                                       : QStringLiteral("test/reference/scenes.tsv");
+        int rays = argc >= 5 ? std::atoi(argv[4]) : 0;
+        if (rays <= 0) rays = 20000;
+        return regress(mode, path, rays);
+    }
+    if (argc >= 2 && QLatin1String(argv[1]) == QLatin1String("--rayfile")) {
+        if (argc < 3) {
+            QTextStream(stdout)
+                << "usage: LuxTrace --rayfile <file> [scene] [rays]" << Qt::endl;
+            return 1;
+        }
+        const int scene = argc >= 4 ? std::atoi(argv[3]) : 0;
+        int rays = argc >= 5 ? std::atoi(argv[4]) : 0;
+        if (rays <= 0) rays = 50000;
+        return inspectRayFile(QString::fromLocal8Bit(argv[2]), scene, rays);
     }
     if (argc >= 2 && QLatin1String(argv[1]) == QLatin1String("--study")) {
         const int scene = argc >= 3 ? std::atoi(argv[2]) : 0;

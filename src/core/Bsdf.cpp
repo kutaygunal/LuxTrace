@@ -176,25 +176,8 @@ bool Surface::sample(const Vec3& wi, const Vec3& n, const Vec3& spec,
         return out.dot(n) > 0.0;
     }
     case Model::Microfacet: {
-        if (alpha <= 1e-6) return false;
-        const Vec3 h = sampleGgxHalf(n, alpha, uniform01(rng), uniform01(rng));
-        // Reflect the incoming direction about the sampled microfacet.
-        Vec3 o = wi - h * (2.0 * wi.dot(h));
-        if (!o.normalize()) return false;
-        const double cosO = o.dot(n);
-        const double cosI = -wi.dot(n);
-        if (cosO <= 1e-9 || cosI <= 1e-9) return false;
-
-        // Sampling the half-vector from D(h) cos(h.n) leaves the weight as the
-        // Smith masking term over its own D-cancelled parts -- which is what
-        // makes this energy conserving rather than merely plausible.
-        const double cosH = h.dot(n);
-        if (cosH <= 1e-9) return false;
-        const double g = smithG1(cosI, alpha) * smithG1(cosO, alpha);
-        const double denom = std::max(1e-12, cosI * cosH);
-        weight = std::clamp(g * std::fabs(wi.dot(h)) / denom, 0.0, 4.0);
-        out = o;
-        return true;
+        Vec3 h;
+        return sampleMicrofacet(wi, n, rng, h, out, weight);
     }
     case Model::Abg:
     case Model::Table: {
@@ -233,6 +216,38 @@ bool Surface::sample(const Vec3& wi, const Vec3& n, const Vec3& spec,
         break;
     }
     return false;
+}
+
+bool Surface::sampleMicrofacet(const Vec3& wi, const Vec3& n, std::uint64_t& rng,
+                               Vec3& micronormal, Vec3& reflected,
+                               double& weight) const {
+    weight = 1.0;
+    if (model != Model::Microfacet || alpha <= 1e-6) return false;
+
+    const Vec3 h = sampleGgxHalf(n, alpha, uniform01(rng), uniform01(rng));
+    // A facet turned past the incoming ray would put the interaction on its
+    // back, which is not a facet this ray can meet.
+    if (h.dot(wi) >= 0.0) return false;
+
+    // Reflect the incoming direction about the sampled microfacet.
+    Vec3 o = wi - h * (2.0 * wi.dot(h));
+    if (!o.normalize()) return false;
+    const double cosO = o.dot(n);
+    const double cosI = -wi.dot(n);
+    if (cosO <= 1e-9 || cosI <= 1e-9) return false;
+
+    // Sampling the half-vector from D(h) cos(h.n) leaves the weight as the
+    // Smith masking term over its own D-cancelled parts -- which is what makes
+    // this energy conserving rather than merely plausible.
+    const double cosH = h.dot(n);
+    if (cosH <= 1e-9) return false;
+    const double g = smithG1(cosI, alpha) * smithG1(cosO, alpha);
+    const double denom = std::max(1e-12, cosI * cosH);
+
+    weight      = std::clamp(g * std::fabs(wi.dot(h)) / denom, 0.0, 4.0);
+    micronormal = h;
+    reflected   = o;
+    return true;
 }
 
 // ---- volume scattering -------------------------------------------------------
