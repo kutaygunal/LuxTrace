@@ -17,6 +17,7 @@
 #include "core/Analysis.h"
 #include "core/CadImport.h"
 #include "core/GeometryProvider.h"
+#include "core/JobRunner.h"
 #include "core/Material.h"
 #include "core/MaterialFile.h"
 #include "core/MeshBuilder.h"
@@ -860,6 +861,17 @@ int main(int argc, char** argv) {
     for (int size : {32, 64, 128, 256})
         icon.addFile(QStringLiteral(":/icons/luxtrace_%1.png").arg(size));
     QApplication::setWindowIcon(icon);
+
+    // Scripting entrances, ahead of every human-facing flag: both speak JSON
+    // on stdout and leave stdin alone otherwise, so a second program pipes into
+    // them without any prose in the way. See core/JobRunner.h for the protocol.
+    if (argc >= 2 && QLatin1String(argv[1]) == QLatin1String("--serve")) {
+        return jobrunner::runServe();
+    }
+    if (argc >= 2 && QLatin1String(argv[1]) == QLatin1String("--job")) {
+        return jobrunner::runJobFile(
+            argc >= 3 ? QString::fromLocal8Bit(argv[2]) : QStringLiteral("-"));
+    }
 
     if (argc >= 2 && QLatin1String(argv[1]) == QLatin1String("--smoke")) {
         int rays = argc >= 3 ? std::atoi(argv[2]) : 0;

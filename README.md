@@ -502,6 +502,52 @@ searches for the best design. `--tolerance <scene> <metric> <criterion>` runs a
 simulated production batch and prints the yield and what dominates it.
 `--imagequality <scene>` prints the MTF and the wavefront error.
 
+## Scripting: the Python runner
+
+A second program can drive every main feature over plain stdio. `LuxTrace.exe --serve`
+speaks JSON: one operation object per stdin line, one JSON envelope per reply line;
+`--job file` runs a batch document the same way. stdout carries JSON and nothing
+else -- all human text goes to stderr, so a host process can pipe stdout without
+any prose finding its way into a parser.
+
+```
+python/runner.py                   browse for a .py script on the Desktop and run it
+python/runner.py myscript.py       run one script
+python/runner.py --demo           install luxtrace_demo.py on the Desktop and run it
+python/runner.py --job job.json   batch: job JSON document in, JSON lines out
+python/runner.py --exe <path>     point at a different build
+```
+
+Inside a script a client is in scope as `luxtrace`; every method is one operation
+and returns the envelope's `data` object, or raises `LuxTraceError` with a machine-
+readable `code`:
+
+```python
+res   = luxtrace.run({"scene": {"name": "Parabolic Reflector"},
+                      "run":   {"rays": 60000, "seed": 42}})
+print(res["metrics"]["efficiency"])        # 0.4083 ...
+
+sweep = luxtrace.sweep(config, slot=0, metric="rms_radius_mm", steps=6)
+best  = luxtrace.optimise(config, slots=[0, 1], metric="efficiency",
+                          goal="maximise", evaluations=25)
+val   = luxtrace.validate(rays=30000)      # 13/13 closed-form checks
+```
+
+Operations: `features`, `scenes`, `materials`, `run`, `focus`, `convergence`,
+`sweep`, `sweep2d`, `optimise`, `tolerance`, `validate`, `cad`, `rayfile`.
+A `run` takes the same JSON document `ConfigIO` writes, so a setup saved from the
+UI feeds in unchanged.
+
+Envelopes, one per line:
+
+```json
+{"v":1,"seq":0,"id":7,"type":"result","op":"run","data":{...},"ms":1823.4}
+{"v":1,"seq":1,"id":8,"type":"error","op":"cad","error":{"code":"import_failed","message":"..."}}
+```
+
+An operation that fails is an `error` envelope and the stream continues; only a
+broken job document is `fatal`, with a non-zero exit code.
+
 ## Project layout
 
 ```
@@ -526,7 +572,8 @@ src/
     Simulation          facade: geometry -> mesh -> BVH (cached) -> trace
     Analysis            spot metrics, profiles, encircled energy, CSV export
     Studies             convergence and through-focus sweeps
-    ConfigIO            JSON save/load of a whole setup
+    ConfigIO             JSON save/load of a whole setup
+    JobRunner            --job/--serve: operations in as JSON, envelopes out on stdout
     SimulationWorker    QThread wrapper: async run, progress, cancellation
     StudyWorker         the same, for a convergence sweep
   ui/

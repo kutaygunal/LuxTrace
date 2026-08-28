@@ -49,6 +49,7 @@ add_library(optics_core STATIC
     src/core/GeometryWorker.h src/core/GeometryWorker.cpp
     src/core/Analysis.h src/core/Analysis.cpp
     src/core/ConfigIO.h src/core/ConfigIO.cpp
+    src/core/JobRunner.h src/core/JobRunner.cpp
     src/core/Studies.h src/core/Studies.cpp
     src/core/Report.h src/core/Report.cpp
     src/core/StudyWorker.h src/core/StudyWorker.cpp
