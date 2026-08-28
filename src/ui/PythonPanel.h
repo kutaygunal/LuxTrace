@@ -30,6 +30,7 @@ private slots:
     void onOpen();
     void onSave();
     void onHelp();
+    void onGuide();
     void onStdout();
     void onStderr();
     void onFinished(int exitCode, QProcess::ExitStatus status);
@@ -39,6 +40,7 @@ private:
     void    setRunning(bool running);
     QString runnerPath() const;
     QString apiDocPath() const;          // the HTML handbook the Help button opens
+    QString guidePath() const;           // the deep guide: internals, graphs, workflows
     QString scriptPath() const;          // where the editor's text is staged
     QString defaultScriptDir() const;    // the Desktop, where the demo lives
 

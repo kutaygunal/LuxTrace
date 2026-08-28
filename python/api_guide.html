@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How the LuxTrace Python API works — the deep guide</title>
+<style>
+  :root{
+    --bg:#0c1017; --bg2:#101623; --panel:#151c2c; --panel2:#1a2334;
+    --line:#253048; --ink:#e2e8f4; --mut:#8b96ad; --dim:#5c6780;
+    --red:#e0563f; --red2:#ff7a5c; --teal:#3fd6c5; --blue:#6ea8ff; --amber:#e8c06a;
+    --code-bg:#0d1320; --ok:#4cc38a;
+    --mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
+    --sans:"Segoe UI",system-ui,-apple-system,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15.5px/1.65 var(--sans)}
+  a{color:var(--teal);text-decoration:none}
+  a:hover{text-decoration:underline}
+  ::selection{background:#e0563f44}
+
+  /* ---------- chrome ---------- */
+  nav{position:fixed;top:0;left:0;right:0;z-index:50;display:flex;gap:2px;align-items:center;
+      padding:10px 26px;background:#0c1017ee;backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+  nav .brand{font-weight:700;letter-spacing:.4px;margin-right:18px;color:var(--ink)}
+  nav .brand b{color:var(--red2)}
+  nav a{color:var(--mut);font-size:13.5px;padding:6px 11px;border-radius:6px}
+  nav a:hover{color:var(--ink);background:#ffffff0a;text-decoration:none}
+  nav a.on{color:var(--ink);background:#e0563f22;box-shadow:inset 0 0 0 1px #e0563f55}
+  nav .v{margin-left:auto;color:var(--mut);font:12px var(--mono);border:1px solid var(--line);
+         padding:3px 9px;border-radius:99px}
+
+  .wrap{max-width:1080px;margin:0 auto;padding:0 28px}
+  section{padding:74px 0 8px}
+  h2{font-size:26px;margin:0 0 8px;letter-spacing:-.3px}
+  h2 .n{color:var(--red2);font-family:var(--mono);font-size:15px;margin-right:10px}
+  h3{font-size:17px;margin:26px 0 8px}
+  p{color:#c3ccdd}
+  .lead{color:var(--mut);font-size:16px}
+  .dim{color:var(--mut)}
+
+  /* ---------- hero ---------- */
+  header{position:relative;overflow:hidden;padding:130px 0 70px;border-bottom:1px solid var(--line)}
+  header .wrap{position:relative;z-index:2}
+  .kicker{font:12.5px var(--mono);color:var(--teal);letter-spacing:2.5px;text-transform:uppercase}
+  h1{font-size:44px;line-height:1.12;margin:14px 0 14px;letter-spacing:-1px;max-width:820px}
+  h1 em{font-style:normal;color:var(--red2)}
+  .hero-p{max-width:680px;font-size:17px;color:#aeb9cd}
+  .stats{display:flex;gap:14px;margin-top:34px;flex-wrap:wrap}
+  .stat{background:#121a2b;border:1px solid var(--line);border-radius:12px;padding:14px 20px;min-width:150px}
+  .stat b{display:block;font-size:26px;font-family:var(--mono);color:var(--red2)}
+  .stat span{color:var(--mut);font-size:12.5px;letter-spacing:.6px;text-transform:uppercase}
+  .orb{position:absolute;border-radius:50%;filter:blur(70px);opacity:.35;animation:drift 16s ease-in-out infinite alternate}
+  #o1{width:520px;height:520px;left:-140px;top:-160px;background:#7a2413}
+  #o2{width:420px;height:420px;right:-100px;top:40px;background:#0f4d47;animation-delay:-6s}
+  #o3{width:380px;height:380px;left:38%;bottom:-220px;background:#1c3f7a;animation-delay:-11s}
+  @keyframes drift{from{transform:translate(0,0) scale(1)}to{transform:translate(60px,40px) scale(1.15)}}
+
+  /* ---------- generic cards / grids ---------- */
+  .grid{display:grid;gap:16px}
+  .g3{grid-template-columns:repeat(3,1fr)} .g2{grid-template-columns:repeat(2,1fr)} .g4{grid-template-columns:repeat(4,1fr)}
+  @media(max-width:900px){.g3,.g4{grid-template-columns:1fr 1fr}.g2{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px;transition:transform .25s,border-color .25s}
+  .card:hover{transform:translateY(-3px);border-color:#3b4a6b}
+  .card h4{margin:2px 0 8px;font-size:15.5px}
+  .card p{margin:0;font-size:13.5px;color:var(--mut)}
+  .pill{display:inline-block;font:11px var(--mono);padding:2px 9px;border-radius:99px;border:1px solid var(--line);color:var(--mut);margin-bottom:10px}
+  .pill.red{color:var(--red2);border-color:#e0563f66;background:#e0563f14}
+  .pill.teal{color:var(--teal);border-color:#3fd6c555;background:#3fd6c510}
+  .pill.blue{color:var(--blue);border-color:#6ea8ff55;background:#6ea8ff10}
+
+  /* ---------- code ---------- */
+  pre{position:relative;background:var(--code-bg);border:1px solid var(--line);border-radius:12px;
+      padding:16px 18px;overflow-x:auto;font:13px/1.6 var(--mono);margin:14px 0}
+  pre .c{color:#5f6b84}   /* comment */
+  pre .k{color:#6ea8ff}   /* key/keyword */
+  pre .s{color:#8fd48a}   /* string */
+  pre .n{color:#e8c06a}   /* number */
+  pre .f{color:#3fd6c5}   /* field/function */
+  pre .hl{color:#ff7a5c}  /* highlight */
+  .copy{position:absolute;top:9px;right:9px;font:11.5px var(--mono);color:var(--mut);background:#0c1017aa;
+        border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer;opacity:0;transition:opacity .2s}
+  pre:hover .copy{opacity:1}
+  .copy:hover{color:var(--ink);border-color:#3b4a6b}
+
+  /* ---------- architecture svg ---------- */
+  .arch{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px 10px 6px;margin-top:26px}
+  .arch svg{width:100%;height:auto;display:block}
+  .ab{fill:var(--panel2);stroke:var(--line);stroke-width:1.5;rx:10}
+  .ab-t{fill:var(--ink);font:600 14px var(--sans)}
+  .ab-s{fill:var(--mut);font:11.5px var(--sans)}
+  .wire{stroke:#31405f;stroke-width:2;fill:none;stroke-dasharray:5 6}
+  .wire.hot{stroke:#e0563f;stroke-dasharray:none;opacity:.9}
+  .flow{fill:#ff8a6b;font:12px var(--mono)}
+  .flowt{fill:var(--teal);font:11px var(--mono)}
+
+  /* ---------- stepper ---------- */
+  .seq{display:grid;grid-template-columns:270px 1fr;gap:18px;margin-top:20px}
+  @media(max-width:860px){.seq{grid-template-columns:1fr}}
+  .seq-steps{display:flex;flex-direction:column;gap:8px}
+  .step{border:1px solid var(--line);border-radius:10px;padding:11px 14px;background:var(--panel);
+        cursor:pointer;transition:all .25s;font-size:13.5px;color:var(--mut);position:relative;overflow:hidden}
+  .step b{color:var(--mut);margin-right:8px;font-family:var(--mono);font-size:12px}
+  .step.on{color:var(--ink);border-color:#e0563f88;background:#e0563f12}
+  .step.on b{color:var(--red2)}
+  .step .bar{position:absolute;left:0;bottom:0;height:2px;background:var(--red2);width:0%}
+  .step.on .bar{animation:fill 3.4s linear forwards}
+  @keyframes fill{to{width:100%}}
+  .seq-view{min-height:430px}
+  .pane{display:none} .pane.on{display:block;animation:fadeup .45s ease}
+  @keyframes fadeup{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+
+  /* ---------- envelope anatomy ---------- */
+  .env{display:flex;flex-wrap:wrap;gap:6px;align-items:center;background:var(--code-bg);
+       border:1px solid var(--line);border-radius:12px;padding:16px 18px;font:13.5px var(--mono);margin:16px 0}
+  .env span{padding:3px 8px;border-radius:6px;cursor:pointer;transition:all .2s;border:1px solid transparent}
+  .env span:hover{border-color:var(--teal);background:#3fd6c51a}
+  .env .f-k{color:var(--blue)} .env .f-v{color:var(--amber)}
+  .env-doc{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:860px){.env-doc{grid-template-columns:1fr}}
+  .env-card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px;
+            font-size:13.5px;color:var(--mut);transition:all .2s;min-height:86px}
+  .env-card.on{border-color:var(--teal);color:var(--ink);background:#3fd6c50d}
+  .env-card code{color:var(--teal)}
+
+  /* ---------- charts ---------- */
+  .charts{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:18px}
+  @media(max-width:900px){.charts{grid-template-columns:1fr}}
+  .chart{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 18px 10px}
+  .chart h4{margin:0 0 2px;font-size:14.5px}
+  .chart .sub2{color:var(--mut);font-size:12px;margin-bottom:8px}
+  .chart canvas{width:100%;height:230px;display:block}
+
+  /* ---------- ops grid ---------- */
+  .ops-tools{display:flex;gap:10px;margin:16px 0 14px}
+  .ops-tools input{flex:1;max-width:340px;background:var(--panel);border:1px solid var(--line);border-radius:10px;
+                   color:var(--ink);padding:10px 14px;font:13.5px var(--mono);outline:none}
+  .ops-tools input:focus{border-color:var(--teal)}
+  .op{cursor:default}
+  .op .sig{font:12.5px var(--mono);color:var(--teal);background:#3fd6c512;border:1px solid #3fd6c533;
+           border-radius:6px;padding:2px 8px;display:inline-block;margin-bottom:8px}
+  .op .ret{font:11.5px var(--mono);color:var(--amber)}
+  .op.hide{display:none}
+
+  /* ---------- error flow ---------- */
+  .errflow{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px;margin-top:6px}
+  .errflow svg{width:100%;height:auto;display:block}
+  .nf{fill:#141c2e;stroke:var(--line)} .nf.ok{stroke:#4cc38a88} .nf.err{stroke:#e0563f99}
+  .nf-t{fill:var(--ink);font:12.5px var(--sans)} .nf-d{fill:var(--mut);font:11px var(--sans)}
+  .edge{stroke:#31405f;stroke-width:1.6;fill:none;marker-end:url(#ah)}
+  .lbl{fill:#8b96ad;font:11px var(--mono)}
+
+  /* ---------- workflow recipes ---------- */
+  .recipe{border:1px solid var(--line);border-radius:14px;background:var(--panel);padding:22px 24px;margin:16px 0;position:relative;overflow:hidden}
+  .recipe h3{margin-top:0}
+  .pipe{display:flex;align-items:stretch;gap:0;margin:14px 0 6px;flex-wrap:wrap}
+  .pnode{flex:1;min-width:150px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+         padding:12px 14px;font-size:13px;position:relative}
+  .pnode b{display:block;color:var(--ink);font-size:13px;margin-bottom:3px}
+  .pnode span{color:var(--mut);font-size:12px}
+  .parrow{align-self:center;color:#e0563f;font-size:20px;padding:0 8px;animation:pulse 2.2s ease-in-out infinite}
+  .parrow:nth-of-type(2n){animation-delay:.4s}
+  @keyframes pulse{0%,100%{opacity:.35;transform:translateX(-2px)}50%{opacity:1;transform:translateX(2px)}}
+  .badges{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+
+  /* ---------- tables ---------- */
+  table{border-collapse:collapse;width:100%;font-size:13.5px;margin:12px 0 18px}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:#141c2e;color:#aab4c8;font-weight:600}
+  td{color:#c3ccdd} td code{color:var(--teal)}
+  tr:hover td{background:#182136}
+
+  /* config anatomy */
+  .cfg{display:grid;grid-template-columns:1.15fr 1fr;gap:18px}
+  @media(max-width:900px){.cfg{grid-template-columns:1fr}}
+  .cfg pre{margin:0}
+  .cfg-note{cursor:default}
+
+  code{font:92% var(--mono);background:#182136;border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#9fd0ff}
+
+  /* reveal on scroll */
+  .rv{opacity:0;transform:translateY(26px);transition:opacity .7s ease,transform .7s ease}
+  .rv.in{opacity:1;transform:none}
+
+  footer{border-top:1px solid var(--line);margin-top:80px;padding:34px 0 60px;color:var(--mut);font-size:13px}
+  footer .wrap{display:flex;gap:20px;flex-wrap:wrap;justify-content:space-between}
+  .totop{position:fixed;right:22px;bottom:22px;width:42px;height:42px;border-radius:10px;background:var(--panel2);
+         border:1px solid var(--line);color:var(--ink);font-size:18px;cursor:pointer;opacity:0;transition:opacity .3s;z-index:60}
+  .totop.show{opacity:1}
+</style>
+</head>
+<body>
+
+<nav>
+  <span class="brand"><b>LuxTrace</b> Python API</span>
+  <a href="#big">Architecture</a>
+  <a href="#life">Life of a call</a>
+  <a href="#wire">Protocol</a>
+  <a href="#charts">Graphs</a>
+  <a href="#ops">Operations</a>
+  <a href="#errors">Errors</a>
+  <a href="#config">Config</a>
+  <a href="#flows">Workflows</a>
+  <a href="#how">Internals</a>
+  <span class="v">protocol v1 · 13 ops</span>
+</nav>
+
+<!-- ================= HERO ================= -->
+<header>
+  <div class="orb" id="o1"></div><div class="orb" id="o2"></div><div class="orb" id="o3"></div>
+  <div class="wrap">
+    <div class="kicker">Deep guide · internals, protocol, performance</div>
+    <h1>The Python API is a <em>conversation</em>: one line in, one line out, JSON all the way.</h1>
+    <p class="hero-p">This page shows what actually happens when your script touches
+    <code>luxtrace</code> — the pipe, the dispatcher, the Monte Carlo engine behind it,
+    the energy book, and the numbers each stage costs. Every graph carries data traced
+    live by this build, not decoration.</p>
+    <div class="stats">
+      <div class="stat"><b>13</b><span>operations</span></div>
+      <div class="stat"><b>1</b><span>persistent process</span></div>
+      <div class="stat"><b>100%</b><span>JSON stdout</span></div>
+      <div class="stat"><b>13/13</b><span>closed-form checks</span></div>
+      <div class="stat"><b>~1ms</b><span>round-trip overhead</span></div>
+    </div>
+  </div>
+</header>
+
+<!-- ================= 1 ARCHITECTURE ================= -->
+<section id="big">
+  <div class="wrap">
+    <h2><span class="n">01</span>The architecture: four rooms, three pipes</h2>
+    <p class="lead">A script never links to the tracer. It sends <em>sentences</em> down a pipe,
+    and a separate headless LuxTrace answers. That single decision is why the API works
+    the same from the app's panel, from VS Code, or from any other language that has a pipe.</p>
+
+    <div class="arch rv">
+      <svg viewBox="0 0 1000 330" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="dot" viewBox="0 0 8 8" refX="4" refY="4" markerWidth="7" markerHeight="7">
+            <circle cx="4" cy="4" r="3" fill="#ff8a6b"/>
+          </marker>
+        </defs>
+
+        <!-- room 1 -->
+        <rect class="ab" x="18" y="60" width="180" height="210" rx="12"/>
+        <text class="ab-t" x="30" y="90">Your script</text>
+        <text class="ab-s" x="30" y="112" >(app panel · VS Code · terminal)</text>
+        <text class="flowt" x="30" y="150">res = luxtrace.run(cfg)</text>
+        <text class="flowt" x="30" y="170">sw  = luxtrace.sweep(...)</text>
+        <text class="flowt" x="30" y="190">opt = luxtrace.optimise(...)</text>
+        <text class="ab-s" x="30" y="242">plain dict back,</text>
+        <text class="ab-s" x="30" y="258">LuxTraceError on refusal</text>
+
+        <!-- room 2 -->
+        <rect class="ab" x="270" y="60" width="200" height="210" rx="12"/>
+        <text class="ab-t" x="282" y="90">python/runner.py</text>
+        <text class="ab-s" x="282" y="112">the client</text>
+        <text class="flowt" x="282" y="150">call(op, params)</text>
+        <text class="flowt" x="282" y="170">→ JSON line → stdin</text>
+        <text class="flowt" x="282" y="190">← JSON line ← stdout</text>
+        <text class="ab-s" x="282" y="242">matches replies by id,</text>
+        <text class="ab-s" x="282" y="258">drains stderr forever</text>
+
+        <!-- room 3 -->
+        <rect class="ab hot" x="540" y="60" width="220" height="210" rx="12" style="stroke:#e0563f88"/>
+        <text class="ab-t" x="552" y="90">LuxTrace.exe <tspan fill="#ff7a5c">--serve</tspan></text>
+        <text class="ab-s" x="552" y="112">the job runner (C++)</text>
+        <text class="flowt" x="552" y="150">readLine → QJson → dispatch</text>
+        <text class="flowt" x="552" y="170">loadConfig → clamp</text>
+        <text class="flowt" x="552" y="190">envelope → stdout, flush</text>
+        <text class="ab-s" x="552" y="242">stdout: JSON only.</text>
+        <text class="ab-s" x="552" y="258">stderr: everything human</text>
+
+        <!-- room 4 -->
+        <rect class="ab" x="820" y="60" width="165" height="210" rx="12"/>
+        <text class="ab-t" x="832" y="90">optics core</text>
+        <text class="ab-s" x="832" y="112">in that same process</text>
+        <text class="flowt" x="832" y="150">B-Rep → mesh → BVH</text>
+        <text class="flowt" x="832" y="170">Sobol → threads → trace</text>
+        <text class="flowt" x="832" y="190">spot metrics → JSON</text>
+        <text class="ab-s" x="832" y="242">geometry cache makes</text>
+        <text class="ab-s" x="832" y="258">repeat calls cheap</text>
+
+        <!-- pipes -->
+        <path class="wire" id="p1" d="M198 140 H270"/>
+        <path class="wire" id="p2" d="M198 190 H270"/>
+        <path class="wire" id="p3" d="M470 140 H540"/>
+        <path class="wire" id="p4" d="M470 190 H540"/>
+        <path class="wire hot" id="p5" d="M760 165 H820"/>
+        <text class="flow" font-size="10.5" x="200" y="132">stdin ▸ one JSON object / line</text>
+        <text class="flow" font-size="10.5" x="200" y="207">stdout ◂ one envelope / line</text>
+        <text class="flow" font-size="10.5" x="472" y="132">request ▸</text>
+        <text class="flow" font-size="10.5" x="472" y="207">◂ reply</text>
+        <text class="flow" font-size="10.5" x="764" y="156">direct calls</text>
+
+        <!-- moving dots -->
+        <circle r="4" fill="#ff8a6b"><animateMotion dur="2.4s" repeatCount="indefinite" path="M198 140 H270"/></circle>
+        <circle r="4" fill="#3fd6c5"><animateMotion dur="2.4s" begin="1.2s" repeatCount="indefinite" path="M270 190 H198"/></circle>
+        <circle r="4" fill="#ff8a6b"><animateMotion dur="2.0s" begin="0.3s" repeatCount="indefinite" path="M470 140 H540"/></circle>
+        <circle r="4" fill="#3fd6c5"><animateMotion dur="2.0s" begin="1.1s" repeatCount="indefinite" path="M540 190 H470"/></circle>
+        <circle r="4" fill="#6ea8ff"><animateMotion dur="1.6s" repeatCount="indefinite" path="M760 165 H820"/></circle>
+        <circle r="4" fill="#6ea8ff"><animateMotion dur="1.6s" begin="0.8s" repeatCount="indefinite" path="M820 165 H760"/></circle>
+      </svg>
+    </div>
+
+    <div class="grid g3" style="margin-top:18px">
+      <div class="card rv"><span class="pill red">why a second process?</span>
+        <h4>The interpreter boundary</h4><p>Embedding Python in the C++ app would couple two
+        release cycles and two crashing fates. A pipe sees none of that: the engine keeps
+        running even if the script dies, and the script keeps running even if a trace is cancelled.</p></div>
+      <div class="card rv"><span class="pill teal">warm process</span>
+        <h4>Start once, call many times</h4><p><code>--serve</code> loads Qt, OCCT and the
+        scene registry one time. Every later call skips that floor cost: the dispatch table
+        alone answers <code>features</code> in 0.04&nbsp;ms.</p></div>
+      <div class="card rv"><span class="pill blue">stdout discipline</span>
+        <h4>JSON and nothing else</h4><p>The unwritten rule the whole design leans on: any
+        prose a developer printed with <code>cout</code> would corrupt the client. Human words
+        are exiled to stderr, where the panel log shows them in red.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 2 LIFE OF A CALL ================= -->
+<section id="life">
+  <div class="wrap">
+    <h2><span class="n">02</span>Life of a call — <code class="dim">luxtrace.run(cfg, seed=42)</code></h2>
+    <p class="lead">Eight stops between your one line and the dict it returns. Click a step, or watch it walk itself.</p>
+
+    <div class="seq rv">
+      <div class="seq-steps" id="seqsteps">
+        <div class="step on" data-i="0"><b>01</b>Python method packs the call<div class="bar"></div></div>
+        <div class="step" data-i="1"><b>02</b>One JSON line goes down stdin<div class="bar"></div></div>
+        <div class="step" data-i="2"><b>03</b>The serve loop wakes and dispatches<div class="bar"></div></div>
+        <div class="step" data-i="3"><b>04</b>loadConfig merges, defaults, clamps<div class="bar"></div></div>
+        <div class="step" data-i="4"><b>05</b>Geometry: B-Rep → mesh → BVH (cached)<div class="bar"></div></div>
+        <div class="step" data-i="5"><b>06</b>Monte Carlo trace on every core<div class="bar"></div></div>
+        <div class="step" data-i="6"><b>07</b>Metrics, budget, chromaticity<div class="bar"></div></div>
+        <div class="step" data-i="7"><b>08</b>Envelope out, id matched, dict returned<div class="bar"></div></div>
+      </div>
+
+      <div class="seq-view">
+        <div class="pane on"><pre><span class="c">// your code — the whole story from the outside</span>
+<span class="hl">res = luxtrace.run(config, seed=42)</span>
+<span class="c"># method exists per op; **params merge on top of config</span>
+<span class="c"># returns the envelope's "data" object — or raises</span></pre></div>
+        <div class="pane"><pre><span class="c">// runner.py → LuxTrace.exe --serve (stdin, one line, flushed)</span>
+{"id":<span class="n">5</span>,"op":"<span class="f">run</span>","params":{
+    "config":{
+      "scene":{"name":"<span class="s">Parabolic Reflector</span>"},
+      "run":{"rays":<span class="n">90000</span>,"seed":<span class="n">42</span>}
+    }
+}}
+<span class="c">// one line. id=5 is yours; the client only accepts replies that match it.</span></pre></div>
+        <div class="pane"><pre><span class="c">// runServe(): readLine → QJsonParse → dispatch table</span>
+<span class="k">if</span> (op == <span class="s">"run"</span>)        <span class="k">return</span> opRun(params, data, err…);
+<span class="k">if</span> (op == <span class="s">"sweep"</span>)      <span class="k">return</span> opSweep(params, data, err…);
+<span class="c">// …13 dispatch arms. Unknown name → error envelope, stream survives.</span>
+<span class="c">// QElapsedTimer starts here: "ms" in the reply is exactly this span.</span></pre></div>
+        <div class="pane"><pre><span class="c">// opRun → loadConfig: the app's own ConfigIO reads your partial config</span>
+<span class="c">// · missing keys keep defaults   · every number arrives clamped</span>
+<span class="c">// · scene by NAME (never by index — the registry can reorder)</span>
+<span class="c">// params.rays / params.seed / params.threads win over config's run{}.</span></pre></div>
+        <div class="pane"><pre><span class="c">// Simulation::dataFor — cached by (scene, params, quality)</span>
+B-Rep <span class="k">solid</span> → MeshBuilder triangles <span class="k">with exact B-Rep normals</span>
+            → flattened BVH (SAH)  → <span class="hl">cache hit? 0 s</span>
+<span class="c">// first call pays the build; later calls on the same optic reuse it.</span></pre></div>
+        <div class="pane"><pre><span class="c">// RayTracer: rays are independent chunks over a ThreadPool</span>
+<span class="c">// · Owen-scrambled Sobol emission, aimed at the scene</span>
+<span class="c">// · Fresnel per hit, Beer–Lambert in media, BSDF scatter</span>
+<span class="c">// · next-event estimation at diffuse bounces, Russian roulette</span>
+<span class="c">// each ray seeds from its global index + cfg.seed → bit-reproducible.</span></pre></div>
+        <div class="pane"><pre><span class="c">// analysis::computeSpotMetrics + Studies::metricValue + budget</span>
+"metrics": { "efficiency": <span class="n">0.4081</span>, "efficiency_std_err": <span class="n">0.00013</span>,
+  "spot":  { "rms_radius_mm": <span class="n">99.30</span>, "d86_radius_mm": <span class="n">132.8</span> … },
+  "energy_budget": { "detector": <span class="n">0.4081</span>, "escaped": <span class="n">0.5644</span>, "absorbed": <span class="n">0.0275</span> … },
+  "far_field": { "beam_fwhm_deg": <span class="n">1.00</span> … }, "chromaticity": { … } }</pre></div>
+        <div class="pane"><pre><span class="c">// one QJsonDocument::toJson(Compact) line on stdout, flushed —</span>
+{"v":<span class="n">1</span>,"seq":<span class="n">4</span>,"id":<span class="n">5</span>,"type":"result","op":"run","data":{…},"ms":<span class="n">8.4</span>}
+<span class="c">// runner.py's reader thread drops it in a queue; call() matches id 5;</span>
+<span class="c">// your script gets a plain dict, ms after the click. If type=="error",</span>
+<span class="c">// the same id raises LuxTraceError with the machine code inside.</span></pre></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 3 WIRE PROTOCOL ================= -->
+<section id="wire">
+  <div class="wrap">
+    <h2><span class="n">03</span>The wire: envelope anatomy</h2>
+    <p class="lead">Every reply is one line. Hover a field to see why it exists.</p>
+    <div class="env rv" id="envline">
+      <span data-f="v"><span class="f-k">"v"</span>:<span class="f-v">1</span></span>
+      <span data-f="seq"><span class="f-k">"seq"</span>:<span class="f-v">4</span></span>
+      <span data-f="id"><span class="f-k">"id"</span>:<span class="f-v">5</span></span>
+      <span data-f="type"><span class="f-k">"type"</span>:<span class="f-v">"result"</span></span>
+      <span data-f="op"><span class="f-k">"op"</span>:<span class="f-v">"run"</span></span>
+      <span data-f="data"><span class="f-k">"data"</span>:{<span class="dim">…</span>}</span>
+      <span data-f="ms"><span class="f-k">"ms"</span>:<span class="f-v">8.4</span></span>
+    </div>
+    <div class="env-doc">
+      <div class="env-card on" data-f="v"><code>v</code> — protocol version. Bumped only when meaning changes, so a host from two years ago refuses a future binary politely instead of misreading it.</div>
+      <div class="env-card" data-f="seq"><code>seq</code> — position in this session's stream. Bore-sight for the log, no role in matching.</div>
+      <div class="env-card" data-f="id"><code>id</code> — <b>the matching key</b>. The client stamps each request with an id; replies carrying another id (none should) are dropped. This is what makes interleaved progress and out-of-order work survivable.</div>
+      <div class="env-card" data-f="type"><code>type</code> — <code>result</code> continues the session, <code>error</code> fails one op but the stream lives, <code>fatal</code> closes it with a non-zero exit.</div>
+      <div class="env-card" data-f="op"><code>op</code> — echo of what you asked, so logs read as conversation.</div>
+      <div class="env-card" data-f="data"><code>data</code> — the payload: metrics dicts, points arrays, scene catalogues. This is exactly the object <code>call()</code> hands your script.</div>
+      <div class="env-card" data-f="ms"><code>ms</code> — wall-clock around the dispatch, measured inside C++, free of pipe latency.</div>
+      <div class="env-card" style="border-style:dashed"><i class="dim">stderr side-channel</i> — progress, warnings, the ready line. Never parsed. Displayed.</div>
+    </div>
+
+    <h3>Two modes, one dispatcher</h3>
+    <div class="grid g2">
+      <div class="card rv"><span class="pill teal">--serve · what Python uses</span>
+        <h4>Interactive</h4><p>One op per stdin line, one envelope per line, until EOF.
+        A process stays warm between your calls — the geometry cache and catalogue
+        reloads stay paid for.</p>
+        <pre style="margin-bottom:0">{"op":"run","id":1,"params":{…}}
+{"op":"optimise","id":2,"params":{…}}</pre></div>
+      <div class="card rv"><span class="pill blue">--job · batch</span>
+        <h4>Document in, stream out</h4><p>One job file, ops run in order, one envelope each,
+        exit 0 unless the document itself is broken. Same dispatch arms, same envelopes.</p>
+        <pre style="margin-bottom:0">{"ops":[{"op":"features"},
+  {"op":"run","params":{…}}]}</pre></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 4 GRAPHS ================= -->
+<section id="charts">
+  <div class="wrap">
+    <h2><span class="n">04</span>Graphs — traced live, not drawn by hand</h2>
+    <p class="lead">Every figure below was produced by the very operations it describes,
+    this build, seed 42, Parabolic Reflector. Charts draw when they scroll into view.</p>
+
+    <div class="charts">
+      <div class="chart rv"><h4>Convergence — efficiency vs rays</h4>
+        <div class="sub2 dim">convergence(config, min_rays=2000, max_rays=120000, points=6) — the band is ±1 standard error; it closes as 1/√N.</div>
+        <canvas id="cv-conv"></canvas></div>
+
+      <div class="chart rv"><h4>Parameter sweep — RMS spot vs focal length</h4>
+        <div class="sub2 dim">sweep(config, slot=0, metric="rms_radius_mm", steps=6) — the bowl shape says "the receiver is where the parabola wants it"; 60 mm of travel moves the spot 43 mm.</div>
+        <canvas id="cv-sweep"></canvas></div>
+
+      <div class="chart rv"><h4>Optimisation — Nelder-Mead history, efficiency %</h4>
+        <div class="sub2 dim">optimise(slots=[0,1], goal="maximise", evaluations=25): 40.8% → 92.1%, monotone best-so-far staircase (dim line = raw, bright = running best).</div>
+        <canvas id="cv-opt"></canvas></div>
+
+      <div class="chart rv"><h4>The energy book — where 90 000 rays went</h4>
+        <div class="sub2 dim">run(config) energy_budget: the buckets close to the source power to the last bit — that closure is a test, not a hope.</div>
+        <canvas id="cv-budget"></canvas></div>
+
+      <div class="chart rv"><h4>Round-trip cost per call</h4>
+        <div class="sub2 dim">measured envelope "ms" on this build — the pipe adds ~1–3 ms; a trace adds whatever you paid for.</div>
+        <canvas id="cv-time"></canvas></div>
+
+      <div class="chart rv"><h4>Spot profile in one line</h4>
+        <div class="sub2 dim">same 90k-ray run: the beam is 8.4 mm tight across x and 99 mm tall in y — that asymmetry is the off-axis geometry, not an error.</div>
+        <canvas id="cv-spot"></canvas></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 5 OPS CATALOG ================= -->
+<section id="ops">
+  <div class="wrap">
+    <h2><span class="n">05</span>The 13 operations</h2>
+    <p class="lead">Type to filter. Every card's signature is also its JSON <code>op</code> name — the Python methods exist one-for-one.</p>
+    <div class="ops-tools"><input id="opfilter" placeholder="filter… (e.g. sweep, optimise, flux)"></div>
+    <div class="grid g3" id="opsgrid"></div>
+  </div>
+</section>
+
+<!-- ================= 6 ERRORS ================= -->
+<section id="errors">
+  <div class="wrap">
+    <h2><span class="n">06</span>Refusals, not crashes</h2>
+    <p class="lead">The stream is designed to survive a bad request: each op is judged on its own, and only a broken job <em>document</em> is fatal.</p>
+    <div class="errflow rv">
+      <svg viewBox="0 0 940 210" xmlns="http://www.w3.org/2000/svg">
+        <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0 0 L10 5 L0 10 z" fill="#31405f"/></marker></defs>
+        <rect class="nf" x="10" y="80" width="120" height="50" rx="9"/>
+        <text class="nf-t" x="24" y="100">op arrives</text><text class="nf-d" x="24" y="117">one stdin line</text>
+        <rect class="nf" x="170" y="80" width="130" height="50" rx="9"/>
+        <text class="nf-t" x="184" y="100">is it JSON?</text><text class="nf-d" x="184" y="117">QJsonParseError</text>
+        <rect class="nf" x="340" y="80" width="130" height="50" rx="9"/>
+        <text class="nf-t" x="354" y="100">do I know it?</text><text class="nf-d" x="354" y="117">dispatch table</text>
+        <rect class="nf" x="510" y="80" width="130" height="50" rx="9"/>
+        <text class="nf-t" x="524" y="100">params sane?</text><text class="nf-d" x="524" y="117">slots, metric, path</text>
+        <rect class="nf" x="680" y="20" width="120" height="50" rx="9"/>
+        <text class="nf-t" x="694" y="40">execute</text><text class="nf-d" x="694" y="57">trace / study</text>
+        <rect class="nf ok" x="680" y="140" width="120" height="50" rx="9"/>
+        <text class="nf-t" x="697" y="160" fill="#4cc38a">result</text><text class="nf-d" x="697" y="177">data{} · stream on</text>
+        <rect class="nf err" x="510" y="140" width="130" height="50" rx="9"/>
+        <text class="nf-t" x="527" y="160" fill="#ff7a5c">error</text><text class="nf-d" x="527" y="177">code + message · stream on</text>
+        <rect class="nf err" x="170" y="140" width="130" height="50" rx="9"/>
+        <text class="nf-t" x="187" y="160" fill="#ff7a5c">bad_line</text><text class="nf-d" x="187" y="177">logged, stream on</text>
+        <path class="edge" d="M130 105 H170"/>
+        <path class="edge" d="M300 105 H340"/>
+        <path class="edge" d="M470 105 H510"/>
+        <path class="edge" d="M640 95 H666 V45 H680"/>
+        <path class="edge" d="M640 115 H666 V165 H680"/>
+        <path class="edge" d="M690 70 V98 H700 V108 H740 V140"/>
+        <path class="edge" d="M340 130 V165 H300"/>
+        <text class="lbl" x="429" y="72">known ✓</text>
+        <text class="lbl" x="655" y="192">executed ✓</text>
+        <text class="lbl" x="475" y="132">unknown ✗ → unknown_operation</text>
+      </svg>
+    </div>
+    <table>
+      <tr><th>Code the client raises</th><th>Meaning</th><th>Typical fix</th></tr>
+      <tr><td><code>missing_config</code> · <code>bad_config</code></td><td>op needs a config; or JSON that is not a config document</td><td>pass <code>{"config": {...}}</code></td></tr>
+      <tr><td><code>invalid_metric</code> · <code>invalid_goal</code></td><td>unknown metric / goal string</td><td>use ids from the graph section</td></tr>
+      <tr><td><code>invalid_slot</code></td><td>parameter index out of this scene's list</td><td>check <code>luxtrace.scenes()</code></td></tr>
+      <tr><td><code>import_failed</code> · <code>not_traceable</code> · <code>load_failed</code></td><td>CAD / rayfile refusals</td><td>read the message — it audits</td></tr>
+      <tr><td><code>LuxTraceDown</code> (client-side)</td><td>process died / timed out; carries the stderr tail</td><td>see the log panel</td></tr>
+    </table>
+  </div>
+</section>
+
+<!-- ================= 7 CONFIG ================= -->
+<section id="config">
+  <div class="wrap">
+    <h2><span class="n">07</span>Anatomy of a config</h2>
+    <p class="lead">The same document the desktop app saves — one vocabulary, three writers.
+    Hover the notes; missing keys keep defaults, numbers arrive clamped.</p>
+    <div class="cfg">
+      <pre class="rv"><code>{
+  <span class="hl" title="scene by exact registry name — get the list from luxtrace.scenes()">&#8203;"scene": {</span>
+    "name": <span class="s">"Elliptical Reflector"</span>,
+    "params": [<span class="n">200</span>, <span class="n">120</span>, <span class="n">160</span>],   <span class="c">// scene order, scene units</span>
+    "useDefaults": <span class="s">false</span>
+  },
+  <span class="hl" title="type: point|lambertian|collimated · shape: point|disc|rect|sphere">&#8203;"source": {</span>
+    "type": <span class="s">"collimated"</span>, "shape": <span class="s">"disc"</span>,
+    "spectrum": <span class="s">"blackbody"</span>,     <span class="c">// mono|rgb|blackbody|led|d65|table</span>
+    "cct": <span class="n">5000</span>,                  <span class="c">// per spectrum kind</span>
+    "power": <span class="n">1.0</span>, "powerUnit": <span class="s">"watt"</span>,  <span class="c">// watt|lumen</span>
+    "polarisation": <span class="s">"unpolarised"</span>,
+    "rayFile": <span class="s">"led.dat"</span>          <span class="c">// measured set overrides type/shape</span>
+  },
+  <span class="hl" title="seed is the determinism contract: same config+seed = same answer, bit for bit">&#8203;"run": {</span>"rays": <span class="n">90000</span>, "threads": <span class="n">0</span>, "seed": <span class="n">42</span>,
+           "detectorBins": <span class="n">0</span>, "nTheta": <span class="n">90</span>, "nPhi": <span class="n">72</span> }
+}
+<span class="c">// extras: extraSources[], surfaceOverrides[], physics{} — as in File→Save.</span></code></pre>
+      <div>
+        <div class="card rv cfg-note" data-n="scene"><span class="pill red">scene</span><h4>Names, never indices</h4><p>The registry is ordered and extensible; a saved index could silently retarget a different optic after an insert. Names survive that.</p></div>
+        <div class="card rv cfg-note" data-n="source" style="margin-top:14px"><span class="pill teal">source</span><h4>Real emitters</h4><p>Flux in watts or lumens through the CIE V(λ) curve — which is why lux and candela exist at all. A measured ray file replaces the whole angular model.</p></div>
+        <div class="card rv cfg-note" data-n="run" style="margin-top:14px"><span class="pill blue">run</span><h4>The seed is the experiment</h4><p>Optimise steps, sweep wiggles and tolerance yields are all functions of (config, seed). Change only the seed and you sample a different MC noise realisation.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 8 WORKFLOWS ================= -->
+<section id="flows">
+  <div class="wrap">
+    <h2><span class="n">08</span>Workflows — three real jobs</h2>
+    <div class="recipe rv">
+      <h3>A · The design loop <span class="pill red" style="margin-left:8px">sweep → optimise → converge → trace</span></h3>
+      <p>What you came for: find the geometry that puts the most flux in the tightest spot, then say how much to trust it.</p>
+      <div class="pipe">
+        <div class="pnode"><b>sweep</b><span>one axis at a time; error bars tell signal from noise (repeats≥2)</span></div><span class="parrow">➜</span>
+        <div class="pnode"><b>optimise</b><span>Nelder-Mead moves all slots together; fixed seed = a true function</span></div><span class="parrow">➜</span>
+        <div class="pnode"><b>convergence</b><span>efficiency stops moving? the error band closes it</span></div><span class="parrow">➜</span>
+        <div class="pnode"><b>run</b><span>final report numbers + budget at a bigger budget</span></div>
+      </div>
+      <div class="badges"><span class="pill blue">demo run: 40.8 → 92.1 % in 25 evals</span><span class="pill teal">same process, geometry cache shared</span></div>
+    </div>
+    <div class="recipe rv">
+      <h3>B · Customer CAD into numbers <span class="pill teal" style="margin-left:8px">audit first, trace second</span></h3>
+      <div class="pipe">
+        <div class="pnode"><b>cad(path)</b><span>STEP/IGES read; units read from the file's own header</span></div><span class="parrow">➜</span>
+        <div class="pnode"><b>audit</b><span>closed shells? free edges? per-part status: ok/warning/bad</span></div><span class="parrow">➜</span>
+        <div class="pnode"><b>material + axis</b><span>glass by name, lit axis as [x,y,z]</span></div><span class="parrow">➜</span>
+        <div class="pnode"><b>trace</b><span>same metrics object as any built-in scene</span></div>
+      </div>
+      <p class="dim" style="font-size:13px">A "bad" audit still traces — but the reply says why a ray entering a non-closed part might never be recorded as leaving it.</p>
+    </div>
+    <div class="recipe rv">
+      <h3>C · Trust the tracer, then the tool <span class="pill blue" style="margin-left:8px">13 closed forms</span></h3>
+      <div class="pipe">
+        <div class="pnode"><b>validate(rays)</b><span>lensmaker, inverse-square, sphere throughput, CPC éstendue, Brewster, TIR phase…</span></div><span class="parrow">➜</span>
+        <div class="pnode"><b>13/13 pass</b><span>residuals in the envelope — assert them in CI</span></div><span class="parrow">➜</span>
+        <div class="pnode"><b>then optimise</b><span>a search only means something on an engine that answers the same question twice, identically</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 9 INTERNALS ================= -->
+<section id="how">
+  <div class="wrap">
+    <h2><span class="n">09</span>Internals worth knowing</h2>
+    <div class="grid g2">
+      <div class="card rv"><span class="pill teal">process tree · from the panel</span>
+        <h4>Who owns whom</h4>
+        <pre style="margin:10px 0 2px">LuxTrace.exe <span class="c">(the UI you see)</span>
+└─ QProcess: python.exe runner.py <span class="c">(staged script)</span>
+   └─ Popen: LuxTrace.exe --serve   <span class="hl">← your script talks here</span></pre>
+        <p>Three processes, each killable by its parent. Stop button = interpreter killed;
+        app close = the whole tree dies with it.</p></div>
+      <div class="card rv"><span class="pill blue">matching &amp; threads</span>
+        <h4>Two threads in the client, zero in your script</h4>
+        <p>A reader thread pumps stdout lines into a queue so a three-minute trace can't
+        block stderr draining (a full pipe would froze the engine). <code>call()</code>
+        waits on the queue until <b>your</b> id shows up — other replies never wake you.</p></div>
+      <div class="card rv"><span class="pill red">determinism</span>
+        <h4>Same input, same bits</h4>
+        <p>Each ray's RNG is derived from its global index and your seed — not from thread
+        sequencing. Optimise history is a real function; tolerance yield is checkable;
+        a reference value can be asserted to the last digit.</p></div>
+      <div class="card rv"><span class="pill teal">file map</span>
+        <h4>Where it lives</h4>
+        <table style="margin:6px 0 0">
+          <tr><td><code>core/JobRunner.{h,cpp}</code></td><td>dispatch, envelopes, 13 ops</td></tr>
+          <tr><td><code>main.cpp</code> <code>--serve/--job</code></td><td>entrances</td></tr>
+          <tr><td><code>python/runner.py</code></td><td>client + script runner + picker</td></tr>
+          <tr><td><code>ui/PythonPanel.{h,cpp}</code></td><td>in-app editor, log, Help</td></tr>
+        </table></div>
+    </div>
+    <h3 style="margin-top:30px">Design rules the protocol enforces</h3>
+    <div class="grid g3">
+      <div class="card rv"><h4>1 · Fail per op</h4><p><code>error</code> never ends the stream; the next call still answers. Batches of ten survive one typo.</p></div>
+      <div class="card rv"><h4>2 · Ids, not order</h4><p>Matching is by echoed id, never by sequence — a late reply can't desynchronise a host.</p></div>
+      <div class="card rv"><h4>3 · Clamp, don't crash</h4><p><code>rays=999999999</code>, <code>slot=42</code>: sanitisers and range checks turn abuse into a civilised envelope.</p></div>
+      <div class="card rv"><h4>4 · Human words are quarantined</h4><p>If it isn't parseable, it goes to stderr. The parser never has to hope.</p></div>
+      <div class="card rv"><h4>5 · Flush per line</h4><p>The envelope hits the pipe the moment it exists — progress and long traces stay visible.</p></div>
+      <div class="card rv"><h4>6 · One vocabulary</h4><p>Ops, config keys, error codes: identical across <code>--serve</code>, <code>--job</code>, panel and Python. Learn it once.</p></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div>LuxTrace — Optical Design Studio · Python API deep guide · generated from build 1.0.0</div>
+    <div><a href="#big">top ↑</a> · API reference: <a href="runner_api.html">runner_api.html</a></div>
+  </div>
+</footer>
+<button class="totop" id="totop" title="back to top">↑</button>
+
+<script>
+/* =================== ops catalogue =================== */
+const OPS = [
+ ["features","🔍","session","Version, protocol, operation list, scene count.","{version, protocol, operations[], scene_count}"],
+ ["scenes","📐","catalogue","All 26 scenes with names, descriptions and every parameter's range, step and unit.","{scenes:[{name,description,params[]}]}"],
+ ["materials","💎","catalogue","Glass and metal catalogue: nd, Abbe, index at 550 nm, source file.","{materials:[{name,nd,abbe…}]}"],
+ ["run","🌟","trace","One Monte Carlo trace. The everything call: metrics, budget, spot, far field, colour.","{scene, rays, metrics{}, exported_csv?}"],
+ ["focus","🎯","study","Through-focus from one trace: best plane and RMS there.","{best_focus_mm, best_rms_mm, samples[]}"],
+ ["convergence","📈","study","Efficiency against ray count with error bars; closes the 'enough rays?' question.","{points[], converged}"],
+ ["sweep","📉","study","1-D parameter walk on any metric, repeats per point separate noise from signal.","{parameter, points[]}"],
+ ["sweep2d","🗺️","study","Same idea on two axes — a contour grid in values[].","{a[], b[], values[], lo, hi}"],
+ ["optimise","🧭","search","Nelder-Mead or CMA-ES against any metric, full evaluation history with std-errs.","{best_params[], best_value, history[]}"],
+ ["tolerance","🎲","search","Production reality: sample the tolerances, get yield, percentiles, sensitivities.","{yield, median, p90, p99, sensitivity[]}"],
+ ["validate","✅","verify","13 closed-form checks — lensmaker to TIR phase — pass/fail per case.","{cases[], passed_count, all_passed}"],
+ ["cad","📦","import","STEP/IGES in: per-part audit, then the same trace and metrics.","{import{}, geometry{}, metrics{}}"],
+ ["rayfile","📋","import","Describe a measured ray set: format, flux, wavelengths, extent.","{declared_rays, ray_set_flux, summary}"]
+];
+const grid = document.getElementById('opsgrid');
+OPS.forEach(([op,ic,tag,line,ret])=>{
+  const d=document.createElement('div'); d.className='card op rv'; d.dataset.k=(op+' '+tag+' '+line+' '+ret).toLowerCase();
+  d.innerHTML='<span class="pill '+(tag==='trace'?'red':tag==='study'||tag==='search'?'teal':'blue')+'">'+tag+'</span>'+
+   '<h4>'+ic+' '+op+'</h4><p>'+line+'</p><div style="margin-top:10px" class="ret">data: '+ret+'</div>';
+  grid.appendChild(d);
+});
+document.getElementById('opfilter').addEventListener('input',e=>{
+  const q=e.target.value.toLowerCase();
+  document.querySelectorAll('.op').forEach(c=>c.classList.toggle('hide',!c.dataset.k.includes(q)));
+});
+
+/* =================== envelope anatomy =================== */
+document.querySelectorAll('#envline span').forEach(s=>{
+  s.addEventListener('mouseenter',()=>{
+    document.querySelectorAll('.env-card').forEach(c=>c.classList.toggle('on',c.dataset.f===s.dataset.f));
+  });
+});
+
+/* =================== reveal on scroll =================== */
+const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}}),{threshold:.12});
+document.querySelectorAll('.rv').forEach(el=>io.observe(el));
+
+/* =================== scroll spy =================== */
+const secs=[...document.querySelectorAll('section'),document.querySelector('header')];
+const links=[...document.querySelectorAll('nav a')];
+window.addEventListener('scroll',()=>{
+  const y=scrollY+120; let cur=null;
+  secs.forEach(s=>{if(s.offsetTop<=y)cur=s.id});
+  links.forEach(a=>a.classList.toggle('on',a.getAttribute('href')==='#'+cur));
+  document.getElementById('totop').classList.toggle('show',scrollY>600);
+},{passive:true});
+document.getElementById('totop').onclick=()=>scrollTo({top:0,behavior:'smooth'});
+
+/* =================== sequencer =================== */
+const steps=[...document.querySelectorAll('#seqsteps .step')],panes=[...document.querySelectorAll('.pane')];
+let seqI=0,seqTimer=null,seqHold=false;
+function showStep(i){
+  seqI=i;
+  steps.forEach((s,k)=>{s.classList.toggle('on',k===i);s.classList.remove('on');if(k===i){void s.offsetWidth;s.classList.add('on')}});
+  panes.forEach((p,k)=>p.classList.toggle('on',k===i));
+}
+function autoSeq(){seqTimer=setInterval(()=>{if(seqHold)return;showStep((seqI+1)%steps.length)},3400)}
+steps.forEach(s=>s.addEventListener('mouseenter',()=>{clearInterval(seqTimer);seqHold=true;showStep(+s.dataset.i)}));
+steps.forEach(s=>s.addEventListener('click',()=>{showStep(+s.dataset.i)}));
+document.querySelector('.seq-view').addEventListener('mouseleave',()=>{seqHold=false;if(!seqTimer)autoSeq()});
+new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting&&!seqTimer)autoSeq()}),{threshold:.3}).observe(document.querySelector('.seq'));
+
+/* =================== charts (canvas, data traced this build) =================== */
+const CONV={pts:[[2000,.4032,.00192],[4536,.4063,.00206],[10287,.4091,.0009],[23330,.4082,.00043],[52912,.4076,.00026],[120000,.4082,.00014]]};
+const SWEEP={pts:[[20,60.44],[64,91.16],[108,100.53],[152,103.99],[196,103.2],[240,95.35]]};
+const OPT ={hist:[[1,40.83],[2,31.76],[3,26.35],[4,43.34],[5,51.02],[6,59.20],[7,64.76],[8,52.12],[9,61.56],[10,87.52],[11,91.37],[12,91.37],[13,91.37],[14,83.22],[15,91.37],[16,92.06],[17,92.06],[18,83.22],[19,91.76],[20,88.35],[21,91.94],[22,90.60],[23,92.09],[24,92.09],[25,91.94]]};
+const BUD =[["detector",40.81,"#3fd6c5"],["absorbed",2.75,"#e0563f"],["escaped",56.44,"#33415e"],["truncated",0,"#232c40"],["rejected",0,"#232c40"]];
+const TIME=[["scenes",0.4],["materials",0.1],["run 20k +build",88.7],["run 90k cached",8.1],["sweep 4×",108.6],["validate 20k",1617.7]];
+const SPOT=[["x",8.44,"#3fd6c5"],["y",99.12,"#6ea8ff"],["rms",99.30,"#e0563f"],["d50",93.8,"#e8c06a"],["d86",132.8,"#8f6ad9"]];
+
+function setupCanvas(c){const dpr=devicePixelRatio||1,w=c.clientWidth,h=c.clientHeight;
+  c.width=w*dpr;c.height=h*dpr;const x=c.getContext('2d');x.scale(dpr,dpr);return{ctx:x,w,h};}
+function ease(t){return 1-Math.pow(1-t,3)}
+function drawWhenVisible(canvas,fn){
+  animateDraw(canvas,fn);                       // ready at load, not only on scroll
+  const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){animateDraw(canvas,fn)}}),{threshold:.3});
+  io.observe(canvas);
+  addEventListener('resize',()=>animateDraw(canvas,fn));
+}
+function animateDraw(canvas,fn){
+  const t0=performance.now(),dur=900;
+  (function frame(now){const p=ease(Math.min(1,(now-t0)/dur));fn(setupCanvas(canvas),p);
+    if(p<1)requestAnimationFrame(frame)})(t0);
+}
+const gridColor='#22304a',axisCol='#3a4a6b',inkCol='#dfe6f2',mutCol='#8b96ad';
+
+/* convergence with SEM bands, log x */
+function drawConv({ctx,w,h},p){
+  ctx.clearRect(0,0,w,h);
+  const L=48,R=10,T=14,B=26,iw=w-L-R,ih=h-T-B;
+  const xs=v=>L+iw*Math.log(v/1500)/Math.log(120000/1500);
+  const ys=v=>T+ih*(1-(v-.395)/(.018));
+  ctx.strokeStyle=gridColor;ctx.lineWidth=1;ctx.font='10px '+getComputedStyle(document.body).getPropertyValue('--mono');
+  [.40,.41].forEach(g=>{ctx.globalAlpha=.6;ctx.beginPath();ctx.moveTo(L,ys(g));ctx.lineTo(w-R,ys(g));ctx.stroke();
+    ctx.fillStyle=mutCol;ctx.fillText((g*100).toFixed(0)+'%',6,ys(g)+3);ctx.globalAlpha=1});
+  [2e3,1e4,4e4,1.2e5].forEach(t=>{const x=xs(t);ctx.globalAlpha=.5;ctx.beginPath();ctx.moveTo(x,T);ctx.lineTo(x,h-B);ctx.stroke();
+    ctx.fillStyle=mutCol;ctx.fillText(t>=1000?(t/1000)+'k':t,x-8,h-8);ctx.globalAlpha=1});
+  // band polygon scaled by p
+  const P=CONV.pts;
+  ctx.beginPath();
+  P.forEach((pt,i)=>ctx[i?'lineTo':'moveTo'](xs(pt[0]),ys(pt[1]+ (pt[2]*6)*p)));
+  for(let i=P.length-1;i>=0;i--) ctx.lineTo(xs(P[i][0]),ys(P[i][1]- (P[i][2]*6)*p));
+  ctx.fillStyle='#3fd6c52e';ctx.fill();
+  ctx.beginPath();
+  P.forEach((pt,i)=>{const x=xs(pt[0]),y=ys(pt[1]);ctx[i?'lineTo':'moveTo'](x,y)});
+  ctx.strokeStyle='#3fd6c5';ctx.lineWidth=2;ctx.setLineDash([Math.max(0,900*p)]);ctx.stroke();ctx.setLineDash([]);
+  P.forEach(pt=>{ctx.beginPath();ctx.arc(xs(pt[0]),ys(pt[1]),3.4,0,7);ctx.fillStyle='#bff4ec';ctx.fill()});
+  ctx.fillText('rays',w-34,h-8);
+}
+drawWhenVisible(document.getElementById('cv-conv'),drawConv);
+
+/* sweep line */
+function drawSweep({ctx,w,h},p){
+  ctx.clearRect(0,0,w,h);const L=44,R=10,T=14,B=26,iw=w-L-R,ih=h-T-B;
+  const P=SWEEP.pts,xs=v=>L+iw*(v-20)/(240-20),ys=v=>T+ih*(1-(v-50)/(60));
+  ctx.strokeStyle=gridColor;[60,90,120].forEach(g=>{const y=ys(g);ctx.beginPath();ctx.moveTo(L,y);ctx.lineTo(w-R,y);ctx.stroke();
+    ctx.fillStyle=mutCol;ctx.fillText(g+' mm',6,y+3)});
+  [20,64,108,152,196,240].forEach(t=>{const x=xs(t);ctx.globalAlpha=.5;ctx.beginPath();ctx.moveTo(x,T);ctx.lineTo(x,h-B);ctx.stroke();
+    ctx.fillStyle=mutCol;ctx.fillText(t,x-8,h-8);ctx.globalAlpha=1});
+  // area + line
+  ctx.beginPath();ctx.moveTo(xs(P[0][0]),h-B);
+  P.forEach((pt,i)=>ctx.lineTo(xs(pt[0]),ys(pt[1])));
+  ctx.lineTo(xs(P.at(-1)[0]),h-B);ctx.closePath();ctx.fillStyle='#e0563f1e';ctx.fill();
+  ctx.beginPath();P.forEach((pt,i)=>{const x=xs(pt[0]),y=ys(pt[1]);ctx[i?'lineTo':'moveTo'](x,y)});
+  ctx.strokeStyle='#ff7a5c';ctx.lineWidth=2.2;ctx.stroke();
+  P.forEach(pt=>{ctx.beginPath();ctx.arc(xs(pt[0]),ys(pt[1]),3.6,0,7);ctx.fillStyle='#ffd0c2';ctx.fill()});
+  ctx.fillStyle=mutCol;ctx.fillText('focal length (mm) — spot tightest near 20',L+8,T+8);
+}
+drawWhenVisible(document.getElementById('cv-sweep'),drawSweep);
+
+/* optimise staircase */
+function drawOpt({ctx,w,h},p){
+  ctx.clearRect(0,0,w,h);const L=44,R=10,T=14,B=26,iw=w-L-R,ih=h-T-B;
+  const H=OPT.hist;
+  const xs=v=>L+iw*(v-1)/(24),ys=v=>T+ih*(1-(v-20)/(80));
+  ctx.strokeStyle=gridColor;[40,60,80].forEach(g=>{const y=ys(g);ctx.beginPath();ctx.moveTo(L,y);ctx.lineTo(w-R,y);ctx.stroke();
+    ctx.fillStyle=mutCol;ctx.fillText(g+'%',6,y+3)});
+  [1,5,10,15,20,25].forEach(t=>{const x=xs(t);ctx.globalAlpha=.5;ctx.beginPath();ctx.moveTo(x,T);ctx.lineTo(x,h-B);ctx.stroke();
+    ctx.fillStyle=mutCol;ctx.fillText(t,x-6,h-8);ctx.globalAlpha=1});
+  // raw evaluation dots
+  H.forEach(v=>{ctx.beginPath();ctx.arc(xs(v[0]),ys(v[1]),2.6,0,7);ctx.fillStyle='#6ea8ff88';ctx.fill()});
+  // best-so-far staircase, revealed left to right by a clip — safe against
+  // throttled animation frames, where a count-based reveal would freeze short
+  ctx.save();ctx.beginPath();ctx.rect(L,0,(iw+6)*p,h);ctx.clip();
+  ctx.beginPath();let best=-1;
+  H.forEach((v,i)=>{const x=xs(v[0]),y=ys(Math.max(best,v[1]));best=Math.max(best,v[1]);
+    if(i)ctx.lineTo(x,ys(best));ctx.lineTo(x,y)});
+  ctx.strokeStyle='#4cc38a';ctx.lineWidth=2.4;ctx.stroke();
+  ctx.restore();
+  ctx.fillStyle=mutCol;ctx.fillText('evaluations — best-so-far in green',L+8,T+8);
+}
+drawWhenVisible(document.getElementById('cv-opt'),drawOpt);
+
+/* budget donut + legend */
+function drawBudget({ctx,w,h},p){
+  ctx.clearRect(0,0,w,h);
+  const cx=Math.min(120,w*.22),cy=h/2,r=Math.min(cy-12,62);
+  let a=-Math.PI/2;
+  BUD.forEach(([name,val,col])=>{
+    if(val<=0.005) return;                          // nothing visible to wedge
+    const span=val/100*Math.PI*2*p;
+    ctx.beginPath();ctx.arc(cx,cy,r,a,a+span);ctx.strokeStyle=col;ctx.lineWidth=22;ctx.stroke();
+    a+=span;
+  });
+  ctx.fillStyle=inkCol;ctx.font='11.5px '+getComputedStyle(document.body).getPropertyValue('--mono');
+  ctx.textAlign='center';ctx.fillText('90k rays',cx,cy+4);ctx.textAlign='left';
+  // legend right
+  let ly=h/2-BUD.length*9+18;
+  BUD.forEach(([name,val,col])=>{
+    if(val<=0.005) return;
+    ctx.fillStyle=col;ctx.fillRect(260,ly-7,11,11);
+    ctx.fillStyle=inkCol;ctx.fillText(name+'  '+val.toFixed(2)+'%',278,ly+2);
+    ly+=22;
+  });
+}
+drawWhenVisible(document.getElementById('cv-budget'),drawBudget);
+
+/* timing bars, log scale */
+function drawTime({ctx,w,h},p){
+  ctx.clearRect(0,0,w,h);const L=128,R=14,T=10,B=24,iw=w-L-R,ih=h-T-B,n=TIME.length;
+  const xs=v=>L+iw*Math.log10(1+v)/Math.log10(1+2000);
+  ctx.strokeStyle=gridColor;[1,10,100,1000].forEach(g=>{const x=xs(g);ctx.globalAlpha=.5;ctx.beginPath();ctx.moveTo(x,T);ctx.lineTo(x,h-B);ctx.stroke();
+    ctx.fillStyle=mutCol;ctx.fillText(g+'ms',x-10,h-8);ctx.globalAlpha=1});
+  TIME.forEach(([name,ms],i)=>{
+    const y=T+ (ih/n)*i + 4, bh=(ih/n)-9, col=i<2?'#3fd6c5':(i<4?'#6ea8ff':'#e0563f');
+    ctx.fillStyle='#182136';ctx.fillRect(L,y,iw,bh);
+    ctx.fillStyle=col;ctx.fillRect(L,y,iw*Math.log10(1+ms*p)/Math.log10(1+2000),bh);
+    ctx.fillStyle=inkCol;ctx.font='10.5px '+getComputedStyle(document.body).getPropertyValue('--mono');
+    ctx.fillText(name,6,y+bh-3);
+  });
+}
+drawWhenVisible(document.getElementById('cv-time'),drawTime);
+
+/* spot bars */
+function drawSpot({ctx,w,h},p){
+  ctx.clearRect(0,0,w,h);const L=52,R=14,T=12,B=24,iw=w-L-R,ih=h-T-B,n=SPOT.length;
+  const max=140, ys=v=>T+ih*(1-v/max);
+  ctx.strokeStyle=gridColor;[0,50,100].forEach(g=>{const y=ys(g);ctx.beginPath();ctx.moveTo(L,y);ctx.lineTo(w-R,y);ctx.stroke();
+    ctx.fillStyle=mutCol;ctx.fillText(g+'mm',6,y+3)});
+  SPOT.forEach(([name,ms,col],i)=>{
+    const x=L+ (iw/n)*i + 10, bw=iw/n-20, bh=(ys(0)-ys(ms))*p;
+    ctx.fillStyle='#182136';ctx.fillRect(x,ys(0),bw,ys(0)-T-14);
+    ctx.fillStyle=col;ctx.fillRect(x,ys(ms)*1, bw, bh);
+    ctx.fillStyle=inkCol;ctx.font='10.5px '+getComputedStyle(document.body).getPropertyValue('--mono');
+    ctx.fillText(name+' '+ms,x-4,h-8);
+  });
+}
+drawWhenVisible(document.getElementById('cv-spot'),drawSpot);
+</script>
+</body>
+</html>
