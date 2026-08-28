@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LuxTrace Python API &amp; Job Protocol</title>
+<style>
+  :root { --ink:#1d2330; --mut:#5b6472; --acc:#b3402a; --code:#f5f6fa; --line:#dcdfe6; }
+  * { box-sizing:border-box; }
+  body { font:15px/1.55 "Segoe UI", system-ui, sans-serif; color:var(--ink);
+         max-width:980px; margin:0 auto; padding:24px 28px 80px; }
+  h1 { font-size:26px; margin:0 0 4px; }
+  h1 .lux { color:var(--acc); }
+  .sub { color:var(--mut); margin:0 0 24px; }
+  h2 { font-size:19px; margin:36px 0 10px; border-bottom:2px solid var(--line); padding-bottom:4px; }
+  h3 { font-size:15.5px; margin:22px 0 6px; }
+  p  { margin:8px 0; }
+  table { border-collapse:collapse; width:100%; margin:10px 0 18px; font-size:13.5px; }
+  th, td { border:1px solid var(--line); padding:6px 9px; text-align:left; vertical-align:top; }
+  th { background:#eef0f4; }
+  code, pre { font:12.5px/1.5 Consolas, "Cascadia Mono", monospace; }
+  code { background:var(--code); border:1px solid var(--line); border-radius:3px; padding:1px 5px; }
+  pre { background:var(--code); border:1px solid var(--line); border-radius:6px;
+        padding:12px 14px; overflow-x:auto; margin:10px 0 16px; }
+  pre code { background:none; border:none; padding:0; }
+  .toc { background:#f3f5f9; border:1px solid var(--line); border-radius:8px; padding:14px 22px; }
+  .toc a { color:var(--acc); text-decoration:none; }
+  .toc a:hover { text-decoration:underline; }
+  .mut { color:var(--mut); }
+  .tag { display:inline-block; background:var(--acc); color:#fff; border-radius:3px;
+         font-size:11px; padding:1px 7px; vertical-align:2px; margin-left:6px; }
+  .ok  { color:#1e7d32; font-weight:600; }
+  .err { color:var(--acc); font-weight:600; }
+  .note { border-left:4px solid var(--acc); background:#fbf4f2; padding:8px 14px; margin:12px 0; }
+</style>
+</head>
+<body>
+
+<h1><span class="lux">LuxTrace</span> &mdash; Python API &amp; Job Protocol</h1>
+<p class="sub">Drive the tracer from a script: one call, one operation, one JSON reply.
+Protocol <code>v1</code> &middot; 13 operations &middot; matches LuxTrace 1.0.0.</p>
+
+<div class="toc">
+<b>Contents</b> &mdash;
+<a href="#quickstart">Quick start</a> &middot;
+<a href="#client">The <code>luxtrace</code> client</a> &middot;
+<a href="#ops">Operations</a> &middot;
+<a href="#config">Config reference</a> &middot;
+<a href="#metrics">Metrics &amp; budgets</a> &middot;
+<a href="#protocol">Wire protocol</a> &middot;
+<a href="#errors">Error codes</a> &middot;
+<a href="#examples">Examples</a>
+</div>
+
+<h2 id="quickstart">1 &mdash; Quick start</h2>
+<p>Three places a script can run from. In all three a client object named
+<code>luxtrace</code> is already in scope &mdash; you never start or connect anything.</p>
+<table>
+<tr><th>Where</th><th>How</th></tr>
+<tr><td><b>In the app</b></td><td>The <b>Python</b> tab &rarr; edit &rarr; <b>Run</b> (or <code>Ctrl+Enter</code>).</td></tr>
+<tr><td><b>Desktop file</b></td><td><code>python runner.py</code> (no args: a picker opens on your Desktop)</td></tr>
+<tr><td><b>Terminal</b></td><td><code>python runner.py myscript.py</code> &mdash; also <code>--exe</code>, <code>--job job.json</code>, <code>--demo</code></td></tr>
+</table>
+
+<pre><code>info = luxtrace.features()
+print(info["version"], info["operations"][:4])
+
+res = luxtrace.run({"scene": {"name": "Parabolic Reflector"},
+                    "run":   {"rays": 50000, "seed": 42}})
+print(res["metrics"]["efficiency"])</code></pre>
+
+<p>Every call <span class="ok">returns a plain dict</span> (the envelope's <code>data</code>)
+or <span class="err">raises LuxTraceError</span> with a machine-readable <code>code</code>
+and a <code>message</code>.
+</p>
+
+<h2 id="client">2 &mdash; The <code>luxtrace</code> client</h2>
+<table>
+<tr><th>Method</th><th>Returns</th><th>Notes</th></tr>
+<tr><td><code>features()</code></td><td>dict</td><td>version, protocol, operation list, scene count</td></tr>
+<tr><td><code>scenes()</code></td><td>dict</td><td>every scene: name, description, parameters (min/max/step/unit)</td></tr>
+<tr><td><code>materials()</code></td><td>dict</td><td>catalogue: name, n<sub>d</sub>, Abbe, description, source</td></tr>
+<tr><td><code>run(config, **params)</code></td><td>dict</td><td>one Monte Carlo trace &mdash; the main operation <span class="tag">trace</span></td></tr>
+<tr><td><code>focus(config, **params)</code></td><td>dict</td><td>through-focus sweep, best plane, one trace</td></tr>
+<tr><td><code>convergence(config, **params)</code></td><td>dict</td><td>efficiency vs ray count, with a converged verdict</td></tr>
+<tr><td><code>sweep(config, **params)</code></td><td>dict</td><td>1-D parameter sweep on any metric</td></tr>
+<tr><td><code>sweep2d(config, **params)</code></td><td>dict</td><td>2-D sweep as a contour grid</td></tr>
+<tr><td><code>optimise(config, **params)</code></td><td>dict</td><td>Nelder-Mead or CMA-ES on any metric</td></tr>
+<tr><td><code>tolerance(config, **params)</code></td><td>dict</td><td>Monte Carlo tolerancing: yield, percentiles, sensitivities</td></tr>
+<tr><td><code>validate(**params)</code></td><td>dict</td><td>13 closed-form checks of the tracer</td></tr>
+<tr><td><code>cad(path, **params)</code></td><td>dict</td><td>import STEP/IGES, audit it, trace it</td></tr>
+<tr><td><code>rayfile(path, **params)</code></td><td>dict</td><td>describe a measured ray set (Zemax binary / text)</td></tr>
+</table>
+<p class="mut">The <code>**params</code> are operation options, merged into the call:
+<code>luxtrace.run(cfg, rays=90000, seed=7, export_csv="out/metrics.csv")</code>.</p>
+
+<h2 id="ops">3 &mdash; Operations in detail</h2>
+
+<h3>run &mdash; one trace <span class="tag">trace</span></h3>
+<pre><code>res = luxtrace.run(config, rays=80000, seed=42, threads=0, export_csv="out/metrics.csv")
+m = res["metrics"]</code></pre>
+<table>
+<tr><th>Key in <code>data</code></th><th>Meaning</th></tr>
+<tr><td><code>scene</code>, <code>rays</code>, <code>seed</code></td><td>what was traced (as clamped by the app)</td></tr>
+<tr><td><code>metrics</code></td><td>the full result object &mdash; <a href="#metrics">section 5</a></td></tr>
+<tr><td><code>warnings</code></td><td>present only when a config load recovered from something</td></tr>
+<tr><td><code>exported_csv</code></td><td>with <code>export_csv=path</code>: the metrics table written there</td></tr>
+</table>
+
+<h3>sweep / sweep2d</h3>
+<pre><code>sw = luxtrace.sweep(config, slot=0, metric="rms_radius_mm",
+                    frm=None, to=None,     # defaults: the parameter's own min..max
+                    steps=8, repeats=2)
+best = min(sw["points"], key=lambda p: p["value"])</code></pre>
+<table>
+<tr><th>Option</th><th>Meaning</th></tr>
+<tr><td><code>slot</code> / <code>slot</code>, <code>slot_a</code>, <code>slot_b</code></td><td>which scene parameter (see <code>luxtrace.scenes()</code> &mdash; index and unit there)</td></tr>
+<tr><td><code>metric</code></td><td>one of the <a href="#metrics">metric ids</a></td></tr>
+<tr><td><code>from</code>, <code>to</code>, <code>steps</code>, <code>repeats</code></td><td>the axis; <code>repeats</code> independent seeds per point</td></tr>
+</table>
+<p><code>sweep2d</code> returns <code>a[]</code>, <code>b[]</code> and <code>values[]</code>
+(<code>len(a) &times; len(b)</code>, row-major) plus the grid's <code>lo</code>/<code>hi</code>.</p>
+
+<h3>optimise</h3>
+<pre><code>opt = luxtrace.optimise(config, slots=[0, 1], metric="efficiency",
+                        goal="maximise",          # or "minimise", or "target" + target=1.0
+                        optimiser="neldermead",   # or "cmaes"
+                        evaluations=25)
+print(opt["start_value"], "->", opt["best_value"])
+print({b["name"]: round(b["value"], 1) for b in opt["best_params"]})
+print(len(opt["history"]), "evaluations, %.1fs" % opt["seconds"])</code></pre>
+
+<h3>tolerance</h3>
+<pre><code>tol = luxtrace.tolerance(config, metric="efficiency", criterion=0.5,
+                         tolerances=[{"slot": 0, "amount": 5.0},
+                                     {"slot": 1, "amount": 2.5, "shape": "uniform"}],
+                         samples=200)
+print("yield %.1f%%" % (100 * tol["yield"]))
+for s in tol["sensitivity"]:
+    print("  %-16s gradient %+.4f, variance share %.2f" % (s["name"], s["gradient"], s["share"]))</code></pre>
+<p><code>shape</code> is <code>gaussian</code> (default; the limit is 3&sigma;), <code>uniform</code>,
+or <code>bimodal</code> (worst case). <code>criterion</code> + optional
+<code>pass_above</code> (default: the metric's own direction) define the pass gate.</p>
+
+<h3>focus &middot; convergence &middot; validate</h3>
+<pre><code>f = luxtrace.focus(config, span_mm=30, steps=61)
+print("best focus z = %.1f mm, rms %.2f mm" % (f["best_focus_mm"], f["best_rms_mm"]))
+
+cv = luxtrace.convergence(config, min_rays=1000, max_rays=80000, points=6)
+print("converged:", cv["converged"])
+
+v = luxtrace.validate(rays=30000)
+print("%d/%d closed-form checks passed" % (v["passed_count"], len(v["cases"])))</code></pre>
+
+<h3>cad &middot; rayfile</h3>
+<pre><code>c = luxtrace.cad("part.step", rays=20000)          # scale=0 reads the file's units
+print(c["import"]["format"], c["import"]["total_faces"], "faces")
+print("efficiency %.2f %%" % (100 * c["metrics"]["efficiency"]))
+# options: scale=1.0, axis=[0,0,1], material="N-BK7", reflective=False, quality=64
+
+r = luxtrace.rayfile("led.dat")                    # measured emitter, then use it:
+cfg["source"] = {"rayFile": "led.dat"}
+print(r["summary"])</code></pre>
+
+<h2 id="config">4 &mdash; Config reference</h2>
+<p>A config is the same document the desktop app saves. Missing keys keep their
+defaults; numbers arrive clamped &mdash; a two-line config is valid.</p>
+<pre><code>config = {
+  "scene":  {"name": "Elliptical Reflector",     # exact names: luxtrace.scenes()
+             "params": [200, 120, 160],          # in the order scenes() lists them
+             "useDefaults": false},              # true: ignore params, use defaults
+  "source": {
+      "type": "collimated",                      # point | lambertian | collimated
+      "shape": "disc",                           # point | disc | rect | sphere
+      "spectrum": "blackbody",                   # monochrome | rgb | blackbody | led | d65 | table
+      "wavelengthNm": 550, "cct": 5000,          # per spectrum kind
+      "power": 1.0, "powerUnit": "watt",         # watt | lumen
+      "halfAngleDeg": 180, "beamRadius": 25,
+      "polarisation": "unpolarised",             # unpolarised | linear-s | linear-p | circular
+      "rayFile": "led.dat"},                     # overrides type/shape entirely when set
+  "run":    {"rays": 100000, "threads": 0, "seed": 12345,   # 0 threads = every core
+             "detectorBins": 0, "nTheta": 90, "nPhi": 72},
+}</code></pre>
+<p class="mut">Extras also accepted: <code>extraSources[]</code> (same shape as
+<code>source</code>), <code>surfaceOverrides[]</code> (ray-time optical edits) and
+<code>physics</code> (scene-wide overrides). Save a setup in the UI (<b>File &rarr;
+Save configuration</b>) and feed it in unchanged.</p>
+
+<h2 id="metrics">5 &mdash; Metrics, budgets, spot fields</h2>
+<p>All inside <code>run()&nbsp;[&nbsp;"metrics"&nbsp;]</code> (also on <code>cad</code>):</p>
+<table>
+<tr><th>Field</th><th>Meaning</th></tr>
+<tr><td><code>efficiency</code>, <code>efficiency_std_err</code></td><td>share of the source that reached the receiver &plusmn; one Monte Carlo standard error</td></tr>
+<tr><td><code>rays_emitted</code>, <code>rays_hit_detector</code></td><td>the budget spent and the branch count that arrived</td></tr>
+<tr><td><code>build_seconds</code>, <code>trace_seconds</code></td><td>where the wall-clock went</td></tr>
+<tr><td><code>unit</code>, <code>source_power</code>, <code>luminous_efficacy_lm_per_w</code>, <code>mean_wavelength_nm</code></td><td>the flux book's currency</td></tr>
+<tr><td><code>energy_budget</code></td><td><code>detector</code>, <code>absorbed</code>, <code>bulk_absorbed</code>, <code>escaped</code>, <code>truncated</code>, <code>rejected</code>, <code>accounted</code> &mdash; all fractions of the source</td></tr>
+<tr><td><code>spot</code></td><td><code>rms_radius_mm</code>, <code>d50_radius_mm</code>, <code>d86_radius_mm</code>, <code>fwhm_x_mm/fwhm_y_mm</code>, <code>centroid_x_mm/centroid_y_mm</code>, <code>peak</code>, <code>mean</code>, <code>min_lit</code>, <code>uniformity</code>, <code>mean_to_peak</code>, <code>lit_bins/total_bins</code></td></tr>
+<tr><td><code>far_field</code></td><td><code>beam_fwhm_deg</code>, <code>peak_intensity</code></td></tr>
+<tr><td><code>chromaticity</code></td><td>CIE 1931 <code>x</code>, <code>y</code> and <code>cct_k</code></td></tr>
+<tr><td><code>polarisation</code></td><td>only on a polarised trace: degree, degree_linear, angle_deg</td></tr>
+</table>
+
+<h3>Metric identifiers (sweeps, optimisation, tolerancing)</h3>
+<table>
+<tr><th><code>metric=</code></th><th>Meaning</th></tr>
+<tr><td><code>efficiency</code></td><td>fraction on the receiver</td></tr>
+<tr><td><code>rms_radius_mm</code></td><td>flux-weighted RMS spot radius</td></tr>
+<tr><td><code>d86_radius_mm</code></td><td>encircled-energy radius (86 %)</td></tr>
+<tr><td><code>peak_irradiance</code></td><td>brightest bin, in the run's unit</td></tr>
+<tr><td><code>uniformity_min</code> / <code>uniformity_mean</code></td><td>min (mean) over peak on the lit bins</td></tr>
+<tr><td><code>beam_fwhm_deg</code></td><td>far-field full width at half maximum</td></tr>
+<tr><td><code>peak_intensity</code></td><td>W/sr or candela</td></tr>
+<tr><td><code>spot_fwhm_x_mm</code></td><td>profile FWHM through the centroid</td></tr>
+<tr><td><code>centroid_offset_mm</code></td><td>spot centre from the receiver's centre</td></tr>
+</table>
+
+<h2 id="protocol">6 &mdash; The wire protocol (for hosts that skip Python)</h2>
+<p><code>LuxTrace.exe --serve</code>: one operation JSON object per stdin line,
+one envelope per stdout line, until EOF. <code>--job file.json</code> runs a batch
+document <code>{"ops":[...]}</code>. <b>stdout is JSON and nothing else</b> &mdash;
+every human word goes to stderr.</p>
+<pre><code>{"v":1,"seq":0,"id":7,"type":"result","op":"run","data":{...},"ms":1823.4}
+{"v":1,"seq":1,"id":8,"type":"error","op":"cad",
+ "error":{"code":"import_failed","message":"cannot open nope.step"}}</code></pre>
+<ul>
+<li><code>type</code>: <span class="ok">result</span> &middot;
+     <span class="err">error</span> (this op failed, the stream continues) &middot;
+     <span class="err">fatal</span> (stream ends, non-zero exit).</li>
+<li><code>id</code> echoes whatever the request carried &mdash; that is how the client
+     matches replies to calls while operations with long traces are still pending.</li>
+<li>An operation object: <code>{"op": "...", "id": 7, "params": {...}}</code>.</li>
+</ul>
+
+<h2 id="errors">7 &mdash; Error codes</h2>
+<table>
+<tr><th>Code</th><th>When</th></tr>
+<tr><td><code>missing_config</code> / <code>bad_config</code></td><td>a config-less op, or JSON that is not a config document</td></tr>
+<tr><td><code>invalid_metric</code> / <code>invalid_goal</code></td><td>unknown metric or goal string</td></tr>
+<tr><td><code>invalid_slot</code></td><td>parameter index outside the scene's parameter list</td></tr>
+<tr><td><code>empty_slots</code> / <code>empty_tolerances</code></td><td>optimise/tolerance called with nothing to vary</td></tr>
+<tr><td><code>missing_path</code> / <code>import_failed</code> / <code>not_traceable</code> / <code>load_failed</code></td><td>cad and rayfile problems</td></tr>
+<tr><td><code>csv_write_failed</code></td><td>export_csv target refused to open</td></tr>
+<tr><td><code>unknown_operation</code> / <code>bad_line</code> / <code>bad_job</code> / <code>bad_operation</code></td><td>protocol-level mistakes</td></tr>
+</table>
+
+<h2 id="examples">8 &mdash; Two worked examples</h2>
+<p><b>Design loop</b> &mdash; sweep, pick the best, confirm it converged:</p>
+<pre><code>cfg = {"scene": {"name": "Parabolic Reflector"}, "run": {"rays": 40000, "seed": 9}}
+sw  = luxtrace.sweep(cfg, slot=0, metric="rms_radius_mm", steps=10)
+z   = min(sw["points"], key=lambda p: p["value"])
+cfg["scene"]["params"] = [z["parameter"], None, None]         # adopt the winner (others: defaults)
+opt = luxtrace.optimise(cfg, slots=[0, 1], metric="rms_radius_mm",
+                        goal="minimise", evaluations=30)
+cv  = luxtrace.convergence(cfg, min_rays=2000, max_rays=160000, points=5)
+print("done:", opt["best_value"], "mm, converged:", cv["converged"])</code></pre>
+
+<p class="note"><b>Determinism.</b> The same config + seed reproduces a result to
+the last digit &mdash; sweep wiggles are noise, optimiser history is a real
+convergence record, and a yield figure can be checked rather than quoted.</p>
+
+<p class="mut">Panel Help &middot; <code>python/runner.py --demo</code> installs a
+worked script on the Desktop &middot; this document lives at
+<code>python/runner_api.html</code> next to the runner.</p>
+
+</body>
+</html>

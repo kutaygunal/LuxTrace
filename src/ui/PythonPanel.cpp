@@ -3,6 +3,8 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QDesktopServices>
+#include <QUrl>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPlainTextEdit>
@@ -141,6 +143,8 @@ PythonPanel::PythonPanel(QWidget* parent) : QWidget(parent) {
                                     QStringLiteral("&Open..."), this);
     auto* saveBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("document-save")),
                                     QStringLiteral("Sa&ve..."), this);
+    auto* helpBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("help-contents")),
+                                    QStringLiteral("A&PI help"), this);
     m_stop->setEnabled(false);
 
     m_status = new QLabel(QStringLiteral("idle"), this);
@@ -152,6 +156,7 @@ PythonPanel::PythonPanel(QWidget* parent) : QWidget(parent) {
     buttons->addWidget(m_stop);
     buttons->addWidget(saveBtn);
     buttons->addWidget(openBtn);
+    buttons->addWidget(helpBtn);
     buttons->addStretch(1);
     buttons->addWidget(m_status);
 
@@ -165,6 +170,7 @@ PythonPanel::PythonPanel(QWidget* parent) : QWidget(parent) {
     connect(m_stop, &QPushButton::clicked, this, &PythonPanel::onStop);
     connect(saveBtn, &QPushButton::clicked, this, &PythonPanel::onSave);
     connect(openBtn, &QPushButton::clicked, this, &PythonPanel::onOpen);
+    connect(helpBtn, &QPushButton::clicked, this, &PythonPanel::onHelp);
 
     m_proc = new QProcess(this);
     m_proc->setProcessChannelMode(QProcess::SeparateChannels);
@@ -187,6 +193,16 @@ QString PythonPanel::runnerPath() const {
     // build/Release or build/Debug -> the project's python/ directory.
     const QString candidate = QFileInfo(QCoreApplication::applicationDirPath()
                                         + QStringLiteral("/../../python/runner.py"))
+                                  .canonicalFilePath();
+    if (!candidate.isEmpty() && QFile::exists(candidate)) return candidate;
+    return {};
+}
+
+QString PythonPanel::apiDocPath() const {
+    const QString env = qEnvironmentVariable("LUXTRACE_API_DOC");
+    if (!env.isEmpty() && QFile::exists(env)) return env;
+    const QString candidate = QFileInfo(QCoreApplication::applicationDirPath()
+                                        + QStringLiteral("/../../python/runner_api.html"))
                                   .canonicalFilePath();
     if (!candidate.isEmpty() && QFile::exists(candidate)) return candidate;
     return {};
@@ -216,6 +232,19 @@ void PythonPanel::setRunning(bool running) {
     m_stop->setEnabled(running);
     m_status->setText(running ? QStringLiteral("running...")
                               : QStringLiteral("idle"));
+}
+
+void PythonPanel::onHelp() {
+    const QString doc = apiDocPath();
+    if (doc.isEmpty()) {
+        log("[panel] runner_api.html not found next to the runner "
+            "(set LUXTRACE_API_DOC to its path).", true);
+        return;
+    }
+    // The handbook is a plain file; the system browser renders it and owns the
+    // tab, so nothing inside the app has to become a web view for it.
+    QDesktopServices::openUrl(QUrl::fromLocalFile(doc));
+    log(QStringLiteral("[panel] opened %1 in your browser").arg(doc));
 }
 
 void PythonPanel::onRun() {
