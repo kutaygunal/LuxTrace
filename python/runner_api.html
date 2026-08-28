@@ -3,266 +3,519 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>LuxTrace Python API &amp; Job Protocol</title>
+<title>LuxTrace Python API &amp; Job Protocol — reference</title>
 <style>
-  :root { --ink:#1d2330; --mut:#5b6472; --acc:#b3402a; --code:#f5f6fa; --line:#dcdfe6; }
-  * { box-sizing:border-box; }
-  body { font:15px/1.55 "Segoe UI", system-ui, sans-serif; color:var(--ink);
-         max-width:980px; margin:0 auto; padding:24px 28px 80px; }
-  h1 { font-size:26px; margin:0 0 4px; }
-  h1 .lux { color:var(--acc); }
-  .sub { color:var(--mut); margin:0 0 24px; }
-  h2 { font-size:19px; margin:36px 0 10px; border-bottom:2px solid var(--line); padding-bottom:4px; }
-  h3 { font-size:15.5px; margin:22px 0 6px; }
-  p  { margin:8px 0; }
-  table { border-collapse:collapse; width:100%; margin:10px 0 18px; font-size:13.5px; }
-  th, td { border:1px solid var(--line); padding:6px 9px; text-align:left; vertical-align:top; }
-  th { background:#eef0f4; }
-  code, pre { font:12.5px/1.5 Consolas, "Cascadia Mono", monospace; }
-  code { background:var(--code); border:1px solid var(--line); border-radius:3px; padding:1px 5px; }
-  pre { background:var(--code); border:1px solid var(--line); border-radius:6px;
-        padding:12px 14px; overflow-x:auto; margin:10px 0 16px; }
-  pre code { background:none; border:none; padding:0; }
-  .toc { background:#f3f5f9; border:1px solid var(--line); border-radius:8px; padding:14px 22px; }
-  .toc a { color:var(--acc); text-decoration:none; }
-  .toc a:hover { text-decoration:underline; }
-  .mut { color:var(--mut); }
-  .tag { display:inline-block; background:var(--acc); color:#fff; border-radius:3px;
-         font-size:11px; padding:1px 7px; vertical-align:2px; margin-left:6px; }
-  .ok  { color:#1e7d32; font-weight:600; }
-  .err { color:var(--acc); font-weight:600; }
-  .note { border-left:4px solid var(--acc); background:#fbf4f2; padding:8px 14px; margin:12px 0; }
+  :root{
+    --bg:#0c1017; --bg2:#101623; --panel:#151c2c; --panel2:#1a2334;
+    --line:#253048; --ink:#e2e8f4; --mut:#8b96ad;
+    --red:#e0563f; --red2:#ff7a5c; --teal:#3fd6c5; --blue:#6ea8ff; --amber:#e8c06a; --green:#4cc38a;
+    --code-bg:#0d1320;
+    --mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
+    --sans:"Segoe UI",system-ui,-apple-system,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:auto}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15.5px/1.65 var(--sans)}
+  a{color:var(--teal);text-decoration:none} a:hover{text-decoration:underline}
+  ::selection{background:#e0563f44}
+
+  nav{position:fixed;top:0;left:0;right:0;z-index:50;display:flex;gap:2px;align-items:center;
+      padding:10px 26px;background:#0c1017ee;backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+  nav .brand{font-weight:700;letter-spacing:.4px;margin-right:18px;color:var(--ink)}
+  nav .brand b{color:var(--red2)}
+  nav a{color:var(--mut);font-size:13.5px;padding:6px 11px;border-radius:6px}
+  nav a:hover{color:var(--ink);background:#ffffff0a;text-decoration:none}
+  nav a.on{color:var(--ink);background:#e0563f22;box-shadow:inset 0 0 0 1px #e0563f55}
+  nav .v{margin-left:auto;color:var(--mut);font:12px var(--mono);border:1px solid var(--line);
+         padding:3px 9px;border-radius:99px;white-space:nowrap}
+
+  .wrap{max-width:1080px;margin:0 auto;padding:0 28px}
+  section{padding:70px 0 10px}
+  h2{font-size:25px;margin:0 0 8px;letter-spacing:-.3px}
+  h2 .n{color:var(--red2);font-family:var(--mono);font-size:15px;margin-right:10px}
+  h3{font-size:17px;margin:26px 0 8px}
+  p{color:#c3ccdd} .lead{color:var(--mut);font-size:16px}
+  .dim{color:var(--mut)}
+
+  header{position:relative;overflow:hidden;padding:120px 0 60px;border-bottom:1px solid var(--line)}
+  header .wrap{position:relative;z-index:2}
+  .kicker{font:12.5px var(--mono);color:var(--teal);letter-spacing:2.5px;text-transform:uppercase}
+  h1{font-size:40px;line-height:1.15;margin:14px 0;letter-spacing:-1px;max-width:860px}
+  h1 em{font-style:normal;color:var(--red2)}
+  .hero-p{max-width:720px;font-size:16.5px;color:#aeb9cd}
+  .stats{display:flex;gap:14px;margin-top:30px;flex-wrap:wrap}
+  .stat{background:#121a2b;border:1px solid var(--line);border-radius:12px;padding:13px 20px;min-width:140px}
+  .stat b{display:block;font-size:24px;font-family:var(--mono);color:var(--red2)}
+  .stat span{color:var(--mut);font-size:12px;letter-spacing:.6px;text-transform:uppercase}
+  .orb{position:absolute;border-radius:50%;filter:blur(70px);opacity:.32;animation:drift 16s ease-in-out infinite alternate}
+  #o1{width:500px;height:500px;left:-130px;top:-150px;background:#7a2413}
+  #o2{width:400px;height:400px;right:-90px;top:30px;background:#0f4d47;animation-delay:-6s}
+  @keyframes drift{from{transform:translate(0,0) scale(1)}to{transform:translate(50px,36px) scale(1.12)}}
+
+  pre{position:relative;background:var(--code-bg);border:1px solid var(--line);border-radius:12px;
+      padding:16px 18px;overflow-x:auto;font:13px/1.6 var(--mono);margin:12px 0 16px}
+  pre .c{color:#5f6b84} pre .k{color:#6ea8ff} pre .s{color:#8fd48a}
+  pre .n{color:#e8c06a} pre .f{color:#3fd6c5} pre .hl{color:#ff7a5c}
+  .copy{position:absolute;top:9px;right:9px;font:11.5px var(--mono);color:var(--mut);background:#0c1017aa;
+        border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer;opacity:0;transition:opacity .2s}
+  pre:hover .copy{opacity:1} .copy:hover{color:var(--ink);border-color:#3b4a6b}
+  code{font:92% var(--mono);background:#182136;border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#9fd0ff}
+
+  .cards{display:grid;gap:14px;margin:16px 0}
+  .g2{grid-template-columns:1fr 1fr} .g3{grid-template-columns:repeat(3,1fr)}
+  @media(max-width:900px){.g2,.g3{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px;transition:transform .25s,border-color .25s}
+  .card:hover{transform:translateY(-3px);border-color:#3b4a6b}
+  .card h4{margin:2px 0 8px;font-size:15px}
+  .card p{margin:0;font-size:13px;color:var(--mut)}
+  .pill{display:inline-block;font:11px var(--mono);padding:2px 9px;border-radius:99px;border:1px solid var(--line);
+        color:var(--mut);margin-bottom:10px}
+  .pill.red{color:var(--red2);border-color:#e0563f66;background:#e0563f14}
+  .pill.teal{color:var(--teal);border-color:#3fd6c555;background:#3fd6c510}
+  .pill.blue{color:var(--blue);border-color:#6ea8ff55;background:#6ea8ff10}
+  .pill.green{color:var(--green);border-color:#4cc38a55;background:#4cc38a10}
+
+  .opdoc{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px;margin:14px 0}
+  .opdoc h3{margin:0 0 4px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .opdoc .sig{font:13px var(--mono);color:var(--teal);background:#3fd6c512;border:1px solid #3fd6c533;
+              border-radius:6px;padding:2px 10px}
+  .opdoc p{font-size:14px;margin:6px 0 10px}
+  .kv{display:grid;grid-template-columns:210px 1fr;gap:0;font-size:13.5px;border:1px solid var(--line);
+      border-radius:10px;overflow:hidden;margin:10px 0}
+  .kv>div{padding:8px 12px;border-bottom:1px solid var(--line)}
+  .kv>div:nth-child(odd){background:#131b2b;color:var(--teal);font-family:var(--mono);font-size:12.5px}
+  .kv>div:nth-child(even){color:#c3ccdd}
+  .kv>div:nth-last-child(-n+2){border-bottom:none}
+
+  .ret{font:11.5px var(--mono);color:var(--amber)}
+  .tablewrap{overflow-x:auto}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;margin:12px 0 18px}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:#141c2e;color:#aab4c8;font-weight:600}
+  td{color:#c3ccdd} tr:hover td{background:#182136}
+
+  .env{display:flex;flex-wrap:wrap;gap:6px;align-items:center;background:var(--code-bg);
+       border:1px solid var(--line);border-radius:12px;padding:15px 17px;font:13.5px var(--mono);margin:14px 0}
+  .env span{padding:3px 8px;border-radius:6px;cursor:pointer;transition:all .2s;border:1px solid transparent}
+  .env span:hover{border-color:var(--teal);background:#3fd6c51a}
+  .env .f-k{color:var(--blue)} .env .f-v{color:var(--amber)}
+  .env-doc{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:860px){.env-doc{grid-template-columns:1fr}}
+  .env-card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;
+            font-size:13px;color:var(--mut);transition:all .2s;min-height:74px}
+  .env-card.on{border-color:var(--teal);color:var(--ink);background:#3fd6c50d}
+  .env-card code{color:var(--teal)}
+
+  details{background:var(--panel);border:1px solid var(--line);border-radius:12px;margin:10px 0;overflow:hidden}
+  summary{cursor:pointer;padding:13px 18px;font-weight:600;font-size:14px;list-style:none}
+  summary::before{content:"▸ ";color:var(--red2)} details[open] summary::before{content:"▾ "}
+  details .inner{padding:0 18px 14px}
+
+  .note{border-left:4px solid var(--red);background:#fbf4f20d;padding:10px 16px;border-radius:0 8px 8px 0;margin:14px 0;color:#c3ccdd}
+  .rv{opacity:0;transform:translateY(24px);transition:opacity .6s ease,transform .6s ease}
+  .rv.in{opacity:1;transform:none}
+  .totop{position:fixed;right:22px;bottom:22px;width:42px;height:42px;border-radius:10px;background:var(--panel2);
+         border:1px solid var(--line);color:var(--ink);font-size:18px;cursor:pointer;opacity:0;transition:opacity .3s;z-index:60}
+  .totop.show{opacity:1}
+  footer{border-top:1px solid var(--line);margin-top:70px;padding:30px 0 56px;color:var(--mut);font-size:13px}
+  footer .wrap{display:flex;gap:20px;flex-wrap:wrap;justify-content:space-between}
+  input#opsearch{background:var(--panel);border:1px solid var(--line);border-radius:10px;color:var(--ink);
+                 padding:10px 14px;font:13.5px var(--mono);outline:none;width:min(360px,100%)}
+  input#opfilter:focus{border-color:var(--teal)}
 </style>
 </head>
 <body>
 
-<h1><span class="lux">LuxTrace</span> &mdash; Python API &amp; Job Protocol</h1>
-<p class="sub">Drive the tracer from a script: one call, one operation, one JSON reply.
-Protocol <code>v1</code> &middot; 13 operations &middot; matches LuxTrace 1.0.0.
-Deep dive (internals, graphs, workflows): <a href="api_guide.html">api_guide.html</a></p>
+<nav>
+  <span class="brand"><b>LuxTrace</b> API</span>
+  <a href="#start">Start</a>
+  <a href="#client">Client</a>
+  <a href="#ops">Operations</a>
+  <a href="#config">Config</a>
+  <a href="#metrics">Metrics</a>
+  <a href="#wire">Protocol</a>
+  <a href="#errors">Errors</a>
+  <a href="#examples">Examples</a>
+  <span class="v">protocol v1 · 13 ops · LuxTrace 1.0.0</span>
+</nav>
 
-<div class="toc">
-<b>Contents</b> &mdash;
-<a href="#quickstart">Quick start</a> &middot;
-<a href="#client">The <code>luxtrace</code> client</a> &middot;
-<a href="#ops">Operations</a> &middot;
-<a href="#config">Config reference</a> &middot;
-<a href="#metrics">Metrics &amp; budgets</a> &middot;
-<a href="#protocol">Wire protocol</a> &middot;
-<a href="#errors">Error codes</a> &middot;
-<a href="#examples">Examples</a>
-</div>
+<!-- ================= HERO ================= -->
+<header>
+  <div class="orb" id="o1"></div><div class="orb" id="o2"></div>
+  <div class="wrap">
+    <div class="kicker">API reference · one call = one operation = one JSON reply</div>
+    <h1>LuxTrace <em>Python API</em> &amp; Job Protocol</h1>
+    <p class="hero-p">Everything a script can ask the tracer to do, the exact JSON each answer
+    carries, and every field of the config that shapes the request. Deep dive — how it works
+    inside — lives in <a href="api_guide.html">the guide</a>.</p>
+    <div class="stats">
+      <div class="stat"><b>13</b><span>operations</span></div>
+      <div class="stat"><b>26</b><span>parametric scenes</span></div>
+      <div class="stat"><b>11</b><span>catalogue materials</span></div>
+      <div class="stat"><b>13/13</b><span>validation checks</span></div>
+    </div>
+  </div>
+</header>
 
-<h2 id="quickstart">1 &mdash; Quick start</h2>
-<p>Three places a script can run from. In all three a client object named
-<code>luxtrace</code> is already in scope &mdash; you never start or connect anything.</p>
-<table>
-<tr><th>Where</th><th>How</th></tr>
-<tr><td><b>In the app</b></td><td>The <b>Python</b> tab &rarr; edit &rarr; <b>Run</b> (or <code>Ctrl+Enter</code>).</td></tr>
-<tr><td><b>Desktop file</b></td><td><code>python runner.py</code> (no args: a picker opens on your Desktop)</td></tr>
-<tr><td><b>Terminal</b></td><td><code>python runner.py myscript.py</code> &mdash; also <code>--exe</code>, <code>--job job.json</code>, <code>--demo</code></td></tr>
-</table>
+<!-- ================= 1 START ================= -->
+<section id="start">
+  <div class="wrap">
+    <h2><span class="n">01</span>Quick start</h2>
+    <p class="lead">Three places a script can run from. In all three a client named
+    <code>luxtrace</code> is already in scope — nothing to import, connect or start.</p>
+    <div class="cards g3">
+      <div class="card rv"><span class="pill red">in the app</span><h4>The Python tab</h4>
+        <p>Edit in the panel, press <b>Run</b> (or Ctrl+Enter). Output streams into the log below; Stop kills the interpreter.</p></div>
+      <div class="card rv"><span class="pill teal">desktop file</span><h4>The picker</h4>
+        <p><code>python runner.py</code> with no arguments opens a file dialog on your Desktop. Choose the script; it runs.</p></div>
+      <div class="card rv"><span class="pill blue">terminal</span><h4>Direct</h4>
+        <p><code>python runner.py myscript.py</code> — options: <code>--exe &lt;path&gt;</code>, <code>--job job.json</code>, <code>--demo</code>, <code>--quiet</code>.</p></div>
+    </div>
+    <pre class="rv"><button class="copy" data-t="c1">copy</button><code id="c1"><span class="f">info</span> = luxtrace.features()
+<span class="hl">print</span>(info[<span class="s">"version"</span>], <span class="s">"protocol"</span>, info[<span class="s">"protocol"</span>])
 
-<pre><code>info = luxtrace.features()
-print(info["version"], info["operations"][:4])
+<span class="f">res</span> = luxtrace.<span class="f">run</span>({<span class="s">"scene"</span>: {<span class="s">"name"</span>: <span class="s">"Parabolic Reflector"</span>},
+                    <span class="s">"run"</span>:   {<span class="s">"rays"</span>: <span class="n">50000</span>, <span class="s">"seed"</span>: <span class="n">42</span>}})
+<span class="hl">print</span>(res[<span class="s">"metrics"</span>][<span class="s">"efficiency"</span>])   <span class="c"># 0.4083 …</span></code></pre>
+    <div class="note rv"><b>The one rule to remember:</b> every call returns a plain dict —
+    the envelope's <code>data</code> — or raises <code>LuxTraceError</code> with a
+    machine-readable <code>.code</code> and a human <code>.message</code>.</div>
+  </div>
+</section>
 
-res = luxtrace.run({"scene": {"name": "Parabolic Reflector"},
-                    "run":   {"rays": 50000, "seed": 42}})
-print(res["metrics"]["efficiency"])</code></pre>
+<!-- ================= 2 CLIENT ================= -->
+<section id="client">
+  <div class="wrap">
+    <h2><span class="n">02</span>The <code>luxtrace</code> client</h2>
+    <p class="lead">One method per operation. The <code>**params</code> are operation options merged
+    over the config; every return is the envelope's <code>data</code> object.</p>
+    <div class="cards g3" id="clientgrid">
+      <div class="card rv"><span class="pill blue">session</span><h4>features()</h4><p>Version, protocol, operation list, scene count — the handshake and capability probe.</p><p class="ret" style="color:var(--amber);font:11.5px var(--mono)">{version, protocol, operations[]}</p></div>
+      <div class="card rv"><span class="pill blue">catalogue</span><h4>scenes()</h4><p>All 26 scenes with names, descriptions, and every parameter's min/max/step/unit — the source of truth for slot indices.</p><p class="ret" style="color:var(--amber);font:11.5px var(--mono)">{scenes:[{name, params[]}]}</p></div>
+      <div class="card rv"><span class="pill blue">catalogue</span><h4>materials()</h4><p>Glass and metal catalogue: n<sub>d</sub>, Abbe, index at 550 nm, provenance (built-in or file).</p><p class="ret" style="color:var(--amber);font:11.5px var(--mono)">{materials:[{name, nd, abbe}]}</p></div>
+      <div class="card rv"><span class="pill red">trace</span><h4>run(config, **params)</h4><p>The everything call: one Monte Carlo trace. Metrics, energy budget, spot, far field, colour, optional CSV.</p><p class="ret" style="color:var(--amber);font:11.5px var(--mono)">{scene, rays, metrics{}}</p></div>
+      <div class="card rv"><span class="pill teal">study</span><h4>focus(config, **params)</h4><p>Through-focus sweep from a single trace — best plane and RMS there. <code>span_mm, steps</code>.</p><p class="ret" style="color:var(--amber);font:11.5px var(--mono)">{best_focus_mm, best_rms_mm}</p></div>
+      <div class="card rv"><span class="pill teal">study</span><h4>convergence(config, **params)</h4><p>Efficiency against ray count with error bars, plus the converged verdict. <code>min_rays, max_rays, points</code>.</p><p class="ret" style="color:var(--amber);font:11.5px var(--mono)">{points[], converged}</p></div>
+      <div class="card rv"><span class="pill teal">study</span><h4>sweep(config, **params)</h4><p>1-D parameter walk on any metric. <code>slot, from, to, steps, repeats, metric</code>.</p><p class="ret" style="color:var(--amber);font:11.5px var(--mono)">{parameter, points[]}</p></div>
+      <div class="card rv"><span class="pill teal">study</span><h4>sweep2d(config, **params)</h4><p>Two axes at once — a contour grid. <code>slot_a, slot_b, steps_a, steps_b, metric</code>.</p><p class="ret" style="color:var(--amber);font:11.5px var(--mono)">{a[], b[], values[]}</p></div>
+      <div class="card rv"><span class="pill teal">search</span><h4>optimise(config, **params)</h4><p>Nelder-Mead or CMA-ES on any metric; full history with standard errors. <code>slots[], goal, optimiser, evaluations</code>.</p><p class="ret" style="color:var(--amber);font:11.5px var(--mono)">{best_params[], history[]}</p></div>
+      <div class="card rv"><span class="pill teal">search</span><h4>tolerance(config, **params)</h4><p>Production reality: sample tolerances, get yield, percentiles, sensitivities. <code>tolerances[], criterion, samples</code>.</p><p class="ret" style="color:var(--amber);font:11.5px var(--mono)">{yield, p90, sensitivity[]}</p></div>
+      <div class="card rv"><span class="pill green">verify</span><h4>validate(**params)</h4><p>13 closed-form checks, lensmaker to TIR phase — assert them in CI. <code>rays</code>.</p><p class="ret" style="color:var(--amber);font:11.5px var(--mono)">{cases[], all_passed}</p></div>
+      <div class="card rv"><span class="pill blue">import</span><h4>cad(path, **params) · rayfile(path, **params)</h4><p>STEP/IGES import + audit + trace; measured ray-set description. <code>scale, axis, material / max_rays</code>.</p><p class="ret" style="color:var(--amber);font:11.5px var(--mono)">{import{}, metrics{}} · {summary}</p></div>
+    </div>
+  </div>
+</section>
 
-<p>Every call <span class="ok">returns a plain dict</span> (the envelope's <code>data</code>)
-or <span class="err">raises LuxTraceError</span> with a machine-readable <code>code</code>
-and a <code>message</code>.
-</p>
+<!-- ================= 3 OPS DETAIL ================= -->
+<section id="ops">
+  <div class="wrap">
+    <h2><span class="n">03</span>Operations in detail</h2>
 
-<h2 id="client">2 &mdash; The <code>luxtrace</code> client</h2>
-<table>
-<tr><th>Method</th><th>Returns</th><th>Notes</th></tr>
-<tr><td><code>features()</code></td><td>dict</td><td>version, protocol, operation list, scene count</td></tr>
-<tr><td><code>scenes()</code></td><td>dict</td><td>every scene: name, description, parameters (min/max/step/unit)</td></tr>
-<tr><td><code>materials()</code></td><td>dict</td><td>catalogue: name, n<sub>d</sub>, Abbe, description, source</td></tr>
-<tr><td><code>run(config, **params)</code></td><td>dict</td><td>one Monte Carlo trace &mdash; the main operation <span class="tag">trace</span></td></tr>
-<tr><td><code>focus(config, **params)</code></td><td>dict</td><td>through-focus sweep, best plane, one trace</td></tr>
-<tr><td><code>convergence(config, **params)</code></td><td>dict</td><td>efficiency vs ray count, with a converged verdict</td></tr>
-<tr><td><code>sweep(config, **params)</code></td><td>dict</td><td>1-D parameter sweep on any metric</td></tr>
-<tr><td><code>sweep2d(config, **params)</code></td><td>dict</td><td>2-D sweep as a contour grid</td></tr>
-<tr><td><code>optimise(config, **params)</code></td><td>dict</td><td>Nelder-Mead or CMA-ES on any metric</td></tr>
-<tr><td><code>tolerance(config, **params)</code></td><td>dict</td><td>Monte Carlo tolerancing: yield, percentiles, sensitivities</td></tr>
-<tr><td><code>validate(**params)</code></td><td>dict</td><td>13 closed-form checks of the tracer</td></tr>
-<tr><td><code>cad(path, **params)</code></td><td>dict</td><td>import STEP/IGES, audit it, trace it</td></tr>
-<tr><td><code>rayfile(path, **params)</code></td><td>dict</td><td>describe a measured ray set (Zemax binary / text)</td></tr>
-</table>
-<p class="mut">The <code>**params</code> are operation options, merged into the call:
-<code>luxtrace.run(cfg, rays=90000, seed=7, export_csv="out/metrics.csv")</code>.</p>
+    <div class="opdoc rv">
+      <h3>run <span class="sig">op: "run"</span></h3>
+      <p>One trace of one config. The metrics object is documented in <a href="#metrics">§5</a>.</p>
+      <div class="kv">
+        <div>config</div><div>the config document — <a href="#config">§4</a></div>
+        <div>rays · seed · threads</div><div>override the config's <code>run{}</code> block</div>
+        <div>export_csv</div><div>path; writes the metrics table, data carries <code>exported_csv</code></div>
+      </div>
+      <pre><button class="copy" data-t="c-run">copy</button><code id="c-run">res = luxtrace.run(config, rays=<span class="n">80000</span>, seed=<span class="n">42</span>, export_csv=<span class="s">"out/metrics.csv"</span>)
+m = res[<span class="s">"metrics"</span>]</code></pre>
+    </div>
 
-<h2 id="ops">3 &mdash; Operations in detail</h2>
+    <div class="opdoc rv">
+      <h3>sweep · sweep2d <span class="sig">op: "sweep" / "sweep2d"</span></h3>
+      <p>Walks one (two) of the scene's own parameters and measures any metric per point.
+      <code>repeats</code> independent seeds per point are what let you tell wiggles from noise.</p>
+      <div class="kv">
+        <div>slot · slot_a/b</div><div>index into the scene's parameter list — see scenes()</div>
+        <div>from · to</div><div>defaults to the parameter's own min..max</div>
+        <div>steps · repeats</div><div>points on the axis; independent seeds per point</div>
+        <div>metric</div><div>an id from <a href="#metrics">§5</a>, e.g. <code>"rms_radius_mm"</code></div>
+      </div>
+      <pre><button class="copy" data-t="c-sw">copy</button><code id="c-sw">sw = luxtrace.sweep(config, slot=<span class="n">0</span>, metric=<span class="s">"rms_radius_mm"</span>, steps=<span class="n">8</span>, repeats=<span class="n">2</span>)
+best = <span class="f">min</span>(sw[<span class="s">"points"</span>], key=<span class="k">lambda</span> p: p[<span class="s">"value"</span>])
 
-<h3>run &mdash; one trace <span class="tag">trace</span></h3>
-<pre><code>res = luxtrace.run(config, rays=80000, seed=42, threads=0, export_csv="out/metrics.csv")
-m = res["metrics"]</code></pre>
-<table>
-<tr><th>Key in <code>data</code></th><th>Meaning</th></tr>
-<tr><td><code>scene</code>, <code>rays</code>, <code>seed</code></td><td>what was traced (as clamped by the app)</td></tr>
-<tr><td><code>metrics</code></td><td>the full result object &mdash; <a href="#metrics">section 5</a></td></tr>
-<tr><td><code>warnings</code></td><td>present only when a config load recovered from something</td></tr>
-<tr><td><code>exported_csv</code></td><td>with <code>export_csv=path</code>: the metrics table written there</td></tr>
-</table>
+sh = luxtrace.sweep2d(config, slot_a=<span class="n">0</span>, slot_b=<span class="n">2</span>, steps_a=<span class="n">6</span>, steps_b=<span class="n">6</span>, metric=<span class="s">"efficiency"</span>)
+<span class="c"># sh["values"][ib*len(sh["a"]) + ia] — row-major contour grid, lo..hi</span></code></pre>
+    </div>
 
-<h3>sweep / sweep2d</h3>
-<pre><code>sw = luxtrace.sweep(config, slot=0, metric="rms_radius_mm",
-                    frm=None, to=None,     # defaults: the parameter's own min..max
-                    steps=8, repeats=2)
-best = min(sw["points"], key=lambda p: p["value"])</code></pre>
-<table>
-<tr><th>Option</th><th>Meaning</th></tr>
-<tr><td><code>slot</code> / <code>slot</code>, <code>slot_a</code>, <code>slot_b</code></td><td>which scene parameter (see <code>luxtrace.scenes()</code> &mdash; index and unit there)</td></tr>
-<tr><td><code>metric</code></td><td>one of the <a href="#metrics">metric ids</a></td></tr>
-<tr><td><code>from</code>, <code>to</code>, <code>steps</code>, <code>repeats</code></td><td>the axis; <code>repeats</code> independent seeds per point</td></tr>
-</table>
-<p><code>sweep2d</code> returns <code>a[]</code>, <code>b[]</code> and <code>values[]</code>
-(<code>len(a) &times; len(b)</code>, row-major) plus the grid's <code>lo</code>/<code>hi</code>.</p>
+    <div class="opdoc rv">
+      <h3>optimise <span class="sig">op: "optimise"</span></h3>
+      <p>The tracer is deterministic, so a fixed seed makes the objective a genuine function of
+      the parameters — which is what lets a derivative-free search converge at all.</p>
+      <div class="kv">
+        <div>slots</div><div>list of parameter indices the search may move</div>
+        <div>metric + goal</div><div><code>"maximise" | "minimise" | "target"</code> (+ <code>target=</code>)</div>
+        <div>optimiser</div><div><code>"neldermead"</code> (robust, 2–4 params) or <code>"cmaes"</code> (valleys off-axis)</div>
+        <div>evaluations</div><div>budget; default 120 — history returns every one with std-err</div>
+      </div>
+      <pre><button class="copy" data-t="c-op">copy</button><code id="c-op">opt = luxtrace.optimise(config, slots=[<span class="n">0</span>, <span class="n">1</span>], metric=<span class="s">"efficiency"</span>,
+                        goal=<span class="s">"maximise"</span>, optimiser=<span class="s">"neldermead"</span>, evaluations=<span class="n">25</span>)
+<span class="hl">print</span>(<span class="s">"%.1f%% -> %.1f%%"</span> % (<span class="n">100</span>*opt[<span class="s">"start_value"</span>], <span class="n">100</span>*opt[<span class="s">"best_value"</span>]))
+<span class="hl">print</span>({b[<span class="s">"name"</span>]: <span class="f">round</span>(b[<span class="s">"value"</span>], <span class="n">1</span>) <span class="k">for</span> b <span class="k">in</span> opt[<span class="s">"best_params"</span>]})</code></pre>
+    </div>
 
-<h3>optimise</h3>
-<pre><code>opt = luxtrace.optimise(config, slots=[0, 1], metric="efficiency",
-                        goal="maximise",          # or "minimise", or "target" + target=1.0
-                        optimiser="neldermead",   # or "cmaes"
-                        evaluations=25)
-print(opt["start_value"], "->", opt["best_value"])
-print({b["name"]: round(b["value"], 1) for b in opt["best_params"]})
-print(len(opt["history"]), "evaluations, %.1fs" % opt["seconds"])</code></pre>
+    <div class="opdoc rv">
+      <h3>tolerance <span class="sig">op: "tolerance"</span></h3>
+      <p>Perturbs the design many times over the tolerance distribution and reports the spread —
+      the number a production review actually needs is <code>yield</code>.</p>
+      <div class="kv">
+        <div>tolerances[]</div><div><code>{"slot", "amount", "shape"}</code> — shape: <code>gaussian</code> (limit=3σ), <code>uniform</code>, <code>bimodal</code></div>
+        <div>metric · criterion</div><div>the pass gate; <code>pass_above</code> defaults to the metric's own direction</div>
+        <div>samples</div><div>ensemble size (200 default); same seed ⇒ same production run, checkable</div>
+      </div>
+      <pre><button class="copy" data-t="c-tol">copy</button><code id="c-tol">tol = luxtrace.tolerance(config, metric=<span class="s">"efficiency"</span>, criterion=<span class="n">0.5</span>,
+                         tolerances=[{<span class="s">"slot"</span>: <span class="n">0</span>, <span class="s">"amount"</span>: <span class="n">5.0</span>},
+                                     {<span class="s">"slot"</span>: <span class="n">1</span>, <span class="s">"amount"</span>: <span class="n">2.5</span>, <span class="s">"shape"</span>: <span class="s">"uniform"</span>}])
+<span class="hl">print</span>(<span class="s">"yield %.1f%%, median %.3f, p90 %.3f"</span> % (<span class="n">100</span>*tol[<span class="s">"yield"</span>], tol[<span class="s">"median"</span>], tol[<span class="s">"p90"</span>]))
+<span class="k">for</span> s <span class="k">in</span> tol[<span class="s">"sensitivity"</span>]:
+    <span class="hl">print</span>(<span class="s">"  %-16s gradient %+.4f, variance share %.2f"</span> % (s[<span class="s">"name"</span>], s[<span class="s">"gradient"</span>], s[<span class="s">"share"</span>]))</code></pre>
+    </div>
 
-<h3>tolerance</h3>
-<pre><code>tol = luxtrace.tolerance(config, metric="efficiency", criterion=0.5,
-                         tolerances=[{"slot": 0, "amount": 5.0},
-                                     {"slot": 1, "amount": 2.5, "shape": "uniform"}],
-                         samples=200)
-print("yield %.1f%%" % (100 * tol["yield"]))
-for s in tol["sensitivity"]:
-    print("  %-16s gradient %+.4f, variance share %.2f" % (s["name"], s["gradient"], s["share"]))</code></pre>
-<p><code>shape</code> is <code>gaussian</code> (default; the limit is 3&sigma;), <code>uniform</code>,
-or <code>bimodal</code> (worst case). <code>criterion</code> + optional
-<code>pass_above</code> (default: the metric's own direction) define the pass gate.</p>
+    <div class="opdoc rv">
+      <h3>focus · convergence · validate</h3>
+      <pre><button class="copy" data-t="c-fcv">copy</button><code id="c-fcv">f  = luxtrace.focus(config, span_mm=<span class="n">30</span>, steps=<span class="n">61</span>)
+<span class="hl">print</span>(<span class="s">"best focus z = %.1f mm, rms %.2f mm"</span> % (f[<span class="s">"best_focus_mm"</span>], f[<span class="s">"best_rms_mm"</span>]))
 
-<h3>focus &middot; convergence &middot; validate</h3>
-<pre><code>f = luxtrace.focus(config, span_mm=30, steps=61)
-print("best focus z = %.1f mm, rms %.2f mm" % (f["best_focus_mm"], f["best_rms_mm"]))
+cv = luxtrace.convergence(config, min_rays=<span class="n">1000</span>, max_rays=<span class="n">80000</span>, points=<span class="n">6</span>)
+<span class="hl">print</span>(<span class="s">"converged:"</span>, cv[<span class="s">"converged"</span>])
 
-cv = luxtrace.convergence(config, min_rays=1000, max_rays=80000, points=6)
-print("converged:", cv["converged"])
+v  = luxtrace.validate(rays=<span class="n">30000</span>)
+<span class="hl">print</span>(<span class="s">"%d/%d closed-form checks passed"</span> % (v[<span class="s">"passed_count"</span>], <span class="f">len</span>(v[<span class="s">"cases"</span>])))</code></pre>
+    </div>
 
-v = luxtrace.validate(rays=30000)
-print("%d/%d closed-form checks passed" % (v["passed_count"], len(v["cases"])))</code></pre>
+    <div class="opdoc rv">
+      <h3>cad · rayfile</h3>
+      <p><code>scale=0</code> (default) reads millimetres out of the file's own header — the most
+      common import mistake is something the file settles, not something you notice.</p>
+      <div class="kv">
+        <div>cad options</div><div><code>scale</code>, <code>axis=[0,0,1]</code>, <code>material="N-BK7"</code>, <code>reflective=false</code>, <code>quality=64</code>, <code>rays</code>, <code>seed</code></div>
+        <div>audit</div><div>per-part status ok / warning / bad, free edges, closed shells — in <code>data["import"]["shapes"]</code></div>
+        <div>rayfile</div><div><code>max_rays</code> caps an evenly-strided subset; the summary names format, flux and extent</div>
+      </div>
+      <pre><button class="copy" data-t="c-cad">copy</button><code id="c-cad">c = luxtrace.cad(<span class="s">"part.step"</span>, rays=<span class="n">20000</span>)
+<span class="hl">print</span>(c[<span class="s">"import"</span>][<span class="s">"format"</span>], c[<span class="s">"import"</span>][<span class="s">"total_faces"</span>], <span class="s">"faces"</span>,
+      <span class="s">"— audit:"</span>, [sh[<span class="s">"status"</span>] <span class="k">for</span> sh <span class="k">in</span> c[<span class="s">"import"</span>][<span class="s">"shapes"</span>]])
+<span class="hl">print</span>(<span class="s">"efficiency %.2f%%"</span> % (<span class="n">100</span>*c[<span class="s">"metrics"</span>][<span class="s">"efficiency"</span>]))
 
-<h3>cad &middot; rayfile</h3>
-<pre><code>c = luxtrace.cad("part.step", rays=20000)          # scale=0 reads the file's units
-print(c["import"]["format"], c["import"]["total_faces"], "faces")
-print("efficiency %.2f %%" % (100 * c["metrics"]["efficiency"]))
-# options: scale=1.0, axis=[0,0,1], material="N-BK7", reflective=False, quality=64
+r = luxtrace.rayfile(<span class="s">"led.dat"</span>)
+config[<span class="s">"source"</span>] = {<span class="s">"rayFile"</span>: <span class="s">"led.dat"</span>}   <span class="c"># use it: overrides type/shape</span>
+<span class="hl">print</span>(r[<span class="s">"summary"</span>])</code></pre>
+    </div>
+  </div>
+</section>
 
-r = luxtrace.rayfile("led.dat")                    # measured emitter, then use it:
-cfg["source"] = {"rayFile": "led.dat"}
-print(r["summary"])</code></pre>
-
-<h2 id="config">4 &mdash; Config reference</h2>
-<p>A config is the same document the desktop app saves. Missing keys keep their
-defaults; numbers arrive clamped &mdash; a two-line config is valid.</p>
-<pre><code>config = {
-  "scene":  {"name": "Elliptical Reflector",     # exact names: luxtrace.scenes()
-             "params": [200, 120, 160],          # in the order scenes() lists them
-             "useDefaults": false},              # true: ignore params, use defaults
-  "source": {
-      "type": "collimated",                      # point | lambertian | collimated
-      "shape": "disc",                           # point | disc | rect | sphere
-      "spectrum": "blackbody",                   # monochrome | rgb | blackbody | led | d65 | table
-      "wavelengthNm": 550, "cct": 5000,          # per spectrum kind
-      "power": 1.0, "powerUnit": "watt",         # watt | lumen
-      "halfAngleDeg": 180, "beamRadius": 25,
-      "polarisation": "unpolarised",             # unpolarised | linear-s | linear-p | circular
-      "rayFile": "led.dat"},                     # overrides type/shape entirely when set
-  "run":    {"rays": 100000, "threads": 0, "seed": 12345,   # 0 threads = every core
-             "detectorBins": 0, "nTheta": 90, "nPhi": 72},
+<!-- ================= 4 CONFIG ================= -->
+<section id="config">
+  <div class="wrap">
+    <h2><span class="n">04</span>Config reference</h2>
+    <p class="lead">The same document the desktop app saves. Missing keys keep their defaults;
+    every number arrives clamped — a two-line config is valid.</p>
+    <pre class="rv"><button class="copy" data-t="c-cfg">copy</button><code id="c-cfg">config = {
+  <span class="hl">"scene"</span>:  {<span class="s">"name"</span>: <span class="s">"Elliptical Reflector"</span>,   <span class="c"># exact names: luxtrace.scenes()</span>
+             <span class="s">"params"</span>: [<span class="n">200</span>, <span class="n">120</span>, <span class="n">160</span>],          <span class="c"># in the order scenes() lists them</span>
+             <span class="s">"useDefaults"</span>: <span class="s">false</span>},
+  <span class="hl">"source"</span>: {<span class="s">"type"</span>: <span class="s">"collimated"</span>,              <span class="c"># point | lambertian | collimated</span>
+             <span class="s">"shape"</span>: <span class="s">"disc"</span>,                   <span class="c"># point | disc | rect | sphere</span>
+             <span class="s">"spectrum"</span>: <span class="s">"blackbody"</span>,           <span class="c"># monochrome|rgb|blackbody|led|d65|table</span>
+             <span class="s">"wavelengthNm"</span>: <span class="n">550</span>, <span class="s">"cct"</span>: <span class="n">5000</span>,   <span class="c"># per spectrum kind</span>
+             <span class="s">"power"</span>: <span class="n">1.0</span>, <span class="s">"powerUnit"</span>: <span class="s">"watt"</span>,   <span class="c"># watt | lumen</span>
+             <span class="s">"halfAngleDeg"</span>: <span class="n">180</span>, <span class="s">"beamRadius"</span>: <span class="n">25</span>,
+             <span class="s">"polarisation"</span>: <span class="s">"unpolarised"</span>,      <span class="c"># unpolarised|linear-s|linear-p|circular</span>
+             <span class="s">"rayFile"</span>: <span class="s">"led.dat"</span>},
+  <span class="hl">"run"</span>:    {<span class="s">"rays"</span>: <span class="n">100000</span>, <span class="s">"threads"</span>: <span class="n">0</span>, <span class="s">"seed"</span>: <span class="n">12345</span>,   <span class="c"># 0 threads = every core</span>
+             <span class="s">"detectorBins"</span>: <span class="n">0</span>, <span class="s">"nTheta"</span>: <span class="n">90</span>, <span class="s">"nPhi"</span>: <span class="n">72</span>}
 }</code></pre>
-<p class="mut">Extras also accepted: <code>extraSources[]</code> (same shape as
-<code>source</code>), <code>surfaceOverrides[]</code> (ray-time optical edits) and
-<code>physics</code> (scene-wide overrides). Save a setup in the UI (<b>File &rarr;
-Save configuration</b>) and feed it in unchanged.</p>
+    <details open class="rv"><summary>Beyond the basics — extras the UI can save and you can script</summary>
+      <div class="inner">
+        <table>
+          <tr><th>Key</th><th>Shape</th><th>What it does</th></tr>
+          <tr><td><code>extraSources[]</code></td><td>same shape as <code>source</code></td><td>additional emitters; each is traced into the same result</td></tr>
+          <tr><td><code>surfaceOverrides[]</code></td><td>per-surface optical edits</td><td>ray-time changes — roughness, scatter, absorption — no geometry rebuild</td></tr>
+          <tr><td><code>physics</code></td><td>scene-wide overrides</td><td>turn a polished mirror matte and re-run without re-tessellating</td></tr>
+          <tr><td><code>source.rayFile</code></td><td>path to a measured set</td><td>replaces type/shape/extent entirely — "use this LED", model an LED no more</td></tr>
+        </table>
+        <p class="dim" style="font-size:13px">Save a setup in the UI (<b>File → Save configuration</b>) and feed
+        that file in unchanged — <code>configio</code> is the one writer, so all three vocabularies match.</p>
+      </div>
+    </details>
+  </div>
+</section>
 
-<h2 id="metrics">5 &mdash; Metrics, budgets, spot fields</h2>
-<p>All inside <code>run()&nbsp;[&nbsp;"metrics"&nbsp;]</code> (also on <code>cad</code>):</p>
-<table>
-<tr><th>Field</th><th>Meaning</th></tr>
-<tr><td><code>efficiency</code>, <code>efficiency_std_err</code></td><td>share of the source that reached the receiver &plusmn; one Monte Carlo standard error</td></tr>
-<tr><td><code>rays_emitted</code>, <code>rays_hit_detector</code></td><td>the budget spent and the branch count that arrived</td></tr>
-<tr><td><code>build_seconds</code>, <code>trace_seconds</code></td><td>where the wall-clock went</td></tr>
-<tr><td><code>unit</code>, <code>source_power</code>, <code>luminous_efficacy_lm_per_w</code>, <code>mean_wavelength_nm</code></td><td>the flux book's currency</td></tr>
-<tr><td><code>energy_budget</code></td><td><code>detector</code>, <code>absorbed</code>, <code>bulk_absorbed</code>, <code>escaped</code>, <code>truncated</code>, <code>rejected</code>, <code>accounted</code> &mdash; all fractions of the source</td></tr>
-<tr><td><code>spot</code></td><td><code>rms_radius_mm</code>, <code>d50_radius_mm</code>, <code>d86_radius_mm</code>, <code>fwhm_x_mm/fwhm_y_mm</code>, <code>centroid_x_mm/centroid_y_mm</code>, <code>peak</code>, <code>mean</code>, <code>min_lit</code>, <code>uniformity</code>, <code>mean_to_peak</code>, <code>lit_bins/total_bins</code></td></tr>
-<tr><td><code>far_field</code></td><td><code>beam_fwhm_deg</code>, <code>peak_intensity</code></td></tr>
-<tr><td><code>chromaticity</code></td><td>CIE 1931 <code>x</code>, <code>y</code> and <code>cct_k</code></td></tr>
-<tr><td><code>polarisation</code></td><td>only on a polarised trace: degree, degree_linear, angle_deg</td></tr>
-</table>
+<!-- ================= 5 METRICS ================= -->
+<section id="metrics">
+  <div class="wrap">
+    <h2><span class="n">05</span>Metrics, budgets, spot fields</h2>
+    <p class="lead">All inside <code>run()["metrics"]</code> — also present on <code>cad</code>, and
+    the same vocabulary every study speaks.</p>
+    <div class="cards g2">
+      <div class="card rv"><span class="pill red">headlines</span><h4>What a design review asks first</h4>
+        <table style="margin:6px 0 0">
+          <tr><td><code>efficiency</code> ± <code>efficiency_std_err</code></td><td>share of the source on the receiver, ± one Monte Carlo standard error</td></tr>
+          <tr><td><code>energy_budget</code></td><td><code>detector · absorbed · bulk_absorbed · escaped · truncated · rejected · accounted</code> — fractions of the source; they close to the last bit</td></tr>
+          <tr><td><code>rays_emitted · rays_hit_detector</code></td><td>budget spent, branch count arrived</td></tr>
+          <tr><td><code>build_seconds · trace_seconds</code></td><td>where the wall-clock went</td></tr>
+        </table></div>
+      <div class="card rv"><span class="pill teal">detail</span><h4>Spot, far field, colour</h4>
+        <table style="margin:6px 0 0">
+          <tr><td><code>spot</code></td><td><code>rms_radius_mm · d50/d86_radius_mm · fwhm_x/y_mm · centroid_x/y_mm · peak · mean · min_lit · uniformity · mean_to_peak · lit/total_bins</code></td></tr>
+          <tr><td><code>far_field</code></td><td><code>beam_fwhm_deg · peak_intensity</code></td></tr>
+          <tr><td><code>chromaticity</code></td><td>CIE 1931 <code>x · y · cct_k</code></td></tr>
+          <tr><td><code>unit · source_power · luminous_efficacy_lm_per_w · mean_wavelength_nm</code></td><td>the flux book's currency — lux and candela from one trace</td></tr>
+          <tr><td><code>polarisation</code></td><td>on a polarised trace: degree, degree_linear, angle_deg</td></tr>
+        </table></div>
+    </div>
+    <h3>Metric identifiers — the vocabulary of sweep, optimise and tolerance</h3>
+    <div class="cards g5" style="grid-template-columns:repeat(auto-fill,minmax(190px,1fr))">
+      <div class="card rv" style="padding:12px 14px"><code>efficiency</code><p>fraction on the receiver</p></div>
+      <div class="card rv" style="padding:12px 14px"><code>rms_radius_mm</code><p>flux-weighted RMS spot</p></div>
+      <div class="card rv" style="padding:12px 14px"><code>d86_radius_mm</code><p>encircled-energy radius</p></div>
+      <div class="card rv" style="padding:12px 14px"><code>peak_irradiance</code><p>brightest bin, run's unit</p></div>
+      <div class="card rv" style="padding:12px 14px"><code>uniformity_min</code><p>min / peak over lit bins</p></div>
+      <div class="card rv" style="padding:12px 14px"><code>uniformity_mean</code><p>mean / peak</p></div>
+      <div class="card rv" style="padding:12px 14px"><code>beam_fwhm_deg</code><p>far-field half-power width</p></div>
+      <div class="card rv" style="padding:12px 14px"><code>peak_intensity</code><p>W/sr or candela</p></div>
+      <div class="card rv" style="padding:12px 14px"><code>spot_fwhm_x_mm</code><p>profile FWHM via centroid</p></div>
+      <div class="card rv" style="padding:12px 14px"><code>centroid_offset_mm</code><p>spot centre vs receiver centre</p></div>
+    </div>
+  </div>
+</section>
 
-<h3>Metric identifiers (sweeps, optimisation, tolerancing)</h3>
-<table>
-<tr><th><code>metric=</code></th><th>Meaning</th></tr>
-<tr><td><code>efficiency</code></td><td>fraction on the receiver</td></tr>
-<tr><td><code>rms_radius_mm</code></td><td>flux-weighted RMS spot radius</td></tr>
-<tr><td><code>d86_radius_mm</code></td><td>encircled-energy radius (86 %)</td></tr>
-<tr><td><code>peak_irradiance</code></td><td>brightest bin, in the run's unit</td></tr>
-<tr><td><code>uniformity_min</code> / <code>uniformity_mean</code></td><td>min (mean) over peak on the lit bins</td></tr>
-<tr><td><code>beam_fwhm_deg</code></td><td>far-field full width at half maximum</td></tr>
-<tr><td><code>peak_intensity</code></td><td>W/sr or candela</td></tr>
-<tr><td><code>spot_fwhm_x_mm</code></td><td>profile FWHM through the centroid</td></tr>
-<tr><td><code>centroid_offset_mm</code></td><td>spot centre from the receiver's centre</td></tr>
-</table>
+<!-- ================= 6 PROTOCOL ================= -->
+<section id="wire">
+  <div class="wrap">
+    <h2><span class="n">06</span>The wire protocol — for hosts that skip Python</h2>
+    <p class="lead">Any language with a pipe can drive the engine. <code>LuxTrace.exe --serve</code>:
+    one operation JSON object per stdin line, one envelope per stdout line, until EOF.
+    <code>--job file.json</code>: a batch document <code>{"ops":[…]}</code>, one envelope per op.
+    <b>stdout is JSON and nothing else</b> — every human word goes to stderr.</p>
+    <div class="env rv" id="envline">
+      <span data-f="v"><span class="f-k">"v"</span>:<span class="f-v">1</span></span>
+      <span data-f="seq"><span class="f-k">"seq"</span>:<span class="f-v">0</span></span>
+      <span data-f="id"><span class="f-k">"id"</span>:<span class="f-v">7</span></span>
+      <span data-f="type"><span class="f-k">"type"</span>:<span class="f-v">"result"</span></span>
+      <span data-f="op"><span class="f-k">"op"</span>:<span class="f-v">"run"</span></span>
+      <span data-f="data"><span class="f-k">"data"</span>:{…}</span>
+      <span data-f="ms"><span class="f-k">"ms"</span>:<span class="f-v">8.4</span></span>
+    </div>
+    <div class="env-doc">
+      <div class="env-card on" data-f="v"><code>v</code> — protocol version. Bumped only when meaning changes, so an old host refuses a new binary politely instead of misreading it.</div>
+      <div class="env-card" data-f="seq"><code>seq</code> — position in this session's stream; for the log, not for matching.</div>
+      <div class="env-card" data-f="id"><code>id</code> — the matching key: echoes whatever the request carried. Replies that do not match are dropped, not queued.</div>
+      <div class="env-card" data-f="type"><code>type</code> — <code>result</code> continues; <code>error</code> fails one op, stream lives; <code>fatal</code> closes the stream with a non-zero exit.</div>
+      <div class="env-card" data-f="op"><code>op</code> — echo of the request, so logs read as conversation.</div>
+      <div class="env-card" data-f="data"><code>data</code> — the payload. Exactly the dict the Python client returns.</div>
+      <div class="env-card" data-f="ms"><code>ms</code> — dispatch wall-clock, measured in C++, free of pipe latency.</div>
+      <div class="env-card" style="border-style:dashed"><i>stderr side-channel</i> — progress, warnings, the ready line. Never parsed; displayed.</div>
+    </div>
+    <pre class="rv"><code><span class="c">// request  (one line on stdin)</span>
+{"id":<span class="n">7</span>,"op":"<span class="f">run</span>","params":{"config":{"scene":{"name":"<span class="s">Parabolic Reflector"</span>}}}}
+<span class="c">// reply    (one line on stdout)</span>
+{"v":<span class="n">1</span>,"seq":<span class="n">0</span>,"id":<span class="n">7</span>,"type":"result","op":"run","data":{…},"ms":<span class="n">8.4</span>}
+<span class="c">// refusal  (the stream survives)</span>
+{"v":<span class="n">1</span>,"seq":<span class="n">1</span>,"id":<span class="n">8</span>,"op":"<span class="f">cad</span>","type":"error",
+ "error":{"code":"<span class="hl">import_failed</span>","message":"cannot open nope.step"}}</code></pre>
+  </div>
+</section>
 
-<h2 id="protocol">6 &mdash; The wire protocol (for hosts that skip Python)</h2>
-<p><code>LuxTrace.exe --serve</code>: one operation JSON object per stdin line,
-one envelope per stdout line, until EOF. <code>--job file.json</code> runs a batch
-document <code>{"ops":[...]}</code>. <b>stdout is JSON and nothing else</b> &mdash;
-every human word goes to stderr.</p>
-<pre><code>{"v":1,"seq":0,"id":7,"type":"result","op":"run","data":{...},"ms":1823.4}
-{"v":1,"seq":1,"id":8,"type":"error","op":"cad",
- "error":{"code":"import_failed","message":"cannot open nope.step"}}</code></pre>
-<ul>
-<li><code>type</code>: <span class="ok">result</span> &middot;
-     <span class="err">error</span> (this op failed, the stream continues) &middot;
-     <span class="err">fatal</span> (stream ends, non-zero exit).</li>
-<li><code>id</code> echoes whatever the request carried &mdash; that is how the client
-     matches replies to calls while operations with long traces are still pending.</li>
-<li>An operation object: <code>{"op": "...", "id": 7, "params": {...}}</code>.</li>
-</ul>
+<!-- ================= 7 ERRORS ================= -->
+<section id="errors">
+  <div class="wrap">
+    <h2><span class="n">07</span>Error codes</h2>
+    <p class="lead">Machine-readable <code>code</code>s, one per refusal — the stream continues on every one of them.</p>
+    <div class="cards g3">
+      <div class="card rv"><span class="pill red">config</span><h4>missing_config · bad_config</h4><p>The op had no config, or the JSON was not a config document. Pass <code>{"config":{…}}</code>, or check for a stray comma.</p></div>
+      <div class="card rv"><span class="pill red">vocabulary</span><h4>invalid_metric · invalid_goal</h4><p>Unknown metric or goal string. Use the §5 ids: <code>efficiency</code>, <code>rms_radius_mm</code>, …</p></div>
+      <div class="card rv"><span class="pill red">bounds</span><h4>invalid_slot</h4><p>Parameter index outside this scene's list. <code>scenes()</code> knows each scene's count.</p></div>
+      <div class="card rv"><span class="pill red">shape</span><h4>empty_slots · empty_tolerances</h4><p>optimise / tolerance called with nothing to vary — pass a non-empty <code>slots[]</code> / <code>tolerances[]</code>.</p></div>
+      <div class="card rv"><span class="pill red">files</span><h4>missing_path · import_failed · not_traceable · load_failed · csv_write_failed</h4><p>CAD and rayfile refusals; the message audits the geometry. CSV: the export path refused to open.</p></div>
+      <div class="card rv"><span class="pill red">protocol</span><h4>unknown_operation · bad_line · bad_job · bad_operation</h4><p>Host-side mistakes: wrong op name, unparseable line, or a job document that is not one document with an <code>ops</code> array.</p></div>
+    </div>
+    <p class="dim">Client-side: <code>LuxTraceError</code> carries <code>.code</code> and <code>.message</code>;
+    <code>LuxTraceDown</code> means the process died or timed out and carries the stderr tail for the log.</p>
+  </div>
+</section>
 
-<h2 id="errors">7 &mdash; Error codes</h2>
-<table>
-<tr><th>Code</th><th>When</th></tr>
-<tr><td><code>missing_config</code> / <code>bad_config</code></td><td>a config-less op, or JSON that is not a config document</td></tr>
-<tr><td><code>invalid_metric</code> / <code>invalid_goal</code></td><td>unknown metric or goal string</td></tr>
-<tr><td><code>invalid_slot</code></td><td>parameter index outside the scene's parameter list</td></tr>
-<tr><td><code>empty_slots</code> / <code>empty_tolerances</code></td><td>optimise/tolerance called with nothing to vary</td></tr>
-<tr><td><code>missing_path</code> / <code>import_failed</code> / <code>not_traceable</code> / <code>load_failed</code></td><td>cad and rayfile problems</td></tr>
-<tr><td><code>csv_write_failed</code></td><td>export_csv target refused to open</td></tr>
-<tr><td><code>unknown_operation</code> / <code>bad_line</code> / <code>bad_job</code> / <code>bad_operation</code></td><td>protocol-level mistakes</td></tr>
-</table>
+<!-- ================= 8 EXAMPLES ================= -->
+<section id="examples">
+  <div class="wrap">
+    <h2><span class="n">08</span>Worked examples</h2>
+    <div class="opdoc rv">
+      <h3>Design loop — sweep, optimise, converge</h3>
+      <pre><button class="copy" data-t="c-ex1">copy</button><code id="c-ex1">cfg = {<span class="s">"scene"</span>: {<span class="s">"name"</span>: <span class="s">"Parabolic Reflector"</span>}, <span class="s">"run"</span>: {<span class="s">"rays"</span>: <span class="n">40000</span>, <span class="s">"seed"</span>: <span class="n">9</span>}}
 
-<h2 id="examples">8 &mdash; Two worked examples</h2>
-<p><b>Design loop</b> &mdash; sweep, pick the best, confirm it converged:</p>
-<pre><code>cfg = {"scene": {"name": "Parabolic Reflector"}, "run": {"rays": 40000, "seed": 9}}
-sw  = luxtrace.sweep(cfg, slot=0, metric="rms_radius_mm", steps=10)
-z   = min(sw["points"], key=lambda p: p["value"])
-cfg["scene"]["params"] = [z["parameter"], None, None]         # adopt the winner (others: defaults)
-opt = luxtrace.optimise(cfg, slots=[0, 1], metric="rms_radius_mm",
-                        goal="minimise", evaluations=30)
-cv  = luxtrace.convergence(cfg, min_rays=2000, max_rays=160000, points=5)
-print("done:", opt["best_value"], "mm, converged:", cv["converged"])</code></pre>
+sw  = luxtrace.<span class="f">sweep</span>(cfg, slot=<span class="n">0</span>, metric=<span class="s">"rms_radius_mm"</span>, steps=<span class="n">10</span>)
+z   = <span class="f">min</span>(sw[<span class="s">"points"</span>], key=<span class="k">lambda</span> p: p[<span class="s">"value"</span>])
+cfg[<span class="s">"scene"</span>][<span class="s">"params"</span>] = [z[<span class="s">"parameter"</span>], <span class="k">None</span>, <span class="k">None</span>]   <span class="c"># adopt; rest = defaults</span>
 
-<p class="note"><b>Determinism.</b> The same config + seed reproduces a result to
-the last digit &mdash; sweep wiggles are noise, optimiser history is a real
-convergence record, and a yield figure can be checked rather than quoted.</p>
+opt = luxtrace.<span class="f">optimise</span>(cfg, slots=[<span class="n">0</span>, <span class="n">1</span>], metric=<span class="s">"rms_radius_mm"</span>,
+                        goal=<span class="s">"minimise"</span>, evaluations=<span class="n">30</span>)
+cv  = luxtrace.<span class="f">convergence</span>(cfg, min_rays=<span class="n">2000</span>, max_rays=<span class="n">160000</span>, points=<span class="n">5</span>)
+<span class="hl">print</span>(<span class="s">"done:"</span>, opt[<span class="s">"best_value"</span>], <span class="s">"mm, converged:"</span>, cv[<span class="s">"converged"</span>])</code></pre>
+    </div>
+    <div class="opdoc rv">
+      <h3>Budget audit — where did the flux go?</h3>
+      <pre><button class="copy" data-t="c-ex2">copy</button><code id="c-ex2">res = luxtrace.<span class="f">run</span>({<span class="s">"scene"</span>: {<span class="s">"name"</span>: <span class="s">"Light Guide (TIR)"</span>},
+                    <span class="s">"run"</span>:   {<span class="s">"rays"</span>: <span class="n">120000</span>, <span class="s">"seed"</span>: <span class="n">1234</span>}})
+b = res[<span class="s">"metrics"</span>][<span class="s">"energy_budget"</span>]
+<span class="hl">print</span>(<span class="s">"detector  %.2f%%"</span> % (<span class="n">100</span>*b[<span class="s">"detector"</span>]))
+<span class="hl">print</span>(<span class="s">"bulk abs  %.2f%%   <- Beer–Lambert, the term that scales with length"</span>
+      % (<span class="n">100</span>*b[<span class="s">"bulk_absorbed"</span>]))
+<span class="hl">print</span>(<span class="s">"closed to  %.6f of the source"</span> % b[<span class="s">"accounted"</span>])</code></pre>
+    </div>
+    <div class="note rv"><b>Determinism.</b> Same config + seed reproduces a result to the last digit —
+    sweep wiggles are noise, optimiser history is a real convergence record, and a yield figure
+    can be checked rather than quoted.</div>
+    <p class="dim">More in the deep guide: <a href="api_guide.html">api_guide.html</a> —
+    internals, animated architecture, live-traced graphs and workflows.
+    <code>runner.py --demo</code> installs a worked script on the Desktop.</p>
+  </div>
+</section>
 
-<p class="mut">Panel Help &middot; <code>python/runner.py --demo</code> installs a
-worked script on the Desktop &middot; this document lives at
-<code>python/runner_api.html</code> next to the runner.</p>
+<footer>
+  <div class="wrap">
+    <div>LuxTrace — Optical Design Studio · API reference · protocol v1 · 1.0.0</div>
+    <div><a href="#start">top ↑</a> · <a href="api_guide.html">deep guide</a> · <code>python/runner.py --job job.json</code></div>
+  </div>
+</footer>
+<button class="totop" id="totop" title="back to top">↑</button>
 
+<script>
+/* copy buttons */
+document.querySelectorAll('.copy').forEach(b=>b.addEventListener('click',()=>{
+  const src=document.getElementById(b.dataset.t);
+  navigator.clipboard.writeText(src.innerText.trim()).then(()=>{
+    b.textContent='copied'; setTimeout(()=>b.textContent='copy',1200);
+  });
+}));
+
+/* envelope anatomy hover */
+document.querySelectorAll('#envline span').forEach(s=>{
+  s.addEventListener('mouseenter',()=>{
+    document.querySelectorAll('.env-card').forEach(c=>c.classList.toggle('on',c.dataset.f===s.dataset.f));
+  });
+});
+
+/* reveal on scroll */
+const io=new IntersectionObserver(es=>es.forEach(e=>{
+  if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}
+}),{threshold:.1});
+document.querySelectorAll('.rv').forEach(el=>io.observe(el));
+/* safety: never leave content invisible — if the observer never fires
+   (old engine, print, headless capture), reveal what is still pending */
+setTimeout(()=>document.querySelectorAll('.rv:not(.in)').forEach(el=>el.classList.add('in')),2000);
+
+/* scroll spy + totop */
+const secs=[...document.querySelectorAll('section'),document.querySelector('header')];
+const links=[...document.querySelectorAll('nav a')];
+addEventListener('scroll',()=>{
+  const y=scrollY+130; let cur=null;
+  secs.forEach(s=>{if(s.id&&s.offsetTop<=y)cur=s.id});
+  links.forEach(a=>a.classList.toggle('on',a.getAttribute('href')==='#'+cur));
+  document.getElementById('totop').classList.toggle('show',scrollY>500);
+},{passive:true});
+document.getElementById('totop').onclick=()=>scrollTo({top:0});
+</script>
 </body>
 </html>
