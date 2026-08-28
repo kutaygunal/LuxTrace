@@ -15,6 +15,7 @@ class HeatmapWidget;
 class OcctViewWidget;
 class PlotWidget;
 class PolarPlotWidget;
+class PythonPanel; // the in-app script editor: Run drives python/runner.py over the job pipe
 class SimulationWorker;
 class StudyWorker;
 
@@ -45,6 +46,9 @@ private slots:
     void onGeometryChanged();
     void onGeometryReady(Simulation::SceneRef data, quint64 generation);
     void onGeometryFailed(const QString& message, quint64 generation);
+    // Redraws every emitter the configuration traces, at the placement the
+    // trace will use. Called whenever the geometry or the source list changes.
+    void refreshSourceGlyphs();
     void onRun();
     void onCancel();
     void onProgress(int percent);
@@ -128,6 +132,7 @@ private:
     SimConfig currentConfig() const;
 
     ControlsPanel*    m_controls = nullptr;
+    PythonPanel*      m_python   = nullptr;
     OcctViewWidget*   m_view3d   = nullptr;
     RayDiagramWidget* m_diagram  = nullptr;
     HeatmapWidget*    m_heatmap  = nullptr;

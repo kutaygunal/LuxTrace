@@ -94,6 +94,7 @@ qt_add_executable(LuxTrace
     src/ui/ControlsPanel.h src/ui/ControlsPanel.cpp
     src/ui/ImportDialog.h src/ui/ImportDialog.cpp
     src/ui/SurfaceInspector.h src/ui/SurfaceInspector.cpp
+    src/ui/PythonPanel.h src/ui/PythonPanel.cpp
     src/ui/EnergyBarWidget.h src/ui/EnergyBarWidget.cpp
     src/ui/SourceDialog.h src/ui/SourceDialog.cpp
     src/ui/OcctViewWidget.h src/ui/OcctViewWidget.cpp

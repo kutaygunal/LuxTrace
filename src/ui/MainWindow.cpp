@@ -12,6 +12,7 @@
 #include "EnergyBarWidget.h"
 #include "ImportDialog.h"
 #include "SurfaceInspector.h"
+#include "PythonPanel.h"
 #include "core/ConfigIO.h"
 #include "core/MaterialFile.h"
 #include "core/SimulationWorker.h"
@@ -88,6 +89,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_tabs->addTab(buildDesignTab(),     QStringLiteral("Design"));
     m_tabs->addTab(buildToleranceTab(),  QStringLiteral("Tolerance"));
     m_tabs->addTab(buildSurfacesTab(),   QStringLiteral("Surfaces"));
+    m_python = new PythonPanel(this);
+    m_tabs->addTab(m_python,               QStringLiteral("Python"));
 
     m_metrics = new QTextBrowser(this);
     m_metrics->setOpenExternalLinks(false);
@@ -148,6 +151,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(m_controls, &ControlsPanel::cancelRequested, this, &MainWindow::onCancel);
     connect(m_controls, &ControlsPanel::sceneChanged,    this, &MainWindow::onSceneChanged);
     connect(m_controls, &ControlsPanel::geometryChanged, this, &MainWindow::onGeometryChanged);
+    // Adding, editing or removing a source changes where the light comes from
+    // without changing a triangle, so the markers have to follow it. Nothing
+    // was listening to this signal at all, which is why a source added to the
+    // list stayed invisible until the next geometry rebuild happened to run.
+    connect(m_controls, &ControlsPanel::settingsChanged, this,
+            &MainWindow::refreshSourceGlyphs);
     connect(m_geometryTimer, &QTimer::timeout, this, &MainWindow::rebuildGeometryView);
     connect(m_geometry, &GeometryWorker::geometryReady,  this, &MainWindow::onGeometryReady);
     connect(m_geometry, &GeometryWorker::geometryFailed, this, &MainWindow::onGeometryFailed);
@@ -213,12 +222,22 @@ QWidget* MainWindow::buildViewerTab() {
         "Slice the optic open with a clipping plane, so the TIR bounces inside a "
         "guide can be watched from outside it."));
 
+    auto* viewCube = new QCheckBox(QStringLiteral("Nav cube"), this);
+    viewCube->setChecked(true);
+    viewCube->setToolTip(QStringLiteral(
+        "The navigation cube in the lower-left corner, in place of the plain "
+        "axis trihedron. Click a face for a standard view, an edge for a "
+        "45-degree one, a corner for an isometric. It turns the camera only -- "
+        "the zoom and the pan stay where you put them, and F is still what "
+        "frames the scene. Switch it off to get the plain axes back."));
+
     auto* bar1 = new QHBoxLayout;
     bar1->setContentsMargins(4, 2, 4, 0);
     bar1->addWidget(fit);
     bar1->addWidget(reset);
     bar1->addWidget(showRays);
     bar1->addWidget(perspective);
+    bar1->addWidget(viewCube);
     bar1->addSpacing(10);
     bar1->addWidget(dim(QStringLiteral("Colour:"), this));
     bar1->addWidget(m_rayColor);
@@ -233,7 +252,8 @@ QWidget* MainWindow::buildViewerTab() {
     bar2->addWidget(m_clipFlip);
     bar2->addSpacing(12);
     bar2->addWidget(dim(QStringLiteral("Drag: L orbit · M pan · R look | Wheel zoom | "
-                                       "WASD walk · click a surface to inspect it"), this), 1);
+                                       "WASD walk · click a surface to inspect it · "
+                                       "click the cube to aim the camera"), this), 1);
 
     auto* pane = new QWidget(this);
     auto* v = new QVBoxLayout(pane);
@@ -247,6 +267,7 @@ QWidget* MainWindow::buildViewerTab() {
     connect(reset, &QPushButton::clicked, m_view3d, &OcctViewWidget::resetView);
     connect(showRays, &QCheckBox::toggled, m_view3d, &OcctViewWidget::setRaysVisible);
     connect(perspective, &QCheckBox::toggled, m_view3d, &OcctViewWidget::setPerspective);
+    connect(viewCube, &QCheckBox::toggled, m_view3d, &OcctViewWidget::setViewCubeVisible);
     connect(m_rayColor, &QComboBox::currentIndexChanged, this, [this](int i) {
         m_view3d->setRayColorMode(OcctViewWidget::RayColor(i));
         m_diagram->setColorMode(RayDiagramWidget::ColorMode(i));
@@ -1625,13 +1646,7 @@ void MainWindow::onGeometryReady(Simulation::SceneRef data, quint64 generation) 
     // The surface list belongs to this geometry; a tree describing the previous
     // one would let a click land on a surface that is no longer there.
     rebuildSurfaceTree();
-    {
-        const SimConfig cfg = m_controls->config();
-        m_view3d->setSourceGlyph(m_sceneData->sourceOrigin, m_sceneData->sourceAxis,
-                                 cfg.halfAngleDeg,
-                                 cfg.source == SourceConfig::Type::Collimated,
-                                 cfg.beamRadius);
-    }
+    refreshSourceGlyphs();
     // A pick indexes the surface list, and this is a new one.
     updateSurfacePanel();
 
@@ -1639,6 +1654,46 @@ void MainWindow::onGeometryReady(Simulation::SceneRef data, quint64 generation) 
                                  .arg(GeometryProvider::info(m_requestedScene).name)
                                  .arg(m_sceneData->scene.triangles().size()),
                              4000);
+}
+
+// Every emitter the current configuration traces, drawn where the trace will
+// put it.
+//
+// The view asked the config for one source and drew one marker, so a luminaire
+// with four LEDs showed three of them nowhere -- and the only way to check that
+// an offset had landed where it was meant to was to run and read the pattern
+// back. The placement rule lives in Simulation::sourcesFor and is asked for
+// here rather than repeated, because a viewer that placed sources its own way
+// would be a second answer to the same question.
+void MainWindow::refreshSourceGlyphs() {
+    const gp_Pnt* origin = nullptr;
+    const gp_Dir* axis   = nullptr;
+    if (m_showingImported && m_imported) {
+        origin = &m_imported->sourceOrigin;
+        axis   = &m_imported->sourceAxis;
+    } else if (m_sceneData) {
+        origin = &m_sceneData->sourceOrigin;
+        axis   = &m_sceneData->sourceAxis;
+    }
+    if (!origin || !axis) {
+        m_view3d->clearSourceGlyph();
+        return;
+    }
+
+    const SimConfig cfg = m_controls->config();
+    std::vector<OcctViewWidget::SourceGlyph> glyphs;
+    for (const SourceConfig& src : Simulation::sourcesFor(cfg, *origin, *axis)) {
+        OcctViewWidget::SourceGlyph g;
+        g.origin       = src.origin;
+        g.axis         = src.axis;
+        g.halfAngleDeg = src.halfAngleDeg;
+        g.collimated   = (src.type == SourceConfig::Type::Collimated);
+        g.beamRadius   = src.beamRadius;
+        // Only worth labelling when there is more than one to tell apart.
+        if (cfg.sourceCount() > 1) g.label = src.label;
+        glyphs.push_back(g);
+    }
+    m_view3d->setSourceGlyphs(glyphs);
 }
 
 void MainWindow::onGeometryFailed(const QString& message, quint64 generation) {
@@ -2539,13 +2594,7 @@ void MainWindow::onImportCad() {
     refreshDerivedQuantities();
     m_view3d->setScene(GeometryProvider::Scene::Count, m_imported->surfaces);
     rebuildSurfaceTree();
-    {
-        const SimConfig c = m_controls->config();
-        m_view3d->setSourceGlyph(m_imported->sourceOrigin, m_imported->sourceAxis,
-                                 c.halfAngleDeg,
-                                 c.source == SourceConfig::Type::Collimated,
-                                 c.beamRadius);
-    }
+    refreshSourceGlyphs();
     m_view3d->resetView();
     // The rays on screen were traced through the previous geometry.
     m_view3d->setRays({});
