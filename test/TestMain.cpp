@@ -47,6 +47,7 @@
 #include "core/Polarisation.h"
 #include "core/Material.h"
 #include "core/MaterialFile.h"
+#include "core/PythonEnv.h"
 #include "core/RayFile.h"
 #include "core/Spectrum.h"
 #include "core/Sampling.h"
@@ -1084,6 +1085,10 @@ TEST(patterns, retroreflectors_only_score_by_sending_light_back) {
 }
 
 #include "NewTests.inc"
+#include "NewTests_T3-001.inc"
+#include "NewTests_T3-002.inc"
+#include "NewTests_T3-003.inc"
+#include "NewTests_T3-005.inc"
 #include "AuditTests.inc"
 
 // =================================================================== main ===

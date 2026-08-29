@@ -28,7 +28,8 @@ set(LUXTRACE_TEST_SUITES
     validation estimator instances cad sweep optimise derived report overrides
     bsdf coating polarised imagequality tolerancing geometry channels diagnostics
     overridekeys polarisedmetal catalogue rayfile multisource regression
-    configkeys scattermodel importaudit simd preview rayinspector)
+    configkeys scattermodel importaudit simd preview rayinspector pythonenv
+    fidelity sceneparams thetabin meshadaptive)
 
 foreach(suite IN LISTS LUXTRACE_TEST_SUITES)
     add_test(NAME ${suite} COMMAND optics_tests ${suite})

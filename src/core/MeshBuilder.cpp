@@ -21,6 +21,69 @@
 #include <gp_Trsf.hxx>
 #include <cmath>
 
+namespace {
+
+// How curved a face is, as 1/mm: the largest absolute mean curvature found over
+// a coarse grid of UV samples. A plane stays ~0 everywhere; an asphere shows
+// its shape at the first interior point, and sampling a handful keeps the
+// estimate robust against a singular parameterisation (a sphere's pole, say)
+// where curvature is undefined at a single point.
+double characteristicCurvature(const TopoDS_Face& face) {
+    BRepAdaptor_Surface ad(face);
+    BRepLProp_SLProps props(ad, 2, 1e-9);      // 2nd derivatives -> curvature
+    const double u0 = ad.FirstUParameter(), u1 = ad.LastUParameter();
+    const double v0 = ad.FirstVParameter(), v1 = ad.LastVParameter();
+    const double du = u1 - u0, dv = v1 - v0;
+    const int n = 5;
+    double max = 0.0;
+    for (int i = 0; i < n; ++i) {
+        const double fu = (n > 1) ? double(i) / double(n - 1) : 0.5;
+        for (int j = 0; j < n; ++j) {
+            const double fv = (n > 1) ? double(j) / double(n - 1) : 0.5;
+            props.SetParameters(u0 + fu * du, v0 + fv * dv);
+            if (!props.IsCurvatureDefined()) continue;
+            max = std::max(max, std::fabs(props.MeanCurvature()));
+        }
+    }
+    return max;
+}
+
+// The linear deflection, in mm, a face gets from its curvature `k` and the
+// caller's per-body hint `base`.
+//
+// A face that is (effectively) flat is a mechanical face -- a mounting seat, a
+// planar back, a box side. It carries no optics, so there is no reason to
+// resolve it beyond a couple of triangles: coarsening it is free because a
+// plane is triangulated exactly at any edge size. Everything else is an optical
+// face: keep the caller's hint, then tighten it as the surface sharpens past a
+// reference curvature, because the facet chord that holds a given sagitta error
+// `e` on curvature `k` goes as 1/sqrt(k) (e = k*s^2/8), so a sharper surface
+// needs a finer tessellation to keep the same positional error.
+constexpr double kMechanicalCurvature = 1e-3;   // 1/mm; gentler than this -> flange
+constexpr double kMechanicalCoarsen    = 8.0;   // flange faces get this many fewer facets
+constexpr double kReferenceCurvature   = 0.02;  // at this the caller's hint applies as-is
+constexpr double kMinDeflection        = 1e-3;  // never ask the mesher for the impossible
+
+double faceDeflection(double curvature, double base) {
+    if (std::fabs(curvature) < kMechanicalCurvature)
+        return std::max(base * kMechanicalCoarsen, kMinDeflection);
+    const double strength =
+        std::clamp(std::fabs(curvature) / kReferenceCurvature, 1.0, 64.0);
+    return std::max(base / std::sqrt(strength), kMinDeflection);
+}
+
+// The angular deflection for a face. Optical faces keep the caller's value (the
+// per-vertex normals are exact, but the angular term still decides how many
+// chords ring a surface of revolution). A mechanical face gets a much looser
+// angle -- the second lever that keeps a flange down to a handful of triangles.
+double faceAngle(double curvature, double baseAngle) {
+    if (std::fabs(curvature) < kMechanicalCurvature)
+        return std::max(baseAngle * kMechanicalCoarsen, 0.5);
+    return baseAngle;
+}
+
+} // namespace
+
 MeshList MeshBuilder::build(const std::vector<OpticalSurface>& surfaces) {
     MeshList out;
     out.reserve(surfaces.size());
@@ -36,11 +99,61 @@ MeshList MeshBuilder::build(const std::vector<OpticalSurface>& surfaces) {
 }
 
 void MeshBuilder::meshShape(const OpticalSurface& os, MeshSurface& out) {
-    // The angular deflection bounds how far a facet sits from the true surface
-    // in position. It used to bound the normal error too, which is what capped
-    // every imaging scene; per-vertex normals read off the exact surface remove
-    // that term, so this is now a positional tolerance only.
-    BRepMesh_IncrementalMesh(os.shape, os.meshDeflection, Standard_False, os.meshAngle);
+    // The mesh used to be uniform per body: one deflection for the whole shape,
+    // whether a face was an optically active asphere or a mounting flange. T3-005
+    // made it adaptive (curvature-driven per face). An early per-face attempt
+    // meshed every face on its own, which CREATED a seam defect the Verifier
+    // caught: two adjacent faces meshed at different deflections are triangulated
+    // twice, and unless they agree on exactly where the nodes sit along their
+    // shared curved boundary the two triangulations stop meeting -- a thin
+    // T-junction crack a ray slips through, which is exactly how a lens starts
+    // leaking fluxEscaped. OCCT's BRepMesh keeps a shared edge watertight only
+    // when the whole shape is meshed as one unit.
+    //
+    // So the deflection is decided per face (curvature-driven, see
+    // faceDeflection / faceAngle) but APPLIED to the whole body at the finest
+    // face's value, in one BRepMesh_IncrementalMesh call. That keeps shared
+    // edges consistent (no crack / T-junction) while adaptivity is still real
+    // where it is safe:
+    //
+    //   * an all-planar mechanical body sheds triangles for no accuracy cost,
+    //     because a plane is triangulated exactly at any edge size;
+    //   * an optically curved face keeps the caller's tolerance and tightens it
+    //     as it sharpens, because holding a sagitta error on a curved surface
+    //     needs a finer chord;
+    //   * a mixed body (optic + mounting flange) is meshed at the optic's finer
+    //     deflection, which spends a few triangles on the flange but keeps the
+    //     seam closed -- worth far more than the triangle.
+    //
+    // The per-vertex exact normals below are unchanged: adaptivity moves where
+    // the vertices sit, never the surface they are read back from.
+    double bodyDefl  = os.meshDeflection;
+    double bodyAngle = os.meshAngle;
+    for (TopExp_Explorer ex(os.shape, TopAbs_FACE); ex.More(); ex.Next()) {
+        TopoDS_Face face = TopoDS::Face(ex.Current());
+        double curvature = 0.0;
+        bool measurable   = true;
+        try {
+            curvature = characteristicCurvature(face);
+        } catch (const Standard_Failure&) {
+            measurable = false;
+        }
+        // A face whose curvature cannot be evaluated falls back to the caller's
+        // hint unchanged, rather than being over- or under-refined blindly.
+        const double defl =
+            measurable ? faceDeflection(curvature, os.meshDeflection) : os.meshDeflection;
+        const double angle =
+            measurable ? faceAngle(curvature, os.meshAngle) : os.meshAngle;
+        bodyDefl  = std::min(bodyDefl, defl);
+        bodyAngle = std::min(bodyAngle, angle);
+    }
+    try {
+        BRepMesh_IncrementalMesh(os.shape, bodyDefl, Standard_False, bodyAngle);
+    } catch (const Standard_Failure&) {
+        // A body that cannot be meshed at all is skipped; a missing mesh is
+        // never worth aborting the whole build.
+        return;
+    }
 
     for (TopExp_Explorer ex(os.shape, TopAbs_FACE); ex.More(); ex.Next()) {
         TopoDS_Face face = TopoDS::Face(ex.Current());

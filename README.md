@@ -27,16 +27,20 @@ TracePro, OpticStudio) is expected to do:
 
 | Capability | LuxTrace |
 |---|---|
-| Geometry | 25 parametric OCCT scenes, plus STEP/IGES import of a customer's own CAD; instanced parts share one mesh and one hierarchy |
+| Geometry | 26 parametric OCCT scenes, plus STEP/IGES import of a customer's own CAD; instanced parts share one mesh and one hierarchy |
 | Surface normals | Read off the exact B-Rep at each tessellation node and interpolated across the facet, so the mesh is no longer what limits how sharply a scene focuses |
 | Materials | A catalogue by name — N-BK7, N-SF11, fused silica, PMMA, polycarbonate, water, cement, Al/Ag/Au — with Sellmeier dispersion, Abbe numbers and complex-index Fresnel for the metals |
+| Glass catalogue | Import a real catalogue — a Zemax `.agf` from Schott, Ohara, CDGM, Hoya or Sumita, or a refractiveindex.info `.yml` entry — and the ten built-in names become a catalogue a lens designer can actually type into |
 | Media | A medium stack with priorities: cemented doublets, immersed optics, clad guides and nested solids all refract against the right pair of indices |
 | Coatings | Ideal AR/HR by residual, measured R(lambda) tables, and a characteristic-matrix thin-film solver |
 | Scattering | GGX microfacet with Smith masking, ABg / Harvey-Shack, measured BSDF tables, Lambertian, and Henyey-Greenstein volume scattering inside a medium |
 | Polarisation | Stokes vectors and Mueller matrices behind a switch: Brewster's angle, polarisers, retarders and the phase of total internal reflection |
 | Light sources | Point / Lambertian / collimated over a real emitting area, with absolute flux in watts or lumens and a real spectrum (monochromatic, RGB, blackbody, white LED, D65 or a measured SPD) |
+| Measured ray sources | A vendor's measured ray set — Zemax binary `.dat`, ASAP `.dis`, or TracePro text — loads as an emitter, so "model an LED" becomes "use this LED" |
+| Multi-source | Any number of sources, each placed relative to the scene emitter, with per-source arrival tagging and the ray budget shared in proportion to power |
 | Units | W/m² or lux on the receiver, W/sr or candela in the far field, from a source flux the user sets |
 | Estimator | Owen-scrambled Sobol emission, aiming at the scene, next-event estimation at diffuse bounces, Russian roulette and branch collapsing — 1.5x to 28x tighter error bars for the same rays |
+| SIMD | A four-wide AVX2 leaf intersection, probed at run time and bit-for-bit identical to the scalar kernel |
 | Detectors | Any number, each with its own frame, resolution and acceptance cone; tilted and off-axis receivers bin against themselves |
 | Measurements | Spot metrics, far-field intensity, MTF, wavefront error and Strehl, CIE chromaticity and colour temperature |
 | Studies | Convergence, through-focus, parameter sweeps in 1D and 2D, Nelder-Mead and CMA-ES optimisation, and Monte Carlo tolerance analysis with a yield and a sensitivity ranking |
@@ -118,7 +122,7 @@ would be absurd.
 
 ## The scene library
 
-25 scenes, all built from OCCT B-Rep and enumerated from one registry
+26 scenes, all built from OCCT B-Rep and enumerated from one registry
 (`GeometryProvider::Scene`), so the UI, the diagnostics and the tests pick them
 up automatically. Each declares 2-4 editable dimensions (`paramInfo`), the last
 of which is always the receiver position; the emitter follows the geometry, so
@@ -171,6 +175,12 @@ Efficiencies are for a Lambertian source at 50 000 rays, with the full physics o
 | Integrating Sphere | 26.7 % | Matte white cavity: every bounce is Lambertian, the port sees a uniform field |
 | Diffuser Plate | 32.4 % | Transmissive diffuser washing a bright spot into an even glow |
 
+**Multi-source**
+
+| Scene | Eff. | What it shows |
+|---|---|---|
+| LED Array Luminaire | 74.2 % | A row of reflector cups, one LED to a cup. The scene places a single emitter at the focus of the leftmost cup, so a run out of the box lights one cup and leaves the rest dark — which is the point. Add a source per remaining cup, each offset along x by a whole multiple of the pitch, and the receiver fills in one beam at a time. Every other scene in this library is built around a single emitter on an axis; this one cannot be described by one at all |
+
 The round light guide used to read 89 %. It now reads 74 % because its entrance
 and exit faces pay a Fresnel reflection and its glass absorbs 4.4 % of the light
 over the zig-zag path — both of which a real rod does and the old model did not.
@@ -182,7 +192,7 @@ differently for good reasons — the elliptical reflector does *better* with a
 point source, because its Lambertian hemisphere aims straight at the hole in the
 bottom of the cup.
 
-The whole 25-scene library at 50 000 rays each traces in **0.51 s**. Energy is
+The whole 26-scene library at 50 000 rays each traces in **0.51 s**. Energy is
 accounted for exactly in every scene: `detected + absorbed + escaped + truncated
 == emitted` to 1e-9.
 
@@ -192,6 +202,51 @@ its own RNG from its index — for its emission direction, its emitting-area
 sample and its scatter/roughness draws alike — and the scalar totals reduce in
 chunk order rather than thread order. `--bench` checks this on every
 scene/source combination.
+
+## Interoperation: measured data in
+
+Two readers turn the engine's built-in data into a tool that accepts the
+industry's. Both load once and share the result, because a ray file is tens of
+megabytes and a study traces the same one hundreds of times.
+
+**Measured ray sources.** LED vendors publish their parts as ray sets — a few
+hundred thousand rays, each with a position on the emitting surface, a
+direction, a flux and often a wavelength, measured on a goniophotometer. Reading
+one turns "model an LED" into "use this LED", and it is the single most-requested
+interoperation in illumination design. Three formats cover what people actually
+have: the Zemax binary source file (`.dat`, a 208-byte header followed by seven
+or eight float32 per ray — the layout TracePro and most vendor downloads use for
+interchange), ASAP `.dis`, and the plain text ray files TracePro and several
+vendors ship. The reader dispatches on content rather than extension, because
+vendors ship binary sets as `.dat`, `.ray`, `.txt` and `.dis` indiscriminately.
+A capped load takes an evenly-strided subset rather than the leading block, so
+the first N rays of a scanned measurement — one edge of the die — do not stand in
+for the whole. A ray file is an `EmittedRay` stream, so it needs no engine
+change: emission is the only place that branches, and everything downstream
+already carries a per-ray weight, wavelength and origin.
+
+**Glass catalogue import.** The engine shipped with ten materials hard-coded.
+That is a demonstration, not a tool: the first thing a lens designer does is
+type a glass name, and if it is not there the tool is not usable for their job
+whatever else it does. Two formats cover almost everything anyone actually has:
+the Zemax `.agf` catalogue format that Schott, Ohara, CDGM, Hoya and Sumita all
+publish in, and a refractiveindex.info `.yml` entry. Everything resolves into
+the same fixed-size `OpticalMaterial` the tracer already reads, at load, so
+nothing on the hot path changes. A glass whose dispersion formula cannot be
+represented as a Sellmeier is resampled onto the table model rather than
+dropped.
+
+**Multi-source.** A luminaire with more than one LED — and any system needing a
+stray-light source alongside the signal source — is a configuration with more
+than one emitter. `SimConfig` holds a primary source plus any number of
+`SourceSpec`s, each placed *relative* to the scene emitter by default, which is
+what makes a four-LED array four copies of one spec at four offsets rather than
+four hand-placed sources. The ray budget is shared between sources in proportion
+to power — the variance-optimal split: a source contributing a tenth of the
+light gets a tenth of the rays and every source ends up with a comparable error
+bar. Each arrival is tagged with the source that emitted it, so the receiver can
+say which beam is which. A run with an empty extra-source list is bit-identical
+to what it was before there was a list at all.
 
 ## Measurements, not impressions
 
@@ -289,6 +344,21 @@ A four-wide BVH and float bounding boxes were both built and benchmarked against
 the current binary/double hierarchy. Neither paid on this workload, and both were
 removed — the measurements are in the comment on `TraceScene::BvhNode`.
 
+**A four-wide leaf.** The hierarchy's leaves hold four triangles and used to test
+them one at a time in scalar double. The data layout is already exactly what a
+4-wide AVX2 double intersection wants, so the wide path is the option the layout
+favours. It is probed at run time — `simd::avx2Available()` answers once and
+caches, and the probe lives deliberately outside the AVX2-compiled translation
+unit — and it is bit-for-bit identical to the scalar loop: the arithmetic is
+written in the same order and associations as Moller-Trumbore, with explicit mul
+and add intrinsics so no fused multiply-add can quietly re-round an
+intermediate, and the caller picks the winner by walking the four lanes in index
+order, which is what makes an exact tie resolve the way the scalar loop resolved
+it. The scalar path stays: it is what the brute-force reference walk uses, so
+the equivalence test still means something, and it is what runs on a machine
+without AVX2. Two tests pin the wide path — the wide leaf agrees with the scalar
+one bit for bit, and a scene traces identically with and without it.
+
 ## Build
 
 Prerequisites:
@@ -341,7 +411,9 @@ OCCT under test is the one the developer box has.
 ctest --preset release
 ```
 
-216 tests in 35 suites, no external framework. Beyond the original coverage
+290 tests in 58 suites, no external framework. The scene and test counts are
+derived, not retyped: `python tools/regenerate_counts.py` regenerates them from
+`--smoke` and the test binary's own totals. Beyond the original coverage
 (Moller-Trumbore branches, BVH vs brute force, energy conservation, TIR critical
 angle, edge cases, sampling statistics, detector binning, the async worker, and
 the irradiance patterns each scene claims to produce), the physics and analysis
@@ -569,6 +641,29 @@ python/runner.py --job job.json   batch: job JSON document in, JSON lines out
 python/runner.py --exe <path>     point at a different build
 ```
 
+Which LuxTrace a script talks to is `LUXTRACE_EXE` when it is set, and otherwise
+the build beside this repository. No absolute path is written into the client.
+
+### Which Python runs it
+
+The **Python** tab picks the interpreter itself. **Automatic** is whatever the
+machine offers, best first: `LUXTRACE_PYTHON` if it is set, then `python` on
+`PATH`, then every python.org install the registry knows about, then the usual
+install directories, then the `py` launcher — newest version first within each.
+Choosing a specific one from the **Interpreter** box, or pointing at a
+`python.exe` with **Browse**, is remembered and used from then on; a remembered
+interpreter that is later uninstalled reports itself and falls back to Automatic
+rather than failing.
+
+Discovery skips Microsoft Store app-execution aliases. Windows ships a
+zero-byte `python3.exe` on `PATH` that passes every existence check and opens
+the Store rather than running a script, and it is often the first `python3` a
+search finds — which is exactly the interpreter a panel must not launch.
+
+The panel also hands the runner `LUXTRACE_EXE`, so a script started from inside
+the app reaches *that* app rather than whichever build a relative search finds
+first.
+
 Inside a script a client is in scope as `luxtrace`; every method is one operation
 and returns the envelope's `data` object, or raises `LuxTraceError` with a machine-
 readable `code`:
@@ -608,16 +703,20 @@ src/
     SurfaceOptics       the optical properties, shared by all three surface forms
     Optics              Fresnel, cosine hemisphere, slope error, RNG
     Material            glass catalogue, Sellmeier/Cauchy/tables, metal Fresnel
+    MaterialFile        read a real catalogue: Zemax .agf, refractiveindex.info .yml
     Coating             ideal / measured / characteristic-matrix thin films
     Bsdf                GGX, ABg, measured BSDF, Henyey-Greenstein volume scatter
     Polarisation        Stokes vectors and Mueller matrices
     Spectrum            SPDs, CIE colour matching, V(lambda), sampling
     Sampling            Owen-scrambled Sobol
-    GeometryProvider    scene registry: 25 parametric OCCT scenes + their sources
+    GeometryProvider    scene registry: 26 parametric OCCT scenes + their sources
     CadImport           STEP / IGES reading, and optics assigned per part or face
     MeshBuilder         BRepMesh tessellation -> triangle meshes + exact normals
+    Mesh                the flat triangle mesh the tracer walks
     TraceScene          flattened triangles, SAH BVH, instancing, intersection
+    TraceSceneSimd      the four-wide AVX2 leaf, probed at run time
     RayTracer           Monte Carlo tracing, threaded and deterministic
+    ThreadPool          the worker pool the tracer schedules rays onto
     SimulationResult    irradiance grid, far field, arrivals, energy accounting
     Report              the one-click HTML document
     Simulation          facade: geometry -> mesh -> BVH (cached) -> trace
@@ -625,8 +724,11 @@ src/
     Studies             convergence and through-focus sweeps
     ConfigIO             JSON save/load of a whole setup
     JobRunner            --job/--serve: operations in as JSON, envelopes out on stdout
+    PythonEnv           finding the interpreter the Python panel runs scripts with
+    RayFile             measured source ray sets: Zemax .dat, ASAP .dis, TracePro text
     SimulationWorker    QThread wrapper: async run, progress, cancellation
     StudyWorker         the same, for a convergence sweep
+    GeometryWorker      the same, for a geometry build
   ui/
     MainWindow          layout, tabs, menus, exports
     ControlsPanel       scene, geometry parameters, source, physics, run
@@ -639,6 +741,8 @@ src/
 test/
   TestMain.cpp          harness + the original suites
   NewTests.inc          physics, analysis and workflow suites
+tools/
+  regenerate_counts.py  derive the scene and test counts the README quotes
 resources/
   make_icon.py          the icon generator -- edit this, not the images
   luxtrace.svg          vector master, emitted by the generator
@@ -669,6 +773,11 @@ python resources/make_icon.py
   *normals* are exact — read off the surface at each node and interpolated across
   the facet — so what the mesh still limits is the hit *position*, which is a far
   weaker constraint. Coarsening the mesh now costs far less than it used to.
+- `SceneParams` is still capped at four doubles. A doublet with two radii, two
+  thicknesses, a spacing and a receiver is already six.
+- The far field bins uniformly in theta, so a 1.3-degree beam is resolved by less
+  than one 2-degree bin and the polar cells are starved of samples.
+  Equal-solid-angle binning is the fix.
 - The estimator is unbiased rather than exact per ray: Russian roulette, branch
   collapsing, emission aiming and next-event estimation each replace a sampled
   quantity with an estimate of it. Every one books its difference into a
@@ -697,6 +806,52 @@ python resources/make_icon.py
   the measurements and the reasoning are in the comment on `TraceScene::BvhNode`.
   A performance claim that does not survive its own benchmark is not an
   optimisation.
+- Imported CAD does not appear in the scene list and does not persist. Import
+  assembles a full traceable scene and a run traces that rather than the
+  selected scene, but touching a geometry parameter replaces it and the file has
+  to be imported again; a saved config records the selected scene rather than
+  the file; and studies that vary a dimension decline on it, since an imported
+  solid declares none. The source origin and axis are fixed at import rather
+  than editable afterwards.
+- Per-thread detector grids will not scale past a fine receiver. At 64 x 64 they
+  cost 32 KB per thread; at 1024 x 1024 they are 8 MB per thread, and a
+  progressive snapshot copies them.
+- No collision in the walkthrough — the camera passes straight through geometry.
+- No logging or diagnostics capture, and the config format string has no
+  versioned migration path.
+
+## What this does not model
+
+LuxTrace is a ray tracer with a few closed-form helpers drawn beside its output.
+Somebody evaluating it against LightTools or OpticStudio should learn the
+physics boundary from this paragraph rather than by discovering it, so it is
+stated once, here: the model boundary is as deliberate as the physics that is
+in.
+
+- **Wave propagation.** There is no computed point-spread function and no
+  physical diffraction. The diffraction limit of a given aperture is drawn as
+  an *overlay* beside the measured MTF, and Strehl comes from Marechal's
+  approximation -- flagged as meaningless past the quarter wave where that
+  approximation stops holding. Resolution below the Fraunhofer floor is not
+  simulated; it is shown as the wall it would hit.
+- **Gradient-index (GRIN) media.** Index is a constant per medium (or per
+  Sellmeier glass). No medium carries a spatially varying refractive index, so
+  a selfoc rod or a GRIN lens, where the index does the focusing, cannot be
+  modelled.
+- **Birefringence.** Polarisation is a Stokes/Mueller model over a single
+  index -- there is no index anisotropy. A crystal, or any retarder whose
+  phase depends on orientation against fast and slow axes, is out of scope.
+- **Fluorescence.** A phosphor exists only as a source *spectrum* (an SPD), not
+  as a wavelength-converting medium. A phosphor-converted white LED is therefore
+  modelled by emitting its SPD directly rather than by converting blue to
+  yellow inside the material -- the real limit for white-LED work.
+- **Thermal coupling.** Optical properties do not depend on temperature, and a
+  material does not warm up as it absorbs. There is no thermo-mechanical or
+  thermal-optical loop.
+- **Ghost / stray-light attribution.** A ghost image or a stray-light path is
+  real geometry the trace can hit, but arrivals are not attributed to a
+  specific bounce chain or interface. You get the spot and the flux, not the
+  "which surface did this come off" answer a ghost study wants.
 
 ## Licence
 

@@ -24,8 +24,11 @@ struct OpticalMaterial {
     enum class Model : int { Constant = 0, Cauchy, Sellmeier, Table };
 
     // Enough for a metal across the visible band, and for a polymer fit. A
-    // longer table belongs in a file the app imports and resamples onto this.
-    static constexpr int kMaxSamples = 8;
+    // measured .agf or refractiveindex.info table -- which routinely carries
+    // fifty to a few hundred points -- fits on these fixed hot-path arrays
+    // exactly as read, and a file that exceeds even this is resampled onto it
+    // while its exact source is kept in the off-path sidecar below.
+    static constexpr int kMaxSamples = 256;
 
     bool    set   = false;   // false means "no material assigned"
     Model   model = Model::Constant;
@@ -38,6 +41,19 @@ struct OpticalMaterial {
     double  lambdaNm[kMaxSamples] = {};
     double  nSample[kMaxSamples]  = {};
     double  kSample[kMaxSamples]  = {};   // extinction; non-zero only for a metal
+
+    // Full-fidelity source table, off the hot path. The fixed arrays above are
+    // what the tracer interpolates; this is what the original measurement said,
+    // so a table with more points than kMaxSamples round-trips without loss and
+    // the reduction is visible where the number is read. `reduced` is true only
+    // when originCount exceeded the cap and the hot-path arrays were resampled;
+    // for a file that fit, the arrays *are* the full data (originCount==samples)
+    // and the origin vectors are left empty.
+    int                 originCount = 0;
+    std::vector<double> originLambdaNm;
+    std::vector<double> originN;
+    std::vector<double> originK;
+    bool                reduced = false;
 
     // Internal attenuation, 1/mm, at the d line. Catalogue-derived rather than
     // one number the whole scene library shares.

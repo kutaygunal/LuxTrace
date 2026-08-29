@@ -286,6 +286,68 @@ double sampleAt(const std::vector<double>& x, const std::vector<double>& y, doub
     return y[i] * (1.0 - t) + y[i + 1] * t;
 }
 
+// Loads a measured (lambda, n, optionally k) table into a material with full
+// fidelity where it fits, and into the off-path origin sidecar where it does
+// not.
+//
+// A file smaller than the struct's fixed cap is kept exactly as read: the
+// hot-path arrays hold every source point, `reduced` stays false and the
+// origin vectors are left empty, so the numbers a user reads are the numbers a
+// vendor published. A larger file is resampled onto the cap so the hot path
+// stays fixed-size, while the exact source is preserved off-path and `reduced`
+// is set -- the reduction becomes visible rather than silent.
+void fillTabulated(OpticalMaterial& m,
+                   const std::vector<double>& lambdaUm,
+                   const std::vector<double>& n,
+                   const std::vector<double>& k) {
+    const int src = int(lambdaUm.size());
+    m.originCount = src;
+    m.reduced     = false;
+    m.originLambdaNm.clear();
+    m.originN.clear();
+    m.originK.clear();
+    if (src <= 0) return;
+
+    const bool haveExtinction = (k.size() >= std::size_t(src));
+    const double lo = lambdaUm.front() * 1000.0;
+    const double hi = lambdaUm.back()  * 1000.0;
+
+    if (src <= OpticalMaterial::kMaxSamples) {
+        // The whole table fits: keep it exactly as the file wrote it.
+        m.model   = OpticalMaterial::Model::Table;
+        m.samples = src;
+        for (int i = 0; i < src; ++i) {
+            m.lambdaNm[i] = lambdaUm[i] * 1000.0;
+            m.nSample[i]  = n[i];
+            m.kSample[i]  = haveExtinction ? k[i] : 0.0;
+        }
+        m.nd = m.indexAt(kLambdaD);
+        return;
+    }
+
+    // Exceeds the cap: resample the hot-path arrays across the file's own range
+    // (sampleAt clamps, so nothing is extrapolated), and keep the exact source
+    // off-path so no point the vendor measured is lost.
+    m.reduced = true;
+    m.model   = OpticalMaterial::Model::Table;
+    m.samples = OpticalMaterial::kMaxSamples;
+    m.originLambdaNm.reserve(std::size_t(src));
+    m.originN.reserve(std::size_t(src));
+    m.originK.reserve(std::size_t(src));
+    for (int i = 0; i < src; ++i) {
+        m.originLambdaNm.push_back(lambdaUm[i] * 1000.0);
+        m.originN.push_back(n[i]);
+        m.originK.push_back(haveExtinction ? k[i] : 0.0);
+    }
+    for (int i = 0; i < m.samples; ++i) {
+        const double lam = lo + (hi - lo) * double(i) / double(m.samples - 1);
+        m.lambdaNm[i] = lam;
+        m.nSample[i]  = sampleAt(lambdaUm, n, lam * 1e-3);
+        m.kSample[i]  = k.empty() ? 0.0 : sampleAt(lambdaUm, k, lam * 1e-3);
+    }
+    m.nd = m.indexAt(kLambdaD);
+}
+
 // n(lambda) for a refractiveindex.info formula block. Only the two Sellmeier
 // forms are evaluated: they are what the site uses for essentially every
 // transparent material, and a metal is always tabulated rather than fitted.
@@ -462,35 +524,31 @@ LoadResult loadRefractiveIndexYaml(const QString& path, const QString& nameIn) {
     QString desc;
 
     if (tabN) {
-        // Resampled onto the struct's own eight slots, evenly across whichever
-        // part of the band the file actually covers.
-        double lo = std::max(kResampleMinNm, tabN->lambdaUm.front() * 1000.0);
-        double hi = std::min(kResampleMaxNm, tabN->lambdaUm.back()  * 1000.0);
-        if (!(hi > lo)) {
-            lo = tabN->lambdaUm.front() * 1000.0;
-            hi = tabN->lambdaUm.back()  * 1000.0;
-        }
-        if (!(hi > lo)) {
-            res.error = QStringLiteral("%1 carries a table with no usable wavelength "
-                                       "range").arg(fi.fileName());
+        // A measured table is kept exactly as a file wrote it, not forced onto a
+        // fixed grid: every point fits the raised hot-path cap for ordinary
+        // files, and whatever exceeds it is preserved off-path with the
+        // reduction made visible rather than silent.
+        if (tabN->lambdaUm.size() < 2) {
+            res.error = QStringLiteral("%1 carries a table with fewer than two "
+                                       "usable points").arg(fi.fileName());
             return res;
         }
-
-        m.model   = OpticalMaterial::Model::Table;
-        m.samples = OpticalMaterial::kMaxSamples;
-        for (int i = 0; i < m.samples; ++i) {
-            const double lam = lo + (hi - lo) * double(i) / double(m.samples - 1);
-            m.lambdaNm[i] = lam;
-            m.nSample[i]  = sampleAt(tabN->lambdaUm, tabN->n, lam * 1e-3);
-            m.kSample[i]  = tabK ? sampleAt(tabK->lambdaUm, tabK->k, lam * 1e-3) : 0.0;
-        }
-        m.nd = m.indexAt(kLambdaD);
-        desc = m.isMetal()
-                   ? QStringLiteral("Measured n and k, %1-%2 nm. Reflectance comes from "
-                                    "the complex Fresnel equations.")
-                         .arg(lo, 0, 'f', 0).arg(hi, 0, 'f', 0)
-                   : QStringLiteral("Measured n, %1-%2 nm.")
-                         .arg(lo, 0, 'f', 0).arg(hi, 0, 'f', 0);
+        const std::vector<double> kCol = tabK ? tabK->k : std::vector<double>();
+        fillTabulated(m, tabN->lambdaUm, tabN->n, kCol);
+        const double lo = m.samples > 0 ? m.lambdaNm[0] : kResampleMinNm;
+        const double hi = m.samples > 0 ? m.lambdaNm[m.samples - 1] : kResampleMaxNm;
+        const QString fidelity = m.reduced
+            ? QStringLiteral("%1 measured points, resampled onto %2 on the trace "
+                             "path (exact source kept)")
+                  .arg(m.originCount).arg(m.samples)
+            : QStringLiteral("%1 measured points, full fidelity")
+                  .arg(m.originCount);
+        desc = (m.isMetal()
+                   ? QStringLiteral("Measured n and k, %1-%2 nm. Reflectance comes "
+                                    "from the complex Fresnel equations. %3")
+                         .arg(lo, 0, 'f', 0).arg(hi, 0, 'f', 0).arg(fidelity)
+                   : QStringLiteral("Measured n, %1-%2 nm. %3")
+                         .arg(lo, 0, 'f', 0).arg(hi, 0, 'f', 0).arg(fidelity));
     } else if (formula) {
         double lo = kResampleMinNm, hi = kResampleMaxNm;
         if (formula->rangeLoUm > 0.0) lo = std::max(lo, formula->rangeLoUm * 1000.0);

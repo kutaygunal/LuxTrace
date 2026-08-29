@@ -1,6 +1,7 @@
 #pragma once
 #include <QString>
 #include <cstdint>
+#include <vector>
 #include "Vec3.h"
 
 // How a surface scatters, and how a medium scatters inside itself.
@@ -32,10 +33,12 @@ enum class Model : int { Specular = 0, Microfacet, Abg, Lambertian, Table };
 QString modelName(Model m);
 QString modelTip(Model m);
 
-// A surface's scatter description. Fixed size and trivially copyable, so it
-// travels with SurfaceOptics through every representation without allocating.
+// A surface's scatter description. The measured BSDF table is sized generously
+// (512 samples) so a scatterometer report -- which commonly has a few hundred
+// points -- sits on the fixed arrays exactly as measured rather than being
+// squeezed to sixteen.
 struct Surface {
-    static constexpr int kMaxSamples = 16;
+    static constexpr int kMaxSamples = 512;
 
     Model  model = Model::Specular;
 
@@ -52,10 +55,23 @@ struct Surface {
     // specular, which is what a real polished-but-imperfect surface does.
     double fraction = 1.0;
 
-    // Table: BSDF against |beta - beta0|, log-spaced, resampled on load.
+    // Table: BSDF against |beta - beta0|, log-spaced, resampled on load. These
+    // are the hot-path arrays; a file that exceeds the cap keeps its exact
+    // source in the off-path sidecar below (and raises `reduced`) so nothing a
+    // scatter spec reported is lost to the fixed array.
     int    samples = 0;
     double tableBeta[kMaxSamples] = {};
     double tableValue[kMaxSamples] = {};
+
+    // Full-fidelity source table, off the hot path. originCount is the number
+    // of measured points read; when it exceeds kMaxSamples the hot-path arrays
+    // hold a resample and the exact source lives here with `reduced` set, so the
+    // fidelity is visible where the BSDF is read. originCount==samples means the
+    // fixed arrays already carry the full measurement.
+    int                 originCount = 0;
+    std::vector<double> originBeta;
+    std::vector<double> originValue;
+    bool                reduced = false;
 
     bool isSpecular() const { return model == Model::Specular || fraction <= 0.0; }
 

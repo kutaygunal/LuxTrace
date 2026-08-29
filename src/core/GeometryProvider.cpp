@@ -590,6 +590,7 @@ const std::vector<SceneParamInfo>& GeometryProvider::paramInfo(Scene scene) {
 SceneParams GeometryProvider::defaultParams(Scene scene) {
     SceneParams p;
     const auto& info = paramInfo(scene);
+    p.n = int(std::min<std::size_t>(info.size(), std::size_t(SceneParams::kMax)));
     for (std::size_t i = 0; i < info.size() && i < SceneParams::kMax; ++i)
         p.v[i] = info[i].def;
     return p;
@@ -598,13 +599,15 @@ SceneParams GeometryProvider::defaultParams(Scene scene) {
 SceneParams GeometryProvider::sanitise(Scene scene, const SceneParams& params) {
     SceneParams p;
     const auto& info = paramInfo(scene);
-    for (std::size_t i = 0; i < SceneParams::kMax; ++i) {
-        if (i >= info.size()) { p.v[i] = 0.0; continue; }
+    const int used = int(std::min<std::size_t>(info.size(), std::size_t(SceneParams::kMax)));
+    p.n = used;
+    for (int i = 0; i < used; ++i) {
         const double v = params.v[i];
         // A NaN out of a malformed config file would propagate into the
         // geometry and then into every hit test, so it is replaced outright.
         p.v[i] = std::isfinite(v) ? std::clamp(v, info[i].min, info[i].max) : info[i].def;
     }
+    for (int i = used; i < SceneParams::kMax; ++i) p.v[i] = 0.0;
     return p;
 }
 

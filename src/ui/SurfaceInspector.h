@@ -87,6 +87,7 @@ private:
     QComboBox*      m_coatingModel = nullptr;
     QDoubleSpinBox* m_coatingResidual = nullptr;
     QCheckBox*      m_coatingHigh  = nullptr;
+    QLabel*         m_coatingInfo  = nullptr;
     PlotWidget*     m_coatingPlot  = nullptr;
 
     // --- scatter ---

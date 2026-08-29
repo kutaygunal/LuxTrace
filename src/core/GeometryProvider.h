@@ -36,17 +36,52 @@ struct OpticalSurface : SurfaceOptics {
     std::vector<gp_Trsf> placements;
 };
 
-// The numbers a scene exposes for editing. Fixed-size and trivially copyable so
-// it can be a cache key, compared with == and written into a config file
-// without any allocation.
+// The numbers a scene exposes for editing. Small inline vector, not a heap
+// allocation: the struct is copied once per study evaluation, so a heap buffer
+// would defeat the copy-as-cache-key property. It stays usable as a cache key,
+// comparable with == and writable into a config file without any allocation.
+//
+// `kMax` is the capacity. A scene uses the first `size()` slots; unused slots
+// are kept zeroed so that equality, hashing and a cache key see the same
+// contents no matter how a value was constructed.
 //
 // The last live slot of every scene is its receiver position, so a focus sweep
 // or a detector move is a parameter change rather than a special case.
+// `receiver()` is the single named accessor for that slot.
 struct SceneParams {
-    static constexpr int kMax = 4;
-    double v[kMax] = {0.0, 0.0, 0.0, 0.0};
+    // Capacity. The old fixed-four bound left a scene with only three free
+    // dimensions (the receiver always owns the final live slot); a cemented
+    // doublet needs six, so the buffer is sized for six and scenes that use
+    // fewer simply leave the tail as zeroed dead slots.
+    static constexpr int kMax      = 6;
+    static constexpr int kCapacity = kMax;
+
+    // The number of live parameter slots this instance carries. Set by
+    // GeometryProvider when it mints or cleans a param set; a value built by
+    // hand (e.g. a widget filling v[0..n)) carries the natural default and is
+    // re-derived the moment it passes through sanitise().
+    int n = 0;
+
+    // Inline storage, in place -- never on the heap. Unused slots stay 0.0.
+    double v[kMax] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+
+    SceneParams() = default;
+
+    int  size() const { return n; }
+    int  capacity() const { return kMax; }
+    bool empty() const { return n == 0; }
+
+    double& operator[](int i) { return v[i]; }
+    const double& operator[](int i) const { return v[i]; }
+
+    // The last live slot is the receiver position; this is the single accessor
+    // callers use for it. n == 0 only ever occurs for a not-yet-populated
+    // value, which returns slot 0 as a safe stand-in.
+    double& receiver() { return v[(n > 0 ? n : 1) - 1]; }
+    const double& receiver() const { return v[(n > 0 ? n : 1) - 1]; }
 
     bool operator==(const SceneParams& o) const {
+        if (n != o.n) return false;
         for (int i = 0; i < kMax; ++i)
             if (v[i] != o.v[i]) return false;
         return true;

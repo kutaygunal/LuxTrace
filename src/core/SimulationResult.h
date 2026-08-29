@@ -1,4 +1,6 @@
 #pragma once
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -137,10 +139,106 @@ struct IntensityGrid {
     double fwhmDeg    = 0.0;            // full width of `profile` at half `peak`
     double totalFlux  = 0.0;
 
-    bool valid() const { return nTheta > 0 && nPhi > 0 && !bin.empty(); }
-    double thetaStepDeg() const { return nTheta > 0 ? 180.0 / nTheta : 0.0; }
-    // Centre angle of theta bin i, degrees.
-    double thetaCenterDeg(int i) const { return (double(i) + 0.5) * thetaStepDeg(); }
+    // Beam-adaptive theta partition: the upper edge of every theta bin, in
+    // radians, size nTheta+1, strictly increasing from 0 to pi. When the
+    // far-field reduction fills this, the bins are NOT the old flat
+    // `180.0 / nTheta` grid: they are equal-flux rings that concentrate where
+    // the light goes, so a narrow (couple-of-degree) beam spans several bins
+    // while dark directions share wide ones -- and every bin index accessor
+    // below (centers, widths, solid angles, direction->bin) reads these edges,
+    // which is what keeps the IES/EULUMDAT export, the polar plot and the
+    // profile on one and the same grid. Empty means the legacy uniform-in-theta
+    // grid (only ever a fallback now).
+    std::vector<double> thetaEdges;
+
+    static constexpr double kPi = 3.14159265358979323846264338327950288;
+
+    bool valid()   const { return nTheta > 0 && nPhi > 0 && !bin.empty(); }
+    bool adaptive() const { return thetaEdges.size() == std::size_t(nTheta) + 1; }
+
+    // Mean theta bin width, degrees. For a beam-adaptive grid this is the
+    // whole-span average; per-bin width is `thetaWidthDeg(i)`.
+    double thetaStepDeg() const { return nTheta > 0 ? 180.0 / double(nTheta) : 0.0; }
+
+    double thetaLowRad(int i) const {
+        if (adaptive()) return thetaEdges[std::size_t(i)];
+        const double n = double(nTheta > 0 ? nTheta : 1);
+        return kPi * double(i) / n;
+    }
+    double thetaHighRad(int i) const {
+        if (adaptive()) return thetaEdges[std::size_t(i) + 1];
+        const double n = double(nTheta > 0 ? nTheta : 1);
+        return kPi * double(i + 1) / n;
+    }
+    double thetaCenterRad(int i) const {
+        return 0.5 * (thetaLowRad(i) + thetaHighRad(i));
+    }
+    double thetaLowDeg(int i)  const { return thetaLowRad(i)  * 180.0 / kPi; }
+    double thetaHighDeg(int i) const { return thetaHighRad(i) * 180.0 / kPi; }
+    double thetaCenterDeg(int i) const { return thetaCenterRad(i) * 180.0 / kPi; }
+    double thetaWidthDeg(int i) const { return (thetaHighRad(i) - thetaLowRad(i)) * 180.0 / kPi; }
+
+    // Solid angle of a single (theta, phi) cell in ring i, steradians. With the
+    // adaptive grid each ring is a cone frustum whose width varies with the
+    // flux, so this is computed from the actual bin edges rather than a flat
+    // dTheta.
+    double cellSolidAngleRad(int i) const {
+        if (nPhi <= 0) return 0.0;
+        return (2.0 * kPi / double(nPhi)) *
+               (std::cos(thetaLowRad(i)) - std::cos(thetaHighRad(i)));
+    }
+
+    // The theta bin a direction leaving -- as cos(theta), 1 at +Z -- falls
+    // into. Binary search over the adaptive edges; the legacy path keeps the
+    // old closed form.
+    int thetaBinIndex(double cosTheta) const {
+        if (nTheta <= 0) return 0;
+        const double th = std::acos(std::clamp(cosTheta, -1.0, 1.0));
+        if (!adaptive()) {
+            return std::clamp(int(th / kPi * double(nTheta)), 0, nTheta - 1);
+        }
+        const int k = int(std::upper_bound(thetaEdges.begin(), thetaEdges.end(), th)
+                          - thetaEdges.begin()) - 1;
+        return std::clamp(k, 0, nTheta - 1);
+    }
+
+    // Builds a beam-adaptive theta partition -- nOut+1 strictly increasing
+    // edges (radians, 0..pi) -- from a master theta-ring flux histogram. Each
+    // output ring takes an equal share of the (lightly floored) emitted flux,
+    // so bins concentrate exactly where the flux is. `baseline` is a tiny
+    // per-master-bin floor that keeps the CDF inversion well-behaved across
+    // silent directions and guarantees strictly increasing edges.
+    static void buildBeamAdaptiveEdges(const std::vector<double>& ringFlux,
+                                       int masterN, int nOut, double baseline,
+                                       std::vector<double>& edgesOut) {
+        edgesOut.assign(std::size_t(nOut) + 1, 0.0);
+        if (nOut <= 0 || masterN <= 0) return;
+        const double W = kPi / double(masterN);                 // master bin width, rad
+        // Flux integral (with the floor) up to each master bin's upper edge.
+        std::vector<double> cum(std::size_t(masterN) + 1, 0.0);
+        for (int m = 0; m < masterN; ++m)
+            cum[m + 1] = cum[m] + (ringFlux[m] + baseline) * W;
+        const double total = cum[masterN];
+        edgesOut[0] = 0.0;
+        edgesOut[std::size_t(nOut)] = kPi;
+        if (total <= 0.0) {                                     // silent run: uniform fallback
+            for (int k = 1; k < nOut; ++k)
+                edgesOut[std::size_t(k)] = kPi * double(k) / double(nOut);
+            return;
+        }
+        for (int k = 1; k < nOut; ++k) {
+            const double q = total * double(k) / double(nOut);
+            const auto    it = std::upper_bound(cum.begin() + 1, cum.end(), q);
+            const int     m  = std::clamp(int(it - cum.begin()) - 1, 0, masterN - 1);
+            const double  below = cum[m];
+            const double  seg   = cum[m + 1] - below;
+            const double  t     = (seg > 0.0) ? W * (q - below) / seg : 0.5 * W;
+            edgesOut[std::size_t(k)] =
+                std::clamp(m * W + std::clamp(t, 0.0, W), 0.0, kPi);
+            if (edgesOut[std::size_t(k)] <= edgesOut[std::size_t(k - 1)])
+                edgesOut[std::size_t(k)] = edgesOut[std::size_t(k - 1)] + 1e-12;
+        }
+    }
 };
 
 // The estimator's bookkeeping residual, one named channel per estimator.

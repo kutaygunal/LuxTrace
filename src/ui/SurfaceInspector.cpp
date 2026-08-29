@@ -182,6 +182,10 @@ SurfaceInspector::SurfaceInspector(QWidget* parent) : QWidget(parent) {
     m_coatingHigh->setToolTip(QStringLiteral(
         "The residual is a floor to reflect rather than a target to suppress."));
 
+    m_coatingInfo = new QLabel(m_coatingBox);
+    m_coatingInfo->setWordWrap(true);
+    m_coatingInfo->setStyleSheet(QStringLiteral("color: #7a7a7a;"));
+
     m_coatingPlot = new PlotWidget(m_coatingBox);
     m_coatingPlot->setMinimumHeight(130);
     m_coatingPlot->setAxisLabels(QStringLiteral("angle of incidence [deg]"),
@@ -192,6 +196,7 @@ SurfaceInspector::SurfaceInspector(QWidget* parent) : QWidget(parent) {
     coatForm->addRow(QStringLiteral("Model:"), m_coatingModel);
     coatForm->addRow(QStringLiteral("Residual R:"), m_coatingResidual);
     coatForm->addRow(m_coatingHigh);
+    coatForm->addRow(m_coatingInfo);
     coatForm->addRow(m_coatingPlot);
     layout->addWidget(m_coatingBox);
 
@@ -529,10 +534,22 @@ void SurfaceInspector::refreshMaterialReadout() {
                      0, 'f', 1));
         return;
     }
-    m_materialInfo->setText(QStringLiteral("n_d %1, Abbe %2, alpha %3 /mm")
+    // Make the fidelity of a measured table legible right where its n is read:
+    // "N points, full fidelity" when the file fit the hot-path arrays exactly,
+    // and "reduced to M at load" when a file exceeded the cap (its exact source
+    // is still kept), so a curve that was thinned is never mistaken for intact.
+    QString fidelity;
+    if (m.model == OpticalMaterial::Model::Table && m.originCount > 0) {
+        fidelity = m.reduced
+            ? QStringLiteral(" | %1 measured points reduced to %2 on the trace path "
+                             "(exact source kept)").arg(m.originCount).arg(m.samples)
+            : QStringLiteral(" | %1 measured points, full fidelity").arg(m.originCount);
+    }
+    m_materialInfo->setText(QStringLiteral("n_d %1, Abbe %2, alpha %3 /mm%4")
                                 .arg(m.indexAt(587.6), 0, 'f', 4)
                                 .arg(m.abbe(), 0, 'f', 1)
-                                .arg(m.alpha, 0, 'g', 3));
+                                .arg(m.alpha, 0, 'g', 3)
+                                .arg(fidelity));
 }
 
 void SurfaceInspector::refreshCoatingPlot() {
@@ -585,6 +602,28 @@ void SurfaceInspector::refreshCoatingPlot() {
                                 : QStringLiteral("Bare Fresnel, air onto n_d %1")
                                       .arg(o.index, 0, 'f', 3));
     m_coatingPlot->setSeries(std::move(series));
+
+    // Make the fidelity of a measured R(lambda) coating visible alongside its
+    // curve: how many points it carries, and whether a file that exceeded the
+    // cap was thinned (its exact source is still kept off-path).
+    if (o.coating.model == coating::Model::Table) {
+        if (o.coating.originCount > 0) {
+            m_coatingInfo->setText(
+                o.coating.reduced
+                    ? QStringLiteral("Measured R(lambda): %1 points, resampled onto %2 on "
+                                     "the trace path (exact source kept).")
+                          .arg(o.coating.originCount).arg(o.coating.samples)
+                    : QStringLiteral("Measured R(lambda): %1 points, full fidelity.")
+                          .arg(o.coating.originCount));
+        } else if (o.coating.samples > 0) {
+            m_coatingInfo->setText(QStringLiteral("Measured R(lambda): %1 points.")
+                                       .arg(o.coating.samples));
+        } else {
+            m_coatingInfo->clear();
+        }
+    } else {
+        m_coatingInfo->clear();
+    }
 }
 
 void SurfaceInspector::refreshLobePlot() {

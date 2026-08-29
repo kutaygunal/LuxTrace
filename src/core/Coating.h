@@ -1,6 +1,7 @@
 #pragma once
 #include <QString>
 #include <cstdint>
+#include <vector>
 
 // Thin-film coatings on a refractive surface.
 //
@@ -23,10 +24,13 @@ enum class Model : int { None = 0, Ideal, Table, Stack };
 QString modelName(Model m);
 QString modelTip(Model m);
 
-// A coating, fixed-size so it travels with the surface it is on.
+// A coating, fixed-size so it travels with the surface it is on. The measured
+// R(lambda) table is sized generously (256 samples) so a real vendor table --
+// which rarely exceeds a few hundred points -- is carried on the fixed arrays
+// on the hot path exactly as measured, rather than truncated to eight.
 struct Coating {
     static constexpr int kMaxLayers  = 8;
-    static constexpr int kMaxSamples = 8;
+    static constexpr int kMaxSamples = 256;
 
     Model  model = Model::None;
 
@@ -38,10 +42,26 @@ struct Coating {
     bool   highReflector = false;
 
     // Table: R against wavelength at normal incidence. The angular dependence
-    // comes from the same roll-off the ideal model uses.
+    // comes from the same roll-off the ideal model uses. These are the hot-path
+    // arrays; whatever a file carried is kept exactly here when it fits, and a
+    // larger file keeps its full source in the off-path sidecar below instead
+    // of losing it.
     int    samples = 0;
     double lambdaNm[kMaxSamples] = {};
     double reflectance[kMaxSamples] = {};
+
+    // Full-fidelity source table, off the hot path. A measured R(lambda) file
+    // is preserved exactly as read so nothing a vendor published is lost to the
+    // fixed arrays above: `reduced` is false whenever every source point fit
+    // (originCount == samples), and true only when a file exceeded the cap and
+    // was resampled onto the hot-path arrays while its exact source still lives
+    // here. The trace loop reads the fixed arrays; these members exist so the
+    // reduction is visible where the number is read and the full data round-
+    // trips.
+    int                 originCount = 0;
+    std::vector<double> originLambdaNm;
+    std::vector<double> originReflectance;
+    bool                reduced = false;
 
     // Stack: quarter-wave-ish layers, outermost first, described by index and
     // physical thickness in nanometres.

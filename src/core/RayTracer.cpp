@@ -1578,30 +1578,71 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
 
 // ---- far-field reduction ---------------------------------------------------
 
-void finishIntensity(IntensityGrid& g, std::vector<double> bins, int nTheta, int nPhi) {
+void finishIntensity(IntensityGrid& g, std::vector<double> master, int nTheta, int nPhi) {
     g.nTheta = nTheta;
     g.nPhi   = nPhi;
-    g.bin    = std::move(bins);
-    g.perSteradian.assign(g.bin.size(), 0.0);
+    g.perSteradian.assign(std::size_t(nTheta) * std::size_t(nPhi), 0.0);
     g.profile.assign(std::size_t(nTheta), 0.0);
     g.totalFlux = 0.0;
+    g.thetaEdges.clear();
+    if (nTheta <= 0 || nPhi <= 0 || master.empty()) {
+        g.bin = std::move(master);
+        return;
+    }
 
-    const double dPhi   = kTwoPi / double(nPhi);
-    const double dTheta = kPi / double(nTheta);
-    for (int it = 0; it < nTheta; ++it) {
-        // Solid angle of one (theta, phi) cell: dPhi * (cos t0 - cos t1). Without
-        // this the poles would read as dark simply because their cells are small.
-        const double t0    = double(it) * dTheta;
-        const double t1    = double(it + 1) * dTheta;
-        const double omega = dPhi * (std::cos(t0) - std::cos(t1));
+    // `master` is the fine uniform accumulation grid (its theta resolution is
+    // what lets a narrow beam be seen at all). The requested output grid is
+    // beam-adaptive: equal-flux theta bins are rebuilt from it, so the bins
+    // concentrate where the flux is -- which is the fix that lets a ~1.3 deg
+    // beam span several output bins at the default 90 instead of under one.
+    const int masterN = int(master.size()) / nPhi;
+    g.bin.assign(std::size_t(nTheta) * std::size_t(nPhi), 0.0);
+
+    // Ring flux (sum over phi) of the master grid -- the signal the theta edges
+    // are built from.
+    std::vector<double> ringFlux(std::size_t(masterN), 0.0);
+    double peakRing = 0.0;
+    for (int m = 0; m < masterN; ++m) {
+        double s = 0.0;
+        for (int ip = 0; ip < nPhi; ++ip)
+            s += master[std::size_t(m) * std::size_t(nPhi) + std::size_t(ip)];
+        ringFlux[m] = s;
+        peakRing = std::max(peakRing, s);
+    }
+    const double baseline = peakRing > 0.0 ? 1e-9 * peakRing : 1e-12;
+    IntensityGrid::buildBeamAdaptiveEdges(ringFlux, masterN, nTheta, baseline, g.thetaEdges);
+
+    // Aggregate master cells into the adaptive output; a master bin straddling
+    // an output edge is split by the fraction of its theta width each ring owns,
+    // so the total flux is conserved exactly.
+    const double dPhi = kTwoPi / double(nPhi);
+    const double Wm   = kPi / double(masterN);
+    for (int k = 0; k < nTheta; ++k) {
+        const double a = g.thetaEdges[std::size_t(k)];
+        const double b = g.thetaEdges[std::size_t(k) + 1];
+        const double omega = dPhi * (std::cos(a) - std::cos(b));   // one cell's solid angle
+        const int m0 = std::clamp(int(a / Wm), 0, masterN - 1);
+        const int m1 = std::clamp(int(b / Wm), 0, masterN - 1);
+        for (int m = m0; m <= m1; ++m) {
+            const double lo = std::max(a, m * Wm);
+            const double hi = std::min(b, (m + 1) * Wm);
+            if (hi <= lo) continue;
+            const double frac = (hi - lo) / Wm;
+            for (int ip = 0; ip < nPhi; ++ip) {
+                const std::size_t mk = std::size_t(m) * std::size_t(nPhi) + std::size_t(ip);
+                const std::size_t ok = std::size_t(k) * std::size_t(nPhi) + std::size_t(ip);
+                const double v = frac * master[mk];
+                g.bin[ok] += v;
+                g.totalFlux += v;
+            }
+        }
         double ringSum = 0.0;
         for (int ip = 0; ip < nPhi; ++ip) {
-            const std::size_t k = std::size_t(it) * std::size_t(nPhi) + std::size_t(ip);
-            g.totalFlux += g.bin[k];
-            if (omega > 1e-15) g.perSteradian[k] = g.bin[k] / omega;
-            ringSum += g.perSteradian[k];
+            const std::size_t ok = std::size_t(k) * std::size_t(nPhi) + std::size_t(ip);
+            if (omega > 1e-15) g.perSteradian[ok] = g.bin[ok] / omega;
+            ringSum += g.perSteradian[ok];
         }
-        g.profile[std::size_t(it)] = ringSum / double(nPhi);
+        g.profile[std::size_t(k)] = ringSum / double(nPhi);
     }
 
     int peakBin = 0;
@@ -1871,6 +1912,12 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
     const int  ny       = (det.valid && det.ny > 0) ? det.ny : 1;
     const int  nTheta   = std::max(0, opt.nTheta);
     const int  nPhi     = nTheta > 0 ? std::max(1, opt.nPhi) : 0;
+    // The far field is accumulated on a finer, fixed theta resolution (the
+    // "master") so a narrow beam is actually resolved before the beam-adaptive
+    // reduction of the requested output grid below. `nTheta` stays the count
+    // the user asked for -- the adaptive output bins concentrate within it.
+    const int  nThetaMaster = nTheta > 0 ? std::max(nTheta, 720) : 0;
+    const int  nPhiMaster   = nPhi;
 
     // Each source resolves its own spectrum once per run: an inverse CDF, a
     // luminous efficacy and a mean wavelength, all of which its rays then read.
@@ -2094,7 +2141,7 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
         const std::size_t perThreadCells =
             std::max<std::size_t>(1, scene.detectorCells()) +
             (spectral ? std::size_t(nx) * std::size_t(ny) * 3 : 0) +
-            std::size_t(nTheta) * std::size_t(nPhi);
+            std::size_t(nThetaMaster) * std::size_t(nPhi);
         // A preview doubles it: the worker's own accumulator plus the delta it
         // publishes.
         const std::size_t copies = ctl.partial ? 2 : 1;
@@ -2110,7 +2157,7 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
     // fixed order.
     const std::size_t cells    = std::size_t(nx) * std::size_t(ny);
     const std::size_t allCells = std::max<std::size_t>(1, scene.detectorCells());
-    const std::size_t angles   = std::size_t(nTheta) * std::size_t(nPhi);
+    const std::size_t angles   = std::size_t(nThetaMaster) * std::size_t(nPhi);
     std::vector<std::vector<double>> grids(threads);
     std::vector<std::vector<double>> bandGrids(spectral ? threads : 0);
     std::vector<std::vector<double>> angleGrids(angles ? threads : 0);
@@ -2403,7 +2450,7 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
         ctx.bandCells = cells;
         ctx.bands     = spectral;
         ctx.intensity = angles ? &angleGrids[tid] : nullptr;
-        ctx.nTheta    = nTheta;
+        ctx.nTheta    = nThetaMaster;
         ctx.nPhi      = nPhi;
         ctx.physics   = opt.physics;
         ctx.estimator = opt.estimator;
