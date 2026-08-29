@@ -35,6 +35,17 @@ class ObjectInspector : public QWidget {
 public:
     explicit ObjectInspector(QWidget* parent = nullptr);
 
+    // Never narrower than its content.
+    //
+    // The panel scrolls vertically only, so a column narrower than its widest
+    // row does not grow a scrollbar -- it silently clips, and the right-hand
+    // half of every material readout and spin box goes off the edge. Refusing
+    // the width is what stops that; the splitter can still be dragged wider.
+    QSize minimumSizeHint() const override;
+    // As wide as the content, no wider. This is only the width the column opens
+    // at; the user sets it after that.
+    QSize sizeHint() const override;
+
     // Shows `object`. `defaultOptics` is what its type declares, so the optical
     // section has something to reset to.
     void setObject(const scenedoc::SceneObject& object, const SurfaceOptics& defaultOptics);

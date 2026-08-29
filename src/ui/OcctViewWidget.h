@@ -95,6 +95,9 @@ public:
     // The same, for a selection that covers more than one surface -- a group,
     // or an object the compiler split into several bodies.
     void setHighlightedSurfaces(const std::vector<int>& indices);
+    // Which emitter reads as selected, or -1 for none. Sources have no surface
+    // to highlight -- they are not geometry -- so they carry their own.
+    void setHighlightedSource(int index);
 
     void fitAll();
     void resetView();
@@ -137,6 +140,14 @@ signals:
     // A surface was clicked. `index` indexes the vector passed to setScene, or
     // -1 when the click landed on nothing.
     void surfacePicked(int index);
+    // An emitter's marker was clicked. `index` indexes the vector last passed
+    // to setSourceGlyphs.
+    //
+    // A source is drawn but not traced, so it has no surface in the scene and
+    // nothing for a pick to land on: an emitter was the one thing in the
+    // viewport that could be seen and not selected. The disc the overlay
+    // already draws at it is now a real face, and this is what it reports.
+    void sourcePicked(int index);
     // Something was dragged in from the object library and dropped at `where`.
     // The viewport does not know what an object is; it knows where the cursor
     // was in three dimensions, which is the part only it can answer.
@@ -165,6 +176,10 @@ private:
     void freeLook(double dYaw, double dPitch);
     void rebuildRays();
     void rebuildOverlay();
+    // The clickable disc at each emitter, from the circles rebuildOverlay just
+    // drew, so the pickable thing and the visible thing cannot drift apart.
+    void rebuildSourceMarkers();
+    void applySourceHighlight();
     void buildViewCube();
     // Puts either the navigation cube or the plain trihedron in the lower-left
     // corner -- one or the other, never both.
@@ -236,6 +251,16 @@ private:
     // nothing.
     bool            m_hoverOnCube = false;
     std::vector<SourceGlyph> m_sources;
+    // Where the overlay drew each emitter's circle: its centre, its normal and
+    // its radius, recorded as it is drawn.
+    struct SourceDisc {
+        gp_Pnt centre;
+        gp_Dir normal{0, 0, 1};
+        double radius = 0.0;
+    };
+    std::vector<SourceDisc>        m_sourceDiscs;
+    std::vector<Handle(AIS_Shape)> m_sourceMarkers;
+    int                            m_highlightSource = -1;
     // The receivers, as the frames the mesher gave them, so the overlay can
     // outline them and draw their acceptance cones.
     struct ReceiverGlyph {

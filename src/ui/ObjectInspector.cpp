@@ -14,6 +14,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QStyle>
 #include <QVBoxLayout>
 
 #include "core/RayFile.h"
@@ -265,6 +266,23 @@ ObjectInspector::ObjectInspector(QWidget* parent) : QWidget(parent) {
 
     v->addStretch(1);
     clearObject();
+}
+
+QSize ObjectInspector::minimumSizeHint() const {
+    QSize base = QWidget::minimumSizeHint();
+    if (!m_body || !m_scroll) return base;
+    // Answered on demand rather than stored, because the number moves: which
+    // sections are shown depends on what is selected, and none of the font
+    // metrics behind any of it are final until the widget is polished.
+    m_body->ensurePolished();
+    base.setWidth(m_body->minimumSizeHint().width() +
+                  style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, this) +
+                  2 * m_scroll->frameWidth());
+    return base;
+}
+
+QSize ObjectInspector::sizeHint() const {
+    return QSize(minimumSizeHint().width(), QWidget::sizeHint().height());
 }
 
 void ObjectInspector::rebuildParamRows() {

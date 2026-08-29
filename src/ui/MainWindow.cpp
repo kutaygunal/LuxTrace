@@ -160,7 +160,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     columns->setStretchFactor(1, 1);
     columns->setStretchFactor(2, 0);
     columns->setChildrenCollapsible(false);
-    columns->setSizes({300, 1000, 360});
+    columns->setSizes({300, 1000, m_object->sizeHint().width()});
 
     auto* central = new QWidget(this);
     auto* main = new QHBoxLayout(central);
@@ -196,6 +196,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     connect(m_view3d, &OcctViewWidget::surfacePicked, this, &MainWindow::onSurfacePicked);
     connect(m_view3d, &OcctViewWidget::objectDropped, this, &MainWindow::onObjectDropped);
+    connect(m_view3d, &OcctViewWidget::sourcePicked,  this, &MainWindow::onSourcePicked);
 
     // ---- the scene document -------------------------------------------------
     connect(m_library, &ObjectLibraryPanel::createRequested, this,
@@ -235,29 +236,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     // the application is for in one picture.
     loadTutorial(GeometryProvider::Scene::Reflector);
 
-    // The simulation window opens beside the main one on first launch, so the
-    // Run button is where it can be found. From then on it is the user's window
-    // to place, close, and reopen from the Run menu.
-    QTimer::singleShot(0, this, [this] {
-        if (!m_simWindow) return;
-        QRect where(frameGeometry().right() + 8, frameGeometry().top(),
-                    m_simWindow->width(), m_simWindow->height());
-        if (QScreen* onScreen = screen()) {
-            const QRect avail = onScreen->availableGeometry();
-            // Nowhere to put it beside the window -- a maximised main window
-            // leaves no "beside" -- so it goes over the viewport rather than
-            // over the property column it was just moved out of.
-            if (where.right() > avail.right()) {
-                constexpr int kPropertyColumn = 380;
-                where.moveRight(std::max(avail.left() + where.width(),
-                                         frameGeometry().right() - kPropertyColumn));
-            }
-            if (where.bottom() > avail.bottom())
-                where.setHeight(std::max(420, avail.bottom() - where.top()));
-        }
-        m_simWindow->setGeometry(where);
-        m_simWindow->show();
-    });
+
 }
 
 // ---- tab construction ------------------------------------------------------
@@ -1044,10 +1023,12 @@ void MainWindow::refreshInspector() {
     if (!o) {
         m_object->clearObject();
         m_view3d->setHighlightedSurfaces({});
+        m_view3d->setHighlightedSource(-1);
         return;
     }
     m_object->setObject(*o, o->sceneOptics);
     m_view3d->setHighlightedSurfaces(surfacesForObject(o->id));
+    m_view3d->setHighlightedSource(sourceIndexForObject(o->id));
 }
 
 void MainWindow::applySurfaceVisibility() {
@@ -1084,6 +1065,24 @@ std::vector<int> MainWindow::surfacesForObject(int id) const {
                 out.push_back(int(i));
     }
     return out;
+}
+
+int MainWindow::objectForSource(int glyphIndex) const {
+    if (glyphIndex < 0) return 0;
+    int seen = 0;
+    for (const scenedoc::SceneObject& o : m_document.objects())
+        if (o.isSource() && seen++ == glyphIndex) return o.id;
+    return 0;
+}
+
+int MainWindow::sourceIndexForObject(int id) const {
+    int seen = 0;
+    for (const scenedoc::SceneObject& o : m_document.objects()) {
+        if (!o.isSource()) continue;
+        if (o.id == id) return seen;
+        ++seen;
+    }
+    return -1;
 }
 
 std::vector<SurfaceOverride> MainWindow::overridesFromDocument() const {
@@ -1676,11 +1675,47 @@ void MainWindow::buildSimulationWindow() {
     v->addWidget(m_controls, 1);
     v->addWidget(m_derived, 0);
 
-    m_simWindow->resize(m_controls->sizeHint().width() + 32, 760);
+    // Tall enough that the Run button is on screen without scrolling to it --
+    // clamped to the desktop when it opens, which is where the screen is known.
+    m_simWindow->resize(m_controls->sizeHint().width() + 32,
+                        m_controls->sizeHint().height() + 120);
 }
 
 void MainWindow::onShowSimulationWindow() {
     if (!m_simWindow) return;
+
+    // Placed the first time it is opened, not before: where it belongs depends
+    // on where the main window ended up, which is not settled while the window
+    // is still being built.
+    if (!m_simWindowPlaced) {
+        m_simWindowPlaced = true;
+        QRect where(frameGeometry().right() + 8, frameGeometry().top(),
+                    m_simWindow->width(), m_simWindow->height());
+        if (QScreen* onScreen = screen()) {
+            const QRect avail = onScreen->availableGeometry();
+            // Nowhere to put it beside the window -- a maximised main window
+            // leaves no "beside" -- so it goes over the viewport rather than
+            // over the property column it was just moved out of.
+            if (where.right() > avail.right()) {
+                constexpr int kPropertyColumn = 420;
+                where.moveRight(std::max(avail.left() + where.width(),
+                                         frameGeometry().right() - kPropertyColumn));
+            }
+            // setGeometry positions the *client* area, so a window placed flush
+            // with the top of a maximised main window puts its own title bar
+            // above the desktop -- where it cannot be grabbed and the window
+            // cannot be moved.
+            constexpr int kTitleBar = 36;
+            where.moveTop(std::max(where.top(), avail.top() + kTitleBar));
+            // As tall as the desktop allows, rather than as tall as the panel
+            // asks for: the panel wraps a scroll area, whose size hint is a
+            // default and not the height of what is inside it, so sizing to it
+            // opened a window with the Run button below the fold.
+            where.setHeight(std::max(420, avail.bottom() - where.top() - 8));
+        }
+        m_simWindow->setGeometry(where);
+    }
+
     m_simWindow->show();
     m_simWindow->raise();
     m_simWindow->activateWindow();
@@ -1970,6 +2005,24 @@ void MainWindow::onPartial(const SimulationResult& partial) {
     refreshDerivedViews();
     updateSummary();
     m_metrics->setHtml(formatMetrics());
+}
+
+void MainWindow::onSourcePicked(int glyphIndex) {
+    const int id = objectForSource(glyphIndex);
+    if (id == 0) return;
+    m_selectedObject = id;
+    m_sceneTree->setSelectedId(id);
+    refreshInspector();
+    if (const scenedoc::SceneObject* o = m_document.find(id))
+        statusBar()->showMessage(
+            QStringLiteral("%1 -- %2, %3 %4")
+                .arg(o->name)
+                .arg(SpectrumConfig::kindName(o->source.spectrum.kind))
+                .arg(o->source.power, 0, 'g', 4)
+                .arg(m_controls->config().fluxUnit == FluxUnit::Lumen
+                         ? QStringLiteral("lm")
+                         : QStringLiteral("W")),
+            6000);
 }
 
 void MainWindow::onCutMoved(double, double) {

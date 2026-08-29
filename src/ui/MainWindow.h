@@ -56,6 +56,7 @@ private slots:
     void onResult(const SimulationResult& res);
     void onPartial(const SimulationResult& partial);
     void onSurfacePicked(int index);
+    void onSourcePicked(int glyphIndex);
     void onCutMoved(double x, double y);
 
     // ---- the scene document ------------------------------------------------
@@ -151,6 +152,11 @@ private:
     // in the tree are the same object.
     int              objectForSurface(int surfaceIndex) const;
     std::vector<int> surfacesForObject(int id) const;
+    // Emitters are compiled in document order -- the primary first, then the
+    // extras -- which is the order the glyphs are drawn in, so one index maps
+    // both ways.
+    int              objectForSource(int glyphIndex) const;
+    int              sourceIndexForObject(int id) const;
 
     // The optical edits a linked tutorial carries, as trace-time overrides. In
     // that mode the geometry still comes from the registry, so an edited
@@ -176,6 +182,9 @@ private:
 
     ControlsPanel*      m_controls = nullptr;
     QDialog*            m_simWindow = nullptr;
+    // Whether it has been positioned yet. It is placed the first time it opens
+    // rather than at construction, when the main window's geometry is not final.
+    bool                m_simWindowPlaced = false;
     ObjectLibraryPanel* m_library  = nullptr;
     SceneTreePanel*     m_sceneTree = nullptr;
     ObjectInspector*    m_object   = nullptr;
