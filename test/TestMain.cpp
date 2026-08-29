@@ -31,6 +31,7 @@
 #include <BRep_Builder.hxx>
 #include <TopoDS_Compound.hxx>
 #include <gp_Ax1.hxx>
+#include <gp_Quaternion.hxx>
 #include <gp_Vec.hxx>
 #include <Bnd_Box.hxx>
 #include <BRepBndLib.hxx>

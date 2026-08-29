@@ -1,6 +1,8 @@
 #include "ObjectInspector.h"
 #include "SurfaceInspector.h"
 
+#include <algorithm>
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -104,18 +106,36 @@ ObjectInspector::ObjectInspector(QWidget* parent) : QWidget(parent) {
     rotRow->addWidget(m_ry);
     rotRow->addWidget(m_rz);
     pf->addRow(QStringLiteral("Rotation X / Y / Z"), rotRow);
+
+    m_scale = new QDoubleSpinBox(m_placeBox);
+    m_scale->setRange(scenedoc::SceneDocument::kMinScale,
+                      scenedoc::SceneDocument::kMaxScale);
+    m_scale->setDecimals(3);
+    m_scale->setSingleStep(0.05);
+    m_scale->setKeyboardTracking(false);
+    m_scale->setToolTip(QStringLiteral(
+        "Size, as a multiple of the dimensions above. Uniform, because an optic "
+        "stretched along one axis is a different optic rather than the same one "
+        "at another size -- to change a lens in one direction, edit its own "
+        "dimensions instead. This is the same number the viewport's Scale gizmo "
+        "sets."));
+    pf->addRow(QStringLiteral("Scale"), m_scale);
+
     m_placeBox->setToolTip(QStringLiteral(
-        "Where the object sits, relative to its group. Rotations are applied "
-        "X, then Y, then Z."));
+        "Where the object sits, relative to its group, and how big it is. "
+        "Rotations are applied X, then Y, then Z, and the scale is about the "
+        "object's own origin. The viewport's Move / Rotate / Scale gizmos write "
+        "these same numbers."));
     v->addWidget(m_placeBox);
 
-    for (QDoubleSpinBox* s : {m_px, m_py, m_pz, m_rx, m_ry, m_rz})
+    for (QDoubleSpinBox* s : {m_px, m_py, m_pz, m_rx, m_ry, m_rz, m_scale})
         connect(s, &QDoubleSpinBox::valueChanged, this, [this] {
             if (m_loading || !m_haveObject) return;
             m_object.position       = gp_Pnt(m_px->value(), m_py->value(), m_pz->value());
             m_object.rotationDeg[0] = m_rx->value();
             m_object.rotationDeg[1] = m_ry->value();
             m_object.rotationDeg[2] = m_rz->value();
+            m_object.scale          = m_scale->value();
             emit placementEdited(m_object.id);
         });
 
@@ -285,16 +305,46 @@ QSize ObjectInspector::sizeHint() const {
     return QSize(minimumSizeHint().width(), QWidget::sizeHint().height());
 }
 
-void ObjectInspector::rebuildParamRows() {
-    // The rows belong to the type, so they are torn down and rebuilt whenever
-    // the selection changes to a different one.
+void ObjectInspector::rebuildParamRows(bool sameObject) {
+    const std::vector<SceneParamInfo>& info = scenedoc::typeInfo(m_object.type).params;
+    const std::size_t want = std::min(info.size(), std::size_t(SceneObject::kMaxParams));
+
+    // The rows belong to the type, so re-reading an object of the type they
+    // were already built for is a matter of writing the numbers in -- not of
+    // building the same rows again.
+    //
+    // This is not only an economy. rebuildParamRows is reachable from inside
+    // one of these spin boxes' own valueChanged: the box reports an edit, the
+    // window writes it into the document, and the panel is asked to show the
+    // document again. Destroying the box at that point frees it while it is
+    // still on the stack about to be returned into, which is what took the
+    // window down every time a radius was nudged.
+    if (m_paramType == int(m_object.type) && m_params.size() == want) {
+        for (std::size_t i = 0; i < want; ++i) {
+            // Whatever the user is holding stays as they left it -- but only
+            // while it is still the same object's number.
+            if (sameObject && m_params[i]->hasFocus()) continue;
+            const double v = m_object.p[i];
+            if (m_params[i]->value() != v) m_params[i]->setValue(v);
+        }
+        return;
+    }
+
+    // A genuinely different type: take the old rows out of the layout and let
+    // the event loop delete them, for the same reason -- `delete` here would be
+    // a delete of whatever is still unwinding above us.
     for (QDoubleSpinBox* s : m_params) {
-        m_geomForm->removeRow(s);   // takes the label with it
+        const QFormLayout::TakeRowResult row = m_geomForm->takeRow(s);
+        for (QLayoutItem* item : {row.labelItem, row.fieldItem}) {
+            if (!item) continue;
+            if (QWidget* w = item->widget()) { w->hide(); w->deleteLater(); }
+            delete item;
+        }
     }
     m_params.clear();
+    m_paramType = int(m_object.type);
 
-    const std::vector<SceneParamInfo>& info = scenedoc::typeInfo(m_object.type).params;
-    for (std::size_t i = 0; i < info.size() && i < SceneObject::kMaxParams; ++i) {
+    for (std::size_t i = 0; i < want; ++i) {
         const SceneParamInfo& p = info[i];
         auto* s = new QDoubleSpinBox(m_geomBox);
         s->setRange(p.min, p.max);
@@ -316,7 +366,29 @@ void ObjectInspector::rebuildParamRows() {
     }
 }
 
+namespace {
+
+// Writes `v` into `s` unless the user is in the middle of using it.
+//
+// Re-reading the document into the panel is right when the selection changed
+// and wrong when the value came from this box a moment ago: setValue would
+// reformat the text under the caret mid-type, and reset a wheel drag to
+// whatever the last committed step was.
+void setIfIdle(QDoubleSpinBox* s, double v) {
+    if (!s || s->hasFocus() || s->value() == v) return;
+    s->setValue(v);
+}
+
+} // namespace
+
 void ObjectInspector::setObject(const SceneObject& object, const SurfaceOptics& defaultOptics) {
+    // Whether this is a change of subject or the same object read back. The
+    // second is allowed to leave the control the user is working in alone; the
+    // first has to overwrite everything, because none of it is about this
+    // object any more.
+    const bool same = m_haveObject && m_object.id == object.id &&
+                      m_object.type == object.type;
+
     m_loading    = true;
     m_object     = object;
     m_haveObject = true;
@@ -324,16 +396,27 @@ void ObjectInspector::setObject(const SceneObject& object, const SurfaceOptics& 
     const scenedoc::TypeInfo& info = scenedoc::typeInfo(object.type);
     m_title->setText(object.name);
     m_kind->setText(info.description);
-    m_name->setText(object.name);
+    if (!same || !m_name->hasFocus()) m_name->setText(object.name);
 
-    m_px->setValue(object.position.X());
-    m_py->setValue(object.position.Y());
-    m_pz->setValue(object.position.Z());
-    m_rx->setValue(object.rotationDeg[0]);
-    m_ry->setValue(object.rotationDeg[1]);
-    m_rz->setValue(object.rotationDeg[2]);
+    if (same) {
+        setIfIdle(m_px, object.position.X());
+        setIfIdle(m_py, object.position.Y());
+        setIfIdle(m_pz, object.position.Z());
+        setIfIdle(m_rx, object.rotationDeg[0]);
+        setIfIdle(m_ry, object.rotationDeg[1]);
+        setIfIdle(m_rz, object.rotationDeg[2]);
+        setIfIdle(m_scale, object.scale);
+    } else {
+        m_px->setValue(object.position.X());
+        m_py->setValue(object.position.Y());
+        m_pz->setValue(object.position.Z());
+        m_rx->setValue(object.rotationDeg[0]);
+        m_ry->setValue(object.rotationDeg[1]);
+        m_rz->setValue(object.rotationDeg[2]);
+        m_scale->setValue(object.scale);
+    }
 
-    rebuildParamRows();
+    rebuildParamRows(same);
     const bool baked = object.type == ObjectType::TutorialPart;
     m_bakedNote->setVisible(baked);
     if (baked)
@@ -378,6 +461,9 @@ void ObjectInspector::setObject(const SceneObject& object, const SurfaceOptics& 
 void ObjectInspector::clearObject() {
     m_haveObject = false;
     m_object     = SceneObject{};
+    // Nothing is shown, so the rows describe no type: the next selection has to
+    // build its own rather than inherit whichever ones happen to be left.
+    m_paramType  = -1;
     m_optics->clearSurface();
     m_empty->setVisible(true);
     m_scroll->setVisible(false);

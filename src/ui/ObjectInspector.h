@@ -66,7 +66,10 @@ signals:
     void opticsResetRequested(int id);
 
 private:
-    void rebuildParamRows();
+    // `sameObject` says the panel is re-reading what it already shows, which
+    // is the only case in which a control the user has hold of may be left
+    // alone -- for a different object the stale value would be wrong.
+    void rebuildParamRows(bool sameObject);
     void syncSourceEnabledState();
     void refreshRayFileLabel();
     void chooseRayFile();
@@ -94,10 +97,16 @@ private:
     QDoubleSpinBox* m_rx = nullptr;
     QDoubleSpinBox* m_ry = nullptr;
     QDoubleSpinBox* m_rz = nullptr;
+    QDoubleSpinBox* m_scale = nullptr;
 
     QGroupBox*                   m_geomBox  = nullptr;
     QFormLayout*                 m_geomForm = nullptr;
     std::vector<QDoubleSpinBox*> m_params;
+    // Which type the geometry rows were built for. The rows belong to the type,
+    // not to the object, so selecting another lens of the same kind -- or
+    // re-reading the one being edited -- reuses them instead of tearing down
+    // the spin box the user is holding.
+    int                          m_paramType = -1;
     QLabel*                      m_bakedNote = nullptr;
 
     QGroupBox*      m_sourceBox  = nullptr;

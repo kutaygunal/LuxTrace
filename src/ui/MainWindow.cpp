@@ -52,6 +52,9 @@
 
 #include <cmath>
 
+#include <QToolButton>
+#include <gp_Quaternion.hxx>
+
 namespace {
 
 // Geometry rebuilds run OCCT tessellation and a BVH build. They happen on a
@@ -214,6 +217,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(m_sceneTree, &SceneTreePanel::showAllRequested,    this, &MainWindow::onShowAllObjects);
 
     connect(m_object, &ObjectInspector::nameEdited, this, [this](int id) {
+        InspectorEditScope editing(m_inspectorEditing);
         onObjectRenamed(id, m_object->object().name);
     });
     connect(m_object, &ObjectInspector::placementEdited,      this, &MainWindow::onObjectPlacementEdited);
@@ -243,13 +247,19 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
 QWidget* MainWindow::buildViewerTab() {
     auto* fit         = new QPushButton(QStringLiteral("Fit (F)"), this);
-    auto* reset       = new QPushButton(QStringLiteral("Reset (R)"), this);
+    // Home, not R: R is the Rotate gizmo whenever an object is selected, and a
+    // key that means two things depending on the selection is worse on a button
+    // than a key that means one.
+    auto* reset       = new QPushButton(QStringLiteral("Reset (Home)"), this);
     auto* showRays    = new QCheckBox(QStringLiteral("Show rays"), this);
     auto* perspective = new QCheckBox(QStringLiteral("Perspective"), this);
     showRays->setChecked(true);
-    perspective->setChecked(true);
+    // Off to begin with: the orthographic CAD projection is what a part is read
+    // in, and it is the projection the viewport starts up in. Perspective is
+    // opted into, for walking through the optic.
+    perspective->setChecked(false);
     perspective->setToolTip(QStringLiteral(
-        "Perspective is needed to walk through the optic; switch it off for the "
+        "Perspective is needed to walk through the optic; leave it off for the "
         "familiar orthographic CAD projection."));
 
     m_rayColor = new QComboBox(this);
@@ -286,8 +296,35 @@ QWidget* MainWindow::buildViewerTab() {
         "the zoom and the pan stay where you put them, and F is still what "
         "frames the scene. Switch it off to get the plain axes back."));
 
+    // The transform tools. One at a time and each one un-checkable, so clicking
+    // the active tool puts the gizmo away -- which is the same thing Escape
+    // does, and is needed because the handles sit over the object they move.
+    auto tool = [this](const QString& label, const QString& key, const QString& tip) {
+        auto* b = new QToolButton(this);
+        b->setText(label);
+        b->setCheckable(true);
+        b->setToolTip(QStringLiteral("%1 the selected object  (press %2)  —  %3")
+                          .arg(label, key, tip));
+        return b;
+    };
+    m_moveTool = tool(QStringLiteral("Move"), QStringLiteral("G"),
+                      QStringLiteral("Drag an arrow to slide the object along that axis."));
+    m_rotateTool = tool(QStringLiteral("Rotate"), QStringLiteral("R"),
+                        QStringLiteral("Drag a ring to turn the object about that axis."));
+    m_scaleTool = tool(QStringLiteral("Scale"), QStringLiteral("S"),
+                       QStringLiteral(
+                           "Drag a handle to resize the object about its own origin. "
+                           "The scale is uniform: an optic stretched along one axis "
+                           "would be a different optic, not the same one at another "
+                           "size. To change a lens in one direction only, edit its "
+                           "dimensions in the object panel."));
+
     auto* bar1 = new QHBoxLayout;
     bar1->setContentsMargins(4, 2, 4, 0);
+    bar1->addWidget(m_moveTool);
+    bar1->addWidget(m_rotateTool);
+    bar1->addWidget(m_scaleTool);
+    bar1->addSpacing(10);
     bar1->addWidget(fit);
     bar1->addWidget(reset);
     bar1->addWidget(showRays);
@@ -307,8 +344,9 @@ QWidget* MainWindow::buildViewerTab() {
     bar2->addWidget(m_clipFlip);
     bar2->addSpacing(12);
     bar2->addWidget(dim(QStringLiteral("Drag: L orbit · M pan · R look | Wheel zoom | "
-                                       "WASD walk · click a surface to inspect it · "
-                                       "click the cube to aim the camera"), this), 1);
+                                       "click a surface to inspect it · G/R/S move, "
+                                       "rotate, scale it · Esc drops the gizmo · "
+                                       "WASD walk · Home resets the view"), this), 1);
 
     auto* pane = new QWidget(this);
     auto* v = new QVBoxLayout(pane);
@@ -320,6 +358,20 @@ QWidget* MainWindow::buildViewerTab() {
 
     connect(fit,   &QPushButton::clicked, m_view3d, &OcctViewWidget::fitAll);
     connect(reset, &QPushButton::clicked, m_view3d, &OcctViewWidget::resetView);
+
+    using TM = OcctViewWidget::TransformMode;
+    const std::pair<QToolButton*, TM> tools[] = {
+        {m_moveTool, TM::Translate}, {m_rotateTool, TM::Rotate}, {m_scaleTool, TM::Scale}};
+    for (const auto& [button, mode] : tools)
+        connect(button, &QToolButton::clicked, this, [this, mode] {
+            // Clicking the tool that is already active turns it off, so the
+            // gizmo is never in the way of the object it belongs to.
+            m_view3d->setTransformMode(m_view3d->transformMode() == mode ? TM::None : mode);
+        });
+    connect(m_view3d, &OcctViewWidget::transformModeChanged,
+            this, &MainWindow::onTransformModeChanged);
+    connect(m_view3d, &OcctViewWidget::objectTransformed,
+            this, &MainWindow::onObjectTransformed);
     connect(showRays, &QCheckBox::toggled, m_view3d, &OcctViewWidget::setRaysVisible);
     connect(perspective, &QCheckBox::toggled, m_view3d, &OcctViewWidget::setPerspective);
     connect(viewCube, &QCheckBox::toggled, m_view3d, &OcctViewWidget::setViewCubeVisible);
@@ -908,6 +960,74 @@ void MainWindow::onClearPin() {
     statusBar()->showMessage(QStringLiteral("Comparison cleared"), 3000);
 }
 
+// Back to a scene that has not been traced yet.
+//
+// Every view that shows a result is emptied -- the paths in the viewport, the
+// receiver map, the profiles, the far field, the studies and the metrics -- and
+// nothing that describes the optic is touched. The objects stay where they are,
+// so do their dimensions and materials, and so does the camera: the whole point
+// of clearing the rays is usually to look at the geometry underneath them from
+// where you were already standing.
+void MainWindow::onResetResults() {
+    // A run still writing into these would put its rays straight back.
+    if (m_worker->isRunning() || m_study->isRunning()) {
+        statusBar()->showMessage(
+            QStringLiteral("A run is in progress -- cancel it first (Esc)"), 4000);
+        return;
+    }
+
+    const SimulationResult empty;
+
+    m_last      = empty;
+    m_hasResult = false;
+    m_hasPinned = false;
+    m_pinnedLabel.clear();
+
+    m_view3d->setRays({});
+    m_diagram->setResult(empty);
+    m_heatmap->setResult(empty);
+    m_heatmap->clearReference();
+    m_polar->setResult(empty);
+    if (m_energyBar) m_energyBar->setResult(empty);
+
+    // refreshDerivedViews() is a no-op without a result, so the plots it fills
+    // are cleared here rather than left showing the run that has just gone.
+    m_profile->clear();
+    m_encircled->clear();
+    m_mtfPlot->clear();
+
+    // The studies are traces too, and a stale yield histogram beside a cleared
+    // receiver map is the same lie the rays were.
+    m_convergencePoints.clear();
+    m_focusStudy = studies::FocusStudy{};
+    m_sweepPoints.clear();
+    m_sweepSlot = -1;
+    m_toleranceStudy = studies::ToleranceStudy{};
+    m_optimisation   = studies::OptimisationResult{};
+    m_optimisedSlots.clear();
+    m_convergence->clear();
+    m_focus->clear();
+    m_sweepPlot->clear();
+    m_optPlot->clear();
+    m_tolPlot->clear();
+    m_optSummary->setHtml(QStringLiteral("<i>No search has been run yet.</i>"));
+    m_tolSummary->setHtml(QStringLiteral("<i>No tolerance study has been run yet.</i>"));
+    m_adoptButton->setEnabled(false);
+
+    m_rgbMode->setChecked(false);
+    m_rgbMode->setEnabled(false);
+
+    m_rayLog->setHtml(QStringLiteral("<i>Trace one ray to see every interaction "
+                                     "it had.</i>"));
+
+    m_result->setText(QStringLiteral("Results cleared. The scene is as you left "
+                                     "it -- run again when you are ready."));
+    m_metrics->setHtml(formatMetrics());
+
+    statusBar()->showMessage(QStringLiteral("Results cleared -- the scene and the "
+                                            "view are unchanged"), 4000);
+}
+
 // ---- editing the optics of the surface that was clicked ---------------------
 
 const std::vector<OpticalSurface>& MainWindow::currentSurfaces() const {
@@ -1018,6 +1138,19 @@ void MainWindow::syncDocument(bool rebuildGeometry) {
     }
 }
 
+void MainWindow::syncEditedObject(bool rebuildGeometry) {
+    m_compiled = m_document.compile();
+    m_controls->setGeometryDetached(detachReason());
+    refreshDerivedQuantities();
+
+    if (rebuildGeometry) {
+        onGeometryChanged();
+    } else {
+        applySurfaceVisibility();
+        refreshSourceGlyphs();
+    }
+}
+
 void MainWindow::refreshInspector() {
     const scenedoc::SceneObject* o = m_document.find(m_selectedObject);
     if (!o) {
@@ -1026,7 +1159,21 @@ void MainWindow::refreshInspector() {
         m_view3d->setHighlightedSource(-1);
         return;
     }
-    m_object->setObject(*o, o->sceneOptics);
+    if (!m_inspectorEditing) m_object->setObject(*o, o->sceneOptics);
+    refreshSelectionHighlight();
+}
+
+void MainWindow::refreshSelectionHighlight() {
+    const scenedoc::SceneObject* o = m_document.find(m_selectedObject);
+    if (!o) {
+        m_view3d->setHighlightedSurfaces({});
+        m_view3d->setHighlightedSource(-1);
+        return;
+    }
+    // Before the highlight, because setting the highlight is what puts the
+    // gizmo on the object, and the gizmo has to know where the object is and
+    // which way it faces in order to sit on it.
+    m_view3d->setSelectionFrame(o->id, m_document.worldPlacement(o->id));
     m_view3d->setHighlightedSurfaces(surfacesForObject(o->id));
     m_view3d->setHighlightedSource(sourceIndexForObject(o->id));
 }
@@ -1189,19 +1336,85 @@ void MainWindow::onShowAllObjects() {
     m_sceneTree->setSelectedId(m_selectedObject);
 }
 
+// ---- the transform gizmo ----------------------------------------------------
+
+void MainWindow::onTransformModeChanged(int mode) {
+    const auto m = OcctViewWidget::TransformMode(mode);
+    using TM = OcctViewWidget::TransformMode;
+    m_moveTool->setChecked(m == TM::Translate);
+    m_rotateTool->setChecked(m == TM::Rotate);
+    m_scaleTool->setChecked(m == TM::Scale);
+}
+
+void MainWindow::onObjectTransformed(const gp_Trsf& delta) {
+    const scenedoc::SceneObject* o = m_document.find(m_selectedObject);
+    if (!o) return;
+
+    // The gizmo speaks in world coordinates and the document stores an object's
+    // placement relative to its parent, so the drag is composed onto the world
+    // placement and then read back through the parent's. Doing it the other way
+    // -- adding the drag to the local numbers -- would be wrong for anything
+    // inside a rotated or scaled group, which is exactly where it matters.
+    const gp_Trsf world  = delta * m_document.worldPlacement(o->id);
+    const gp_Trsf parent = m_document.worldPlacement(o->parent);
+    const gp_Trsf local  = parent.Inverted() * world;
+
+    // A gp_Trsf is a uniform scale, a rotation and an offset, which is exactly
+    // the three things the object stores -- so this is a read, not a fit.
+    const double scale = local.ScaleFactor();
+    gp_Trsf rigid = local;
+    rigid.SetScaleFactor(1.0);
+    const gp_XYZ offset = rigid.TranslationPart();
+
+    // localPlacement() composes Rz * Ry * Rx about the fixed axes, which is
+    // what OCCT calls extrinsic XYZ. Reading the angles back the same way it
+    // wrote them is what keeps the three spin boxes and the gizmo agreeing.
+    double rx = 0.0, ry = 0.0, rz = 0.0;
+    rigid.GetRotation().GetEulerAngles(gp_Extrinsic_XYZ, rx, ry, rz);
+    const double toDeg = 180.0 / std::acos(-1.0);
+    const double rotation[3] = {rx * toDeg, ry * toDeg, rz * toDeg};
+
+    if (!m_document.setTransform(o->id, gp_Pnt(offset.X(), offset.Y(), offset.Z()),
+                                 rotation, scale))
+        return;
+
+    syncEditedObject(true);
+    // The numbers came from the gizmo rather than from the panel, so the panel
+    // is the thing that has to catch up.
+    refreshInspector();
+
+    const scenedoc::SceneObject* after = m_document.find(m_selectedObject);
+    if (!after) return;
+    statusBar()->showMessage(
+        QStringLiteral("%1 — at %2, %3, %4 mm · %5, %6, %7 deg · scale %8")
+            .arg(after->name)
+            .arg(after->position.X(), 0, 'f', 1)
+            .arg(after->position.Y(), 0, 'f', 1)
+            .arg(after->position.Z(), 0, 'f', 1)
+            .arg(after->rotationDeg[0], 0, 'f', 1)
+            .arg(after->rotationDeg[1], 0, 'f', 1)
+            .arg(after->rotationDeg[2], 0, 'f', 1)
+            .arg(after->scale, 0, 'f', 3),
+        6000);
+}
+
 void MainWindow::onObjectPlacementEdited(int id) {
+    InspectorEditScope editing(m_inspectorEditing);
     const scenedoc::SceneObject& edited = m_object->object();
-    if (!m_document.setPlacement(id, edited.position, edited.rotationDeg)) return;
-    syncDocument(true);
+    if (!m_document.setTransform(id, edited.position, edited.rotationDeg, edited.scale))
+        return;
+    syncEditedObject(true);
 }
 
 void MainWindow::onObjectParametersEdited(int id) {
+    InspectorEditScope editing(m_inspectorEditing);
     const scenedoc::SceneObject& edited = m_object->object();
     if (!m_document.setParams(id, edited.p, scenedoc::SceneObject::kMaxParams)) return;
-    syncDocument(true);
+    syncEditedObject(true);
 }
 
 void MainWindow::onObjectSourceEdited(int id) {
+    InspectorEditScope editing(m_inspectorEditing);
     if (!m_document.setSourceSpec(id, m_object->object().source)) return;
     // Nothing about an emitter is geometry, so this costs a redraw of the
     // markers and a trace -- not a tessellation.
@@ -1211,6 +1424,7 @@ void MainWindow::onObjectSourceEdited(int id) {
 }
 
 void MainWindow::onObjectOpticsEdited(int id) {
+    InspectorEditScope editing(m_inspectorEditing);
     const scenedoc::SceneObject* before = m_document.find(id);
     if (!before) return;
     const bool wasDetector = before->optics.isDetector;
@@ -1226,9 +1440,9 @@ void MainWindow::onObjectOpticsEdited(int id) {
                              (after->optics.detNX != oldNX || after->optics.detNY != oldNY);
     if (binsChanged) m_haveRequested = false;
 
+    // No tree rebuild: what a surface does to light is not part of what the
+    // tree lists, and repopulating it under every keystroke would collapse it.
     m_compiled = m_document.compile();
-    m_sceneTree->rebuild();
-    m_sceneTree->setSelectedId(m_selectedObject);
     statusBar()->showMessage(
         binsChanged
             ? QStringLiteral("%1 edited — the bin grid is geometry, so this rebuilds")
@@ -1745,6 +1959,67 @@ void MainWindow::buildMenus() {
         {"&Multi-source",               GeometryProvider::Scene::LedArrayLuminaire},
     };
 
+    file->addAction(QStringLiteral("&Save configuration..."), QKeySequence::Save,
+                    this, &MainWindow::onSaveConfig);
+    file->addAction(QStringLiteral("&Open configuration..."), QKeySequence::Open,
+                    this, &MainWindow::onLoadConfig);
+    file->addSeparator();
+
+    // Everything that crosses the application boundary, in one segment and two
+    // submenus. Six export entries and two import ones spelled out at the top
+    // level made the menu a wall of near-identical sentences, and left "read a
+    // glass catalogue" three separators away from "read a STEP file".
+    QMenu* importMenu = file->addMenu(QStringLiteral("&Import"));
+    importMenu->setStatusTip(QStringLiteral(
+        "Read geometry or material data produced somewhere else."));
+    importMenu->addAction(QStringLiteral("Import &CAD (STEP / IGES)..."),
+                          this, &MainWindow::onImportCad)
+        ->setStatusTip(QStringLiteral(
+            "Reads a customer's geometry. The whole pipeline downstream already "
+            "works on it; only the reader was missing."));
+    importMenu->addAction(QStringLiteral("Load &material catalogue..."), this,
+                          &MainWindow::onLoadMaterialCatalogue)
+        ->setStatusTip(QStringLiteral(
+            "Read a Zemax .agf glass catalogue -- the format Schott, Ohara, CDGM, "
+            "Hoya and Sumita all publish in -- or a refractiveindex.info .yml "
+            "entry. Ten built-in materials is a demonstration; a catalogue is a "
+            "tool."));
+
+    QMenu* exportMenu = file->addMenu(QStringLiteral("&Export"));
+    exportMenu->setStatusTip(QStringLiteral(
+        "Write the run out in the format whoever asked for it reads."));
+    exportMenu->addAction(QStringLiteral("Export &irradiance grid (CSV)..."),
+                          this, &MainWindow::onExportIrradianceCsv);
+    exportMenu->addAction(QStringLiteral("Export in&tensity distribution (CSV)..."),
+                          this, &MainWindow::onExportIntensityCsv);
+    exportMenu->addAction(QStringLiteral("Export &metrics (CSV)..."),
+                          this, &MainWindow::onExportMetricsCsv);
+    exportMenu->addAction(QStringLiteral("Export &photometry (IES / EULUMDAT)..."),
+                          this, &MainWindow::onExportPhotometry)
+        ->setStatusTip(QStringLiteral(
+            "Writes the far field as the candela distribution a luminaire is specified by, "
+            "ready for DIALux, AGi32 or Relux."));
+    exportMenu->addAction(QStringLiteral("Export current &view (PNG)..."),
+                          this, &MainWindow::onExportImage);
+    exportMenu->addAction(QStringLiteral("Export &report (HTML)..."),
+                          QKeySequence(Qt::CTRL | Qt::Key_R),
+                          this, &MainWindow::onExportReport)
+        ->setStatusTip(QStringLiteral(
+            "One document: the scene, its parameters, the energy budget, every "
+            "plot and the metrics, stamped with the seed so it can be reproduced."));
+    file->addSeparator();
+
+    file->addAction(QStringLiteral("&Reset the results"), this,
+                    &MainWindow::onResetResults)
+        ->setStatusTip(QStringLiteral(
+            "Clears everything the last run produced -- the ray paths, the maps, "
+            "the plots and the metrics -- and leaves the scene, and the camera "
+            "looking at it, exactly as they are."));
+    file->addSeparator();
+
+    // The tutorials sit at the bottom, one segment above Exit: they are a way
+    // in rather than something reached mid-session, and at the top they pushed
+    // saving and exporting past twenty-six scene names.
     QMenu* tutorials = file->addMenu(QStringLiteral("&Tutorials"));
     tutorials->setStatusTip(QStringLiteral(
         "A worked optic, loaded as a scene you can then edit: every part of it "
@@ -1764,47 +2039,7 @@ void MainWindow::buildMenus() {
     }
     file->addSeparator();
 
-    file->addAction(QStringLiteral("&Import CAD (STEP / IGES)..."),
-                    this, &MainWindow::onImportCad)
-        ->setStatusTip(QStringLiteral(
-            "Reads a customer's geometry. The whole pipeline downstream already "
-            "works on it; only the reader was missing."));
-    file->addSeparator();
-    file->addAction(QStringLiteral("&Save configuration..."), QKeySequence::Save,
-                    this, &MainWindow::onSaveConfig);
-    file->addAction(QStringLiteral("&Open configuration..."), QKeySequence::Open,
-                    this, &MainWindow::onLoadConfig);
-    file->addSeparator();
-    file->addAction(QStringLiteral("Export &irradiance grid (CSV)..."),
-                    this, &MainWindow::onExportIrradianceCsv);
-    file->addAction(QStringLiteral("Export in&tensity distribution (CSV)..."),
-                    this, &MainWindow::onExportIntensityCsv);
-    file->addAction(QStringLiteral("Export &metrics (CSV)..."),
-                    this, &MainWindow::onExportMetricsCsv);
-    file->addAction(QStringLiteral("Export &photometry (IES / EULUMDAT)..."),
-                    this, &MainWindow::onExportPhotometry)
-        ->setStatusTip(QStringLiteral(
-            "Writes the far field as the candela distribution a luminaire is specified by, "
-            "ready for DIALux, AGi32 or Relux."));
-    file->addAction(QStringLiteral("Export current &view (PNG)..."),
-                    this, &MainWindow::onExportImage);
-    file->addAction(QStringLiteral("Export &report (HTML)..."),
-                    QKeySequence(Qt::CTRL | Qt::Key_R),
-                    this, &MainWindow::onExportReport)
-        ->setStatusTip(QStringLiteral(
-            "One document: the scene, its parameters, the energy budget, every "
-            "plot and the metrics, stamped with the seed so it can be reproduced."));
-    file->addSeparator();
     file->addAction(QStringLiteral("E&xit"), QKeySequence::Quit, this, &QWidget::close);
-
-    file->addSeparator();
-    file->addAction(QStringLiteral("Load &material catalogue..."), this,
-                    &MainWindow::onLoadMaterialCatalogue)
-        ->setStatusTip(QStringLiteral(
-            "Read a Zemax .agf glass catalogue -- the format Schott, Ohara, CDGM, "
-            "Hoya and Sumita all publish in -- or a refractiveindex.info .yml "
-            "entry. Ten built-in materials is a demonstration; a catalogue is a "
-            "tool."));
 
     QMenu* run = menuBar()->addMenu(QStringLiteral("&Run"));
     run->addAction(QStringLiteral("&Run Simulation"), QKeySequence(Qt::Key_F5),
@@ -1891,13 +2126,20 @@ void MainWindow::onGeometryReady(Simulation::SceneRef data, quint64 generation) 
     // An assembled scene is not one of the registry's, so it is drawn under a
     // key no scene owns: the camera then stays where the user put it across
     // every edit, instead of reframing each time an object moves.
+    // ...and dropping the first object into a tutorial is an edit too, even
+    // though it changes that key: the camera is left exactly where the user had
+    // it rather than snapping back to the default view.
     m_view3d->setScene(m_requestedAssembled ? GeometryProvider::Scene::Count
                                             : m_requestedScene,
-                       m_sceneData->surfaces);
+                       m_sceneData->surfaces,
+                       m_requestedAssembled);
     applySurfaceVisibility();
     refreshSourceGlyphs();
-    // The highlight indexes the surface list, and this is a new one.
-    refreshInspector();
+    // The highlight indexes the surface list, and this is a new one. Only the
+    // highlight: this arrives a debounce interval after the edit that asked for
+    // it, by which time the user may well be part-way through the next one, and
+    // re-reading the document into the panel would overwrite it.
+    refreshSelectionHighlight();
 
     statusBar()->showMessage(QStringLiteral("%1 — %2 triangles")
                                  .arg(m_requestedAssembled

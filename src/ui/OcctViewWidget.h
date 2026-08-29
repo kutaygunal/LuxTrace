@@ -5,6 +5,7 @@
 #include <vector>
 
 #include <AIS_InteractiveContext.hxx>
+#include <AIS_Manipulator.hxx>
 #include <AIS_Shape.hxx>
 #include <AIS_ViewCube.hxx>
 #include <Graphic3d_ClipPlane.hxx>
@@ -27,7 +28,9 @@ class RayCloud;
 //   Wheel        zoom toward the cursor
 //   W / S        walk forward / back        A / D  strafe left / right
 //   E / Q        rise / drop                Shift  x4 speed, Ctrl  x0.25
-//   F            fit the whole scene        R      reset to the default view
+//   F            fit the whole scene        Home   reset to the default view
+//   G / R / S    move, turn or resize the selected object with the gizmo
+//   Esc          put the gizmo away
 //
 // The navigation cube in the upper-right corner is the other way to aim the
 // camera: click a face for a standard view, an edge for a 45-degree one, a
@@ -36,6 +39,13 @@ class RayCloud;
 class OcctViewWidget : public QWidget {
     Q_OBJECT
 public:
+    // Which gizmo is on the selected object, if any.
+    //
+    // One at a time, the way Blender does it: three sets of handles on the same
+    // object at the same time is a target the size of the object with no room
+    // left to click the object itself.
+    enum class TransformMode { None = 0, Translate, Rotate, Scale };
+
     // What the colour of a ray leg means.
     enum class RayColor {
         Uniform = 0,   // one amber for everything
@@ -56,8 +66,12 @@ public:
     // A dimension change keeps it exactly where it is -- reframing on every
     // edit threw away the viewpoint the user had chosen, which is the whole
     // reason for looking at a parameter in 3D in the first place.
+    // `keepCamera` overrides the reframing above: an assembled scene changes
+    // key the moment the first object is dropped into a tutorial, and that drop
+    // is an edit, not a change of subject, so the camera stays put.
     void setScene(GeometryProvider::Scene scene,
-                  const std::vector<OpticalSurface>& surfaces);
+                  const std::vector<OpticalSurface>& surfaces,
+                  bool keepCamera = false);
     // Replaces the displayed ray paths (pass an empty vector to clear them).
     void setRays(const std::vector<RaySegment>& segments);
 
@@ -102,8 +116,9 @@ public:
     void fitAll();
     void resetView();
     void setRaysVisible(bool visible);
-    // Perspective is the default; orthographic is the familiar CAD projection,
-    // but W/S walking has no visible effect in it.
+    // Orthographic is the default -- the familiar CAD projection, and what a
+    // drawing is read in. Perspective is what makes W/S walking visible, so it
+    // is switched on when the user wants to walk through the optic.
     void setPerspective(bool on);
 
     // Whether the lower-left corner holds the navigation cube or the plain
@@ -112,6 +127,22 @@ public:
     // off puts the trihedron back rather than emptying the corner.
     void setViewCubeVisible(bool on);
     bool viewCubeVisible() const { return m_cubeVisible; }
+
+    // Puts the gizmo on whatever is selected, or takes it off. A mode with
+    // nothing selected shows nothing and is remembered for the next selection,
+    // which is what makes picking one object after another keep the tool.
+    void setTransformMode(TransformMode mode);
+    TransformMode transformMode() const { return m_transformMode; }
+
+    // Where the gizmo sits and which way its handles point: the selected
+    // object's world placement, with the id of the object it belongs to.
+    //
+    // The viewport does not know where an object is or how it is turned -- the
+    // document does -- and AIS_Manipulator::Attach answers both questions from
+    // the bounding box, which is the right answer once and the wrong one after
+    // that. The id is what lets the two be told apart: the same object moving
+    // is not the same event as a different object being picked.
+    void setSelectionFrame(int objectId, const gp_Trsf& world);
 
     void setRayColorMode(RayColor mode);
     // Draw only the legs belonging to a path that reached the receiver. On a
@@ -148,6 +179,18 @@ signals:
     // viewport that could be seen and not selected. The disc the overlay
     // already draws at it is now a real face, and this is what it reports.
     void sourcePicked(int index);
+    // The selected object was dragged by the gizmo. `delta` is what the drag
+    // did, in world coordinates -- not where the object ended up, because the
+    // viewport does not know where it started: the document does.
+    //
+    // Emitted once, when the drag ends. During the drag the presentation is
+    // moved directly, which is what makes it follow the cursor; recompiling the
+    // scene per frame would put a tessellation between the mouse and the
+    // picture.
+    void objectTransformed(const gp_Trsf& delta);
+    // The gizmo was put away or changed from inside the viewport (Esc, or a
+    // G/R/S press), so the buttons that offer the same choice can agree.
+    void transformModeChanged(int mode);
     // Something was dragged in from the object library and dropped at `where`.
     // The viewport does not know what an object is; it knows where the cursor
     // was in three dimensions, which is the part only it can answer.
@@ -176,10 +219,23 @@ private:
     void freeLook(double dYaw, double dPitch);
     void rebuildRays();
     void rebuildOverlay();
+    // Whether the overlay on screen already draws what the members below say.
+    // The glyphs are sized as a fraction of the scene, so redrawing them every
+    // time any part of it changes size makes the emitter marker and the
+    // receiver outline twitch while a completely unrelated object is being
+    // edited -- and the user reads that as "everything updated".
+    bool overlayUpToDate() const;
     // The clickable disc at each emitter, from the circles rebuildOverlay just
     // drew, so the pickable thing and the visible thing cannot drift apart.
     void rebuildSourceMarkers();
     void applySourceHighlight();
+    // Puts the gizmo on the current selection, or takes it off. Called whenever
+    // either of those could have changed: the selection, the mode, or the
+    // presentations the gizmo is attached to.
+    void refreshManipulator();
+    // The presentations the gizmo should be attached to, which is the selected
+    // bodies -- or the selected emitter's marker, an emitter having no body.
+    Handle(AIS_ManipulatorObjectSequence) manipulatorTargets() const;
     void buildViewCube();
     // Puts either the navigation cube or the plain trihedron in the lower-left
     // corner -- one or the other, never both.
@@ -209,6 +265,27 @@ private:
     // a presentation per line would be a presentation per line.
     Handle(RayCloud)               m_overlay;
     Handle(AIS_ViewCube)           m_viewCube;
+    Handle(AIS_Manipulator)        m_manipulator;
+    TransformMode                  m_transformMode = TransformMode::None;
+    // Whether the press that started this drag landed on a gizmo handle. While
+    // it did, the drag moves the object and must not orbit the camera.
+    bool                           m_draggingGizmo = false;
+    // What the drag has done so far, as the manipulator reports it. Kept
+    // because StopTransform does not hand it back.
+    gp_Trsf                        m_gizmoDelta;
+    // The selected object's world placement, as the document has it, and which
+    // object that is.
+    gp_Trsf                        m_selectionFrame;
+    int                            m_selectionId = 0;
+    // Where on the object the handles sit, in the object's own coordinates.
+    //
+    // Taken from the middle of the body the first time the gizmo goes on it and
+    // then kept, because it has to be a point *of the object*: an axis-aligned
+    // bounding box round a turned body has a different centre than one round
+    // the body before it turned, so re-measuring it after every drag walked the
+    // gizmo off the thing it belongs to.
+    gp_Pnt                         m_gizmoAnchor{0.0, 0.0, 0.0};
+    int                            m_gizmoAnchorId = 0;
     Handle(Graphic3d_ClipPlane)    m_clip;
 
     // The segments as traced, kept so a colour-mode or filter change can redraw
@@ -242,8 +319,21 @@ private:
     struct Appearance {
         Quantity_Color colour{0.78, 0.78, 0.82, Quantity_TOC_RGB};
         float          transparency = 0.15f;
+        bool operator==(const Appearance& o) const {
+            return colour.IsEqual(o.colour) && transparency == o.transparency;
+        }
+        bool operator!=(const Appearance& o) const { return !(*this == o); }
     };
     std::vector<Appearance> m_baseLook;
+    // What is actually set on each presentation right now, highlight included.
+    // A surface whose shape and colour are both unchanged is not redisplayed at
+    // all: recomputing every presentation in the scene because one lens grew a
+    // millimetre is most of what made an edit feel like a rebuild.
+    std::vector<Appearance> m_applied;
+    // The shape each presentation is currently showing. compile() hands back
+    // the same B-Rep for an object nobody touched, so this compares equal for
+    // everything but the object being edited.
+    std::vector<TopoDS_Shape> m_shown;
     bool            m_overlaysOn  = true;
     bool            m_cubeVisible = true;
     // Whether the last hover landed on the cube. A press there must not start
@@ -270,6 +360,18 @@ private:
         double acceptanceDeg = 180.0;
     };
     std::vector<ReceiverGlyph> m_receivers;
+    // The scene size the overlay is drawn against. Held rather than tracked:
+    // it only follows m_sceneSize once the scene has genuinely changed size, so
+    // nudging a dimension does not resize every marker in the viewport.
+    double          m_overlayScale = 0.0;
+    // What the overlay currently on screen was drawn from.
+    std::vector<SourceGlyph>   m_drawnSources;
+    std::vector<ReceiverGlyph> m_drawnReceivers;
+    double          m_drawnScale     = -1.0;
+    double          m_drawnBbMin[3]  = {0, 0, 0};
+    double          m_drawnBbMax[3]  = {0, 0, 0};
+    bool            m_drawnOverlaysOn = false;
+    bool            m_haveOverlay     = false;
     bool            m_clipOn      = false;
     int             m_clipAxis    = 0;
     double          m_clipPos     = 0.5;

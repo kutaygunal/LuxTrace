@@ -2203,11 +2203,38 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
     // reported to three digits rather than to the last bit.
     std::vector<std::array<double, 4>> threadStokes(threads, std::array<double, 4>{});
 
-    // Path recording is limited to the leading chunks (it is a tree walk per
-    // hit); arrivals are one push_back each, so they are recorded run-wide and
-    // bounded by their own budget instead.
-    const std::size_t segmentChunks =
-        std::min(numChunks, (opt.segmentRays + kChunkRays - 1) / kChunkRays);
+    // Path recording is a tree walk per hit, so only the leading rays of each
+    // source have their paths kept; arrivals are one push_back each, so they
+    // are recorded run-wide and bounded by their own budget instead.
+    //
+    // The budget is split per source rather than taken off the front of the
+    // global index space. Sources own consecutive blocks of that space, so a
+    // front-loaded budget was spent entirely inside the first source's block
+    // and every other emitter drew no rays at all -- a two-lamp scene looked
+    // like one lamp. A single-source run is unchanged: it owns the whole block
+    // and takes the whole budget.
+    std::vector<std::size_t> segRays(nSrc, 0);
+    for (std::size_t s = 0; s < nSrc; ++s) {
+        const std::size_t r = offset[s + 1] - offset[s];
+        if (r == 0) continue;
+        // Proportional to the ray count, but never zero: an emitter carrying a
+        // hundredth of the light still has to appear in the diagram.
+        const std::size_t want = totalRays > 0 ? (opt.segmentRays * r) / totalRays
+                                               : opt.segmentRays;
+        segRays[s] = std::min(r, std::max<std::size_t>(1, want));
+    }
+    // Which chunks hold recorded rays. With one source these are the leading
+    // chunks, as before; with several they are the leading chunks of each
+    // source's block.
+    std::vector<char> recordChunk(numChunks, 0);
+    std::size_t       segmentChunks = 0;
+    for (std::size_t s = 0; s < nSrc; ++s) {
+        if (segRays[s] == 0) continue;
+        const std::size_t first = offset[s] / kChunkRays;
+        const std::size_t last  = (offset[s] + segRays[s] - 1) / kChunkRays;
+        for (std::size_t c = first; c <= last && c < numChunks; ++c)
+            if (!recordChunk[c]) { recordChunk[c] = 1; ++segmentChunks; }
+    }
     std::vector<ChunkOutput> chunkOut(numChunks);
     // The caps are budgets for the whole run, but each chunk fills its own
     // vector, so they have to be divided up front.
@@ -2565,9 +2592,7 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
             chunkOut[chunk].replicaEmit.assign(std::size_t(replicas), 0.0);
             chunkOut[chunk].sourceDet.assign(nSrc, 0.0);
             for (std::size_t i = begin; i < end; ++i) {
-                const bool recordSeg = (chunk < segmentChunks) && (i < opt.segmentRays);
-                ctx.segmentCap = recordSeg ? chunkSegmentCap : 0;
-                ctx.rng        = mix64(opt.seed ^ (std::uint64_t(i) * kInteractionSalt));
+                ctx.rng = mix64(opt.seed ^ (std::uint64_t(i) * kInteractionSalt));
 
                 // Which source emitted this ray, and where it sits inside that
                 // source own block. Everything sampled from here on is indexed
@@ -2578,6 +2603,11 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
                 const SourceConfig& srcS = srcs[sIdx];
                 ctx.source  = int(sIdx);
                 ctx.emitted = emittedState[sIdx];
+
+                // Paths are kept for the leading rays *of this source*, so
+                // every emitter contributes to the drawn bundle.
+                const bool recordSeg = recordChunk[chunk] && local < segRays[sIdx];
+                ctx.segmentCap = recordSeg ? chunkSegmentCap : 0;
 
                 const std::size_t rep = std::min<std::size_t>(std::size_t(replicas) - 1,
                                                               local / perReplica[sIdx]);

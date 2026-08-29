@@ -10,6 +10,7 @@
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
+#include <BRepBuilderAPI_Transform.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
@@ -335,6 +336,35 @@ SurfaceOptics defaultOptics(ObjectType type) {
     return o;
 }
 
+// A transform as twelve numbers, so two of them can be compared for equality.
+// gp_Trsf has no operator== -- and the question being asked is not "are these
+// geometrically equivalent" but "did this object move since the last compile",
+// which the stored values answer exactly.
+void trsfValues(const gp_Trsf& t, double v[12]) {
+    int k = 0;
+    for (int i = 1; i <= 3; ++i)
+        for (int j = 1; j <= 4; ++j) v[k++] = t.Value(i, j);
+}
+
+bool sameTrsf(const double a[12], const double b[12]) {
+    for (int i = 0; i < 12; ++i)
+        if (a[i] != b[i]) return false;
+    return true;
+}
+
+// `shape` at `factor` times its size, about its own origin.
+//
+// A scale is not a rigid motion, so unlike a placement it cannot be carried as
+// a TopLoc_Location -- TopLoc_Datum3D refuses anything whose scale factor is
+// not one. The B-Rep is genuinely rebuilt, which is why the caller caches the
+// result rather than asking for it again on every compile.
+TopoDS_Shape scaledShape(const TopoDS_Shape& shape, double factor) {
+    if (shape.IsNull() || std::fabs(factor - 1.0) < 1e-12) return shape;
+    gp_Trsf s;
+    s.SetScale(gp::Origin(), factor);
+    return BRepBuilderAPI_Transform(shape, s, Standard_True).Shape();
+}
+
 // The shape a type builds at the given parameters, in its own local frame.
 // An empty shape means "nothing to trace", which is what a Group and a Source
 // legitimately are.
@@ -491,18 +521,24 @@ const char* dragMimeType() { return "application/x-luxtrace-object"; }
 // ---- SceneObject -----------------------------------------------------------
 
 gp_Trsf SceneObject::localPlacement() const {
-    gp_Trsf rx, ry, rz, tr;
+    gp_Trsf rx, ry, rz, tr, sc;
     rx.SetRotation(gp_Ax1(gp::Origin(), gp::DX()), rotationDeg[0] * kDegToRad);
     ry.SetRotation(gp_Ax1(gp::Origin(), gp::DY()), rotationDeg[1] * kDegToRad);
     rz.SetRotation(gp_Ax1(gp::Origin(), gp::DZ()), rotationDeg[2] * kDegToRad);
     tr.SetTranslation(gp_Vec(position.X(), position.Y(), position.Z()));
-    return tr * rz * ry * rx;
+    // Scale first, about the object's own origin, so that resizing a lens
+    // leaves it where it was rather than sliding it away from the scene centre.
+    sc.SetScale(gp::Origin(), scale > 0.0 ? scale : 1.0);
+    return tr * rz * ry * rx * sc;
 }
 
 gp_Dir SceneObject::localAxis() const {
     gp_Dir d(0, 0, 1);
     gp_Trsf rot = localPlacement();
     rot.SetTranslationPart(gp_Vec(0, 0, 0));
+    // A direction has no size, so the scale is not part of the answer -- and
+    // leaving it in would ask gp_Dir to normalise a vector it need not have.
+    rot.SetScaleFactor(1.0);
     return d.Transformed(rot);
 }
 
@@ -580,6 +616,9 @@ gp_Trsf SceneDocument::worldPlacement(int id) const {
 
 void SceneDocument::clear() {
     m_objects.clear();
+    // Ids start again from 1 here, so a cached shape would be handed to whatever
+    // object happens to take its number next.
+    m_shapeCache.clear();
     m_nextId = 1;
     m_linked = false;
 }
@@ -711,15 +750,25 @@ bool SceneDocument::setSourceSpec(int id, const SourceSpec& spec) {
 }
 
 bool SceneDocument::setPlacement(int id, const gp_Pnt& position, const double rotationDeg[3]) {
+    const SceneObject* o = find(id);
+    if (!o) return false;
+    return setTransform(id, position, rotationDeg, o->scale);
+}
+
+bool SceneDocument::setTransform(int id, const gp_Pnt& position, const double rotationDeg[3],
+                                 double scale) {
     SceneObject* o = find(id);
     if (!o) return false;
+    const double s = std::clamp(scale, kMinScale, kMaxScale);
     const bool same = o->position.IsEqual(position, 1e-9) &&
                       o->rotationDeg[0] == rotationDeg[0] &&
                       o->rotationDeg[1] == rotationDeg[1] &&
-                      o->rotationDeg[2] == rotationDeg[2];
+                      o->rotationDeg[2] == rotationDeg[2] &&
+                      o->scale == s;
     if (same) return false;
     o->position = position;
     for (int i = 0; i < 3; ++i) o->rotationDeg[i] = rotationDeg[i];
+    o->scale = s;
     detach();
     return true;
 }
@@ -882,6 +931,66 @@ void SceneDocument::rebuildTutorialParts() {
 
 // ---- compiling -------------------------------------------------------------
 
+TopoDS_Shape SceneDocument::compiledShape(const SceneObject& o, const gp_Trsf& world,
+                                          bool moveIntoWorld) const {
+    ShapeCacheEntry& e = m_shapeCache[o.id];
+
+    // A tutorial or CAD part carries its shape rather than building one, so
+    // what invalidates it is the carried shape changing -- which is what a
+    // dimension change on a linked tutorial does.
+    const bool carried = (o.type == ObjectType::TutorialPart ||
+                          o.type == ObjectType::ImportedPart);
+
+    bool baseOk = e.haveBase && e.type == o.type;
+    if (baseOk) {
+        if (carried) {
+            baseOk = e.base.IsEqual(o.baked);
+        } else {
+            for (int i = 0; i < SceneObject::kMaxParams; ++i)
+                if (e.p[i] != o.p[i]) { baseOk = false; break; }
+        }
+    }
+    if (!baseOk) {
+        e.type = o.type;
+        for (int i = 0; i < SceneObject::kMaxParams; ++i) e.p[i] = o.p[i];
+        e.base       = carried ? o.baked : buildShape(o.type, o.p);
+        e.haveBase   = true;
+        e.haveScaled = false;
+        e.havePlaced = false;
+    }
+    // An instanced part is placed by its instance transforms, which carry the
+    // whole world transform -- scale included -- and are applied to the mesh
+    // rather than to the B-Rep. So it wants the shape as built.
+    if (!moveIntoWorld || e.base.IsNull()) return e.base;
+
+    // The world transform is a uniform scale about the object's own origin
+    // followed by a rigid motion, and gp_Trsf holds exactly that pair. They are
+    // applied separately because only one of them is free: the motion is a
+    // location, and the scale has to be built into the geometry.
+    const double factor = world.ScaleFactor();
+    if (!e.haveScaled || e.factor != factor) {
+        e.factor     = factor;
+        e.scaled     = scaledShape(e.base, factor);
+        e.haveScaled = true;
+        e.havePlaced = false;
+    }
+
+    gp_Trsf rigid = world;
+    rigid.SetScaleFactor(1.0);
+
+    double w[12];
+    trsfValues(rigid, w);
+    if (!e.havePlaced || !sameTrsf(e.world, w)) {
+        for (int i = 0; i < 12; ++i) e.world[i] = w[i];
+        // Rigid, so this sets a location rather than rebuilding the B-Rep --
+        // and the result is kept, not remade, so an object nobody touched hands
+        // back a shape that compares equal to the one already on screen.
+        e.placed     = e.scaled.Moved(TopLoc_Location(rigid));
+        e.havePlaced = true;
+    }
+    return e.placed;
+}
+
 SceneDocument::Compiled SceneDocument::compile() const {
     Compiled out;
     out.setup = std::make_shared<GeometryProvider::SceneSetup>();
@@ -900,6 +1009,7 @@ SceneDocument::Compiled SceneDocument::compile() const {
             s.offset       = gp_Pnt(0, 0, 0).Transformed(world);
             gp_Trsf rot    = world;
             rot.SetTranslationPart(gp_Vec(0, 0, 0));
+            rot.SetScaleFactor(1.0);
             s.axis = gp_Dir(0, 0, 1).Transformed(rot);
             if (s.label.isEmpty()) s.label = o.name;
 
@@ -908,10 +1018,11 @@ SceneDocument::Compiled SceneDocument::compile() const {
             continue;
         }
 
-        const TopoDS_Shape shape =
-            (o.type == ObjectType::TutorialPart || o.type == ObjectType::ImportedPart)
-                ? o.baked
-                : buildShape(o.type, o.p);
+        // An instanced part is tessellated once about its own origin and placed
+        // at each transform, so the object's placement composes into the
+        // instances rather than into the shape -- moving the shape as well
+        // would apply it twice.
+        const TopoDS_Shape shape = compiledShape(o, world, o.instances.empty());
         if (shape.IsNull()) {
             out.warnings << QStringLiteral("%1 built no geometry and is not traced.")
                                 .arg(o.name);
@@ -923,16 +1034,9 @@ SceneDocument::Compiled SceneDocument::compile() const {
         surf.label          = o.name;
         surf.meshDeflection = o.meshDeflection;
         surf.meshAngle      = o.meshAngle;
+        surf.shape          = shape;
 
-        if (o.instances.empty()) {
-            // Rigid, so this sets a location rather than rebuilding the B-Rep.
-            surf.shape = shape.Moved(TopLoc_Location(world));
-        } else {
-            // An instanced part is tessellated once about its own origin and
-            // placed at each transform, so the object's placement composes into
-            // the instances rather than into the shape -- moving the shape as
-            // well would apply it twice.
-            surf.shape = shape;
+        if (!o.instances.empty()) {
             surf.placements.reserve(o.instances.size());
             for (const gp_Trsf& t : o.instances) surf.placements.push_back(world * t);
         }
@@ -950,6 +1054,11 @@ SceneDocument::Compiled SceneDocument::compile() const {
     }
     if (out.setup->surfaces.empty())
         out.warnings << QStringLiteral("The scene has no geometry to trace.");
+
+    // Objects that have been deleted must not keep their shapes alive, and ids
+    // are never reused, so anything the walk above did not touch is gone.
+    if (m_shapeCache.size() > m_objects.size())
+        std::erase_if(m_shapeCache, [this](const auto& e) { return indexOf(e.first) < 0; });
 
     out.setup->label = m_linked ? GeometryProvider::info(m_scene).name
                                 : QStringLiteral("Assembled scene");
@@ -993,6 +1102,10 @@ QJsonObject SceneDocument::toJson() const {
         QJsonArray rot;
         for (double d : o.rotationDeg) rot.append(d);
         j[QStringLiteral("rotation")] = rot;
+
+        // Only when it is not the default, so a scene nobody resized reads the
+        // way it always did.
+        if (o.scale != 1.0) j[QStringLiteral("scale")] = o.scale;
 
         const std::size_t np = typeInfo(o.type).params.size();
         if (np > 0) {
@@ -1069,6 +1182,10 @@ SceneDocument SceneDocument::fromJson(const QJsonObject& root, QStringList* warn
             o.position = gp_Pnt(pos[0].toDouble(), pos[1].toDouble(), pos[2].toDouble());
         const QJsonArray rot = j.value(QStringLiteral("rotation")).toArray();
         for (int i = 0; i < 3 && i < rot.size(); ++i) o.rotationDeg[i] = rot[i].toDouble();
+        // A file written before objects could be resized has no scale, and
+        // "the size it was built at" is what it meant.
+        o.scale = std::clamp(j.value(QStringLiteral("scale")).toDouble(1.0),
+                             kMinScale, kMaxScale);
 
         const std::vector<SceneParamInfo>& info = typeInfo(type).params;
         const QJsonArray ps = j.value(QStringLiteral("params")).toArray();

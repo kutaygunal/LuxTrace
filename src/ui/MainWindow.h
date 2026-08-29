@@ -34,6 +34,7 @@ class QDialog;
 class QTabWidget;
 class QTextBrowser;
 class QTimer;
+class QToolButton;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -76,6 +77,10 @@ private slots:
     void onAddGroup();
     void onIsolateObject(int id);
     void onShowAllObjects();
+    // The selected object was dragged by the viewport's gizmo. `delta` is the
+    // whole drag, in world coordinates.
+    void onObjectTransformed(const gp_Trsf& delta);
+    void onTransformModeChanged(int mode);
     void onObjectPlacementEdited(int id);
     void onObjectParametersEdited(int id);
     void onObjectSourceEdited(int id);
@@ -95,6 +100,10 @@ private slots:
 
     void onPinResult();
     void onClearPin();
+    // Throws away everything the tracer produced and nothing else. The scene,
+    // the objects in it and the camera looking at them are untouched -- this is
+    // "clear the answer", not "start again".
+    void onResetResults();
     // A single ray through the optic, with every interaction it had.
     void onInspectRay();
 
@@ -141,12 +150,42 @@ private:
     // about -- renaming a part, hiding one, changing what its surface does to
     // light -- which is the difference between a redraw and a rebuild.
     void syncDocument(bool rebuildGeometry);
+    // The narrow version, for an edit that came *from* the property panel.
+    //
+    // Nothing structural has happened -- no object appeared, moved in the tree
+    // or was renamed -- so the tree is not rebuilt and the panel is not written
+    // back over. That matters twice: rebuilding the tree on every step of a
+    // spin box collapses it and throws away its scroll position, and re-reading
+    // the document into the panel fights the control the user is holding.
+    void syncEditedObject(bool rebuildGeometry);
     void refreshInspector();
+    // Just the viewport's half of the selection -- which bodies read as
+    // selected and which emitter does. Safe to call while the panel is being
+    // edited, because it does not touch the panel.
+    void refreshSelectionHighlight();
     // Applies each object's "show this" flag to the bodies it compiled into.
     void applySurfaceVisibility();
     // Why the tutorial's dimensions no longer describe what is traced, or an
     // empty string while they still do.
     QString detachReason() const;
+
+    // Set while a slot is acting on an edit that came from the property panel.
+    // The panel already holds the newest version of what it shows, so anything
+    // that would write it back is skipped for the duration.
+    // The three transform tools, in the toolbar under the viewport. Kept so the
+    // buttons can be put back in step when the mode changes from the keyboard.
+    QToolButton* m_moveTool   = nullptr;
+    QToolButton* m_rotateTool = nullptr;
+    QToolButton* m_scaleTool  = nullptr;
+
+    bool m_inspectorEditing = false;
+    // Sets that flag for the length of a scope, exception or early return
+    // included.
+    struct InspectorEditScope {
+        bool& flag;
+        explicit InspectorEditScope(bool& f) : flag(f) { flag = true; }
+        ~InspectorEditScope() { flag = false; }
+    };
 
     // The two directions of the one selection: a body in the viewport and a row
     // in the tree are the same object.

@@ -774,6 +774,33 @@ TEST(multisource, a_second_source_somewhere_else_is_reported_separately) {
     CHECK(sawFirst || sawSecond);
 }
 
+TEST(multisource, every_source_draws_rays_into_the_viewport) {
+    // The paths the viewport draws are recorded for a bounded number of rays,
+    // and sources own consecutive blocks of the run's ray index space. Taking
+    // that budget off the front of the space spent all of it inside the first
+    // source's block, so a scene with two lamps in it lit one: every emitter
+    // has to reach the drawn bundle.
+    SimConfig cfg = quickConfig(GeometryProvider::Scene::Reflector, 40000);
+    cfg.power = 1.0;
+
+    SourceSpec stray;
+    stray.label  = QStringLiteral("stray");
+    stray.power  = 1.0;
+    stray.type   = SourceConfig::Type::Point;
+    stray.offset = gp_Pnt(60.0, 0.0, 0.0);
+    cfg.extraSources.push_back(stray);
+
+    const SimulationResult res = Simulation::run(cfg);
+    CHECK(res.sources.size() == 2);
+
+    std::vector<int> drawn(res.sources.size(), 0);
+    for (const RaySegment& s : res.raySegments) {
+        CHECK(s.source < res.sources.size());
+        ++drawn[s.source];
+    }
+    for (std::size_t i = 0; i < drawn.size(); ++i) CHECK(drawn[i] > 0);
+}
+
 TEST(multisource, a_single_source_run_is_untouched_by_the_machinery) {
     // The one-source answer has to be bit-identical to what it was before there
     // could be several, or every reference value in the corpus is a lie.

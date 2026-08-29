@@ -384,3 +384,180 @@ TEST(scenedoc, an_assembled_scene_traces_through_the_import_path) {
     // Light aimed at a ball lens from in front of it has to arrive somewhere.
     CHECK(res.raysHitDetector > 0);
 }
+
+TEST(scenedoc, editing_one_object_leaves_the_others_alone) {
+    // What makes a property edit cheap. compile() runs on the GUI thread on
+    // every step of a spin box, so re-running the modelling kernel for every
+    // object because one of them changed is the difference between a viewport
+    // that follows the number and one that stutters behind it.
+    //
+    // The identity is the load-bearing half: an untouched object has to come
+    // back as the *same* B-Rep, because that is what lets the tessellator reuse
+    // its triangulation and the viewport skip a presentation it has already
+    // drawn. Equal dimensions are not enough -- a freshly built sphere of the
+    // same radius compares unequal, and everything downstream redraws.
+    scenedoc::SceneDocument doc;
+    const int lens   = doc.add(scenedoc::ObjectType::BallLens, gp_Pnt(0, 0, 0));
+    const int mirror = doc.add(scenedoc::ObjectType::FlatMirror, gp_Pnt(0, 0, 60.0));
+    const int det    = doc.add(scenedoc::ObjectType::Detector, gp_Pnt(0, 0, 120.0));
+    doc.add(scenedoc::ObjectType::Source, gp_Pnt(0, 0, -80.0));
+
+    const auto before = doc.compile();
+    CHECK(before.surfaceObject.size() == 3);
+
+    // Nothing at all has changed: every body comes back as the same shape.
+    const auto again = doc.compile();
+    CHECK(again.surfaceObject == before.surfaceObject);
+    for (std::size_t i = 0; i < before.setup->surfaces.size(); ++i)
+        CHECK(again.setup->surfaces[i].shape.IsEqual(before.setup->surfaces[i].shape));
+
+    // One radius moves. That body is rebuilt; the other two are not.
+    double radius[scenedoc::SceneObject::kMaxParams] = {};
+    radius[0] = doc.find(lens)->p[0] + 5.0;
+    CHECK(doc.setParams(lens, radius, 1));
+
+    const auto after = doc.compile();
+    for (std::size_t i = 0; i < after.surfaceObject.size(); ++i) {
+        const bool sameShape =
+            after.setup->surfaces[i].shape.IsEqual(before.setup->surfaces[i].shape);
+        CHECK(sameShape == (after.surfaceObject[i] != lens));
+    }
+
+    // Moving one is the same story: a rigid placement relocates that body and
+    // leaves the rest of the scene exactly where it was.
+    const double rot[3] = {0, 0, 0};
+    CHECK(doc.setPlacement(mirror, gp_Pnt(10.0, 0, 60.0), rot));
+    const auto moved = doc.compile();
+    for (std::size_t i = 0; i < moved.surfaceObject.size(); ++i) {
+        const bool sameShape =
+            moved.setup->surfaces[i].shape.IsEqual(after.setup->surfaces[i].shape);
+        CHECK(sameShape == (moved.surfaceObject[i] != mirror));
+    }
+    CHECK(det != 0);
+}
+
+TEST(scenedoc, a_removed_object_does_not_leave_its_shape_behind) {
+    // Ids are never reused, so a cache entry for a deleted object is dead
+    // weight the document would carry for the rest of the session.
+    scenedoc::SceneDocument doc;
+    const int keep = doc.add(scenedoc::ObjectType::BallLens, gp_Pnt(0, 0, 0));
+    const int gone = doc.add(scenedoc::ObjectType::Sphere, gp_Pnt(50.0, 0, 0));
+    doc.compile();
+
+    CHECK(doc.remove(gone) == 1);
+    const auto after = doc.compile();
+    CHECK(after.surfaceObject.size() == 1);
+    CHECK(after.surfaceObject[0] == keep);
+
+    // And clearing the document cannot hand a shape to whatever takes an id
+    // next: loading a tutorial starts the numbering again from one.
+    doc.loadTutorial(GeometryProvider::Scene::Reflector,
+                     GeometryProvider::defaultParams(GeometryProvider::Scene::Reflector));
+    const auto reloaded = doc.compile();
+    CHECK(!reloaded.setup->surfaces.empty());
+    for (const OpticalSurface& s : reloaded.setup->surfaces) CHECK(!s.shape.IsNull());
+}
+
+TEST(scenedoc, a_gizmo_drag_reads_back_as_the_numbers_the_panel_shows) {
+    // The viewport's gizmo hands back a gp_Trsf and the document stores a
+    // position, three Euler angles and a scale. That decomposition is the one
+    // place the two representations have to agree, and it is silent when it is
+    // wrong: the object lands somewhere plausible but not where it was dropped,
+    // and the panel then disagrees with the picture.
+    //
+    // So: build a transform out of the three things an object stores, hand it
+    // to the document the way MainWindow::onObjectTransformed does, and check
+    // the numbers that come out are the numbers that went in.
+    scenedoc::SceneDocument doc;
+    const int id = doc.add(scenedoc::ObjectType::Sphere, gp_Pnt(0, 0, 0));
+
+    scenedoc::SceneObject* o = doc.find(id);
+    o->position       = gp_Pnt(12.0, -30.0, 4.5);
+    o->rotationDeg[0] = 25.0;
+    o->rotationDeg[1] = -40.0;
+    o->rotationDeg[2] = 110.0;
+    o->scale          = 2.5;
+
+    // What the gizmo would produce for that placement, starting from identity.
+    const gp_Trsf wanted = o->localPlacement();
+
+    o->position = gp_Pnt(0, 0, 0);
+    for (double& r : o->rotationDeg) r = 0.0;
+    o->scale = 1.0;
+
+    const gp_Trsf local = doc.worldPlacement(0).Inverted() * (wanted * doc.worldPlacement(id));
+    const double  scale = local.ScaleFactor();
+    gp_Trsf rigid = local;
+    rigid.SetScaleFactor(1.0);
+    const gp_XYZ offset = rigid.TranslationPart();
+    double rx = 0.0, ry = 0.0, rz = 0.0;
+    rigid.GetRotation().GetEulerAngles(gp_Extrinsic_XYZ, rx, ry, rz);
+    const double toDeg = 180.0 / std::acos(-1.0);
+    const double rot[3] = {rx * toDeg, ry * toDeg, rz * toDeg};
+
+    CHECK(doc.setTransform(id, gp_Pnt(offset.X(), offset.Y(), offset.Z()), rot, scale));
+    const scenedoc::SceneObject* after = doc.find(id);
+    CHECK_NEAR(after->position.X(), 12.0, 1e-9);
+    CHECK_NEAR(after->position.Y(), -30.0, 1e-9);
+    CHECK_NEAR(after->position.Z(), 4.5, 1e-9);
+    CHECK_NEAR(after->rotationDeg[0], 25.0, 1e-6);
+    CHECK_NEAR(after->rotationDeg[1], -40.0, 1e-6);
+    CHECK_NEAR(after->rotationDeg[2], 110.0, 1e-6);
+    CHECK_NEAR(after->scale, 2.5, 1e-9);
+}
+
+TEST(scenedoc, scaling_an_object_resizes_the_body_that_is_traced) {
+    // The scale has to reach the geometry, not just the placement: a
+    // TopLoc_Location cannot carry a scale factor at all, so an implementation
+    // that treated it as part of the placement would silently draw and trace
+    // the object at its original size.
+    scenedoc::SceneDocument doc;
+    const int id = doc.add(scenedoc::ObjectType::Sphere, gp_Pnt(0, 0, 0));
+    doc.find(id)->p[0] = 10.0;                       // radius
+
+    auto radiusOf = [&doc]() {
+        const auto compiled = doc.compile();
+        Bnd_Box box;
+        BRepBndLib::Add(compiled.setup->surfaces.at(0).shape, box);
+        double xm, ym, zm, xM, yM, zM;
+        box.Get(xm, ym, zm, xM, yM, zM);
+        return 0.5 * (xM - xm);
+    };
+    CHECK_NEAR(radiusOf(), 10.0, 0.2);
+
+    const double rot[3] = {0, 0, 0};
+    CHECK(doc.setTransform(id, gp_Pnt(0, 0, 0), rot, 3.0));
+    CHECK_NEAR(radiusOf(), 30.0, 0.6);
+
+    // And it survives a save and a reload, or a scaled scene reopens at the
+    // size it was designed at rather than the size it was built at.
+    QStringList warnings;
+    const scenedoc::SceneDocument back =
+        scenedoc::SceneDocument::fromJson(doc.toJson(), &warnings);
+    const scenedoc::SceneObject* o = back.find(id);
+    CHECK(o != nullptr);
+    CHECK_NEAR(o->scale, 3.0, 1e-9);
+}
+
+TEST(scenedoc, a_group_scale_reaches_the_children_under_it) {
+    // Scaling a group is the case a per-object scale gets wrong: the factor has
+    // to compose down the hierarchy, and it has to move the children outward as
+    // well as enlarge them.
+    scenedoc::SceneDocument doc;
+    const int group = doc.add(scenedoc::ObjectType::Group, gp_Pnt(0, 0, 0));
+    const int child = doc.add(scenedoc::ObjectType::Sphere, gp_Pnt(40.0, 0, 0), group);
+    doc.find(child)->p[0] = 5.0;
+
+    const double rot[3] = {0, 0, 0};
+    CHECK(doc.setTransform(group, gp_Pnt(0, 0, 0), rot, 2.0));
+
+    const auto compiled = doc.compile();
+    CHECK(compiled.setup->surfaces.size() == 1);
+    Bnd_Box box;
+    BRepBndLib::Add(compiled.setup->surfaces[0].shape, box);
+    double xm, ym, zm, xM, yM, zM;
+    box.Get(xm, ym, zm, xM, yM, zM);
+    // Twice as far out, and twice the radius.
+    CHECK_NEAR(0.5 * (xm + xM), 80.0, 0.3);
+    CHECK_NEAR(0.5 * (xM - xm), 10.0, 0.3);
+}

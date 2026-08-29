@@ -35,6 +35,8 @@
 #include <TCollection_ExtendedString.hxx>
 #include <PrsMgr_PresentationManager.hxx>
 #include <Quantity_Color.hxx>
+#include <gp_Ax2.hxx>
+#include <gp_Quaternion.hxx>
 #include <SelectMgr_EntityOwner.hxx>
 #include <SelectMgr_Selection.hxx>
 #include <TopExp_Explorer.hxx>
@@ -225,11 +227,14 @@ void OcctViewWidget::initViewer() {
                                     Quantity_Color(0.02, 0.02, 0.03, Quantity_TOC_RGB),
                                     Aspect_GFM_VER);
         m_view->ChangeRenderingParams().NbMsaaSamples = 4;
-        // Perspective, not OCCT's default orthographic camera. Under an
+        // Orthographic, which is OCCT's default and the projection a CAD user
+        // reads a part in: parallel edges stay parallel and a dimension is the
+        // same length wherever it sits on screen. The Perspective box switches
+        // the frustum on, which is what makes W/S walking visible -- under an
         // orthographic projection, moving the eye and the centre together along
-        // the view axis changes nothing on screen, so W/S would appear dead --
-        // a walkthrough only means anything with a perspective frustum.
-        m_view->Camera()->SetProjectionType(Graphic3d_Camera::Projection_Perspective);
+        // the view axis changes nothing on screen, so W/S appears dead.
+        // The FOV is set here so the box has one ready when it is ticked.
+        m_view->Camera()->SetProjectionType(Graphic3d_Camera::Projection_Orthographic);
         m_view->Camera()->SetFOVy(50.0);
         m_view->SetProj(V3d_XposYnegZpos);
 
@@ -253,7 +258,8 @@ double OcctViewWidget::sceneScale() const {
 }
 
 void OcctViewWidget::setScene(GeometryProvider::Scene scene,
-                              const std::vector<OpticalSurface>& surfaces) {
+                              const std::vector<OpticalSurface>& surfaces,
+                              bool keepCamera) {
     initViewer();
     if (m_context.IsNull()) return;
 
@@ -262,7 +268,9 @@ void OcctViewWidget::setScene(GeometryProvider::Scene scene,
     // focal length threw away whatever the user had lined up to look at; the
     // view is only reframed when what is on screen is genuinely a new subject.
     const int  key          = int(scene);
-    const bool sceneChanged = !m_haveScene || key != m_sceneKey;
+    // The very first scene is always framed -- there is no viewpoint to keep
+    // yet, and an unframed camera shows an empty screen.
+    const bool sceneChanged = !m_haveScene || (key != m_sceneKey && !keepCamera);
 
     // Same part count means the same parts with new dimensions, so the
     // presentations are reused and handed the new B-Rep in place. Tearing the
@@ -270,9 +278,20 @@ void OcctViewWidget::setScene(GeometryProvider::Scene scene,
     // a fresh selection tree and a fresh structure per surface, all of which
     // are thrown away again on the next spin-box step.
     if (m_shapes.size() != surfaces.size()) {
+        // The gizmo holds handles to these. Letting it go first is what keeps
+        // it from being attached to a presentation the context no longer has.
+        if (!m_manipulator.IsNull() && m_manipulator->IsAttached()) {
+            if (m_manipulator->HasActiveTransformation())
+                m_manipulator->StopTransform(Standard_False);
+            m_manipulator->DeactivateCurrentMode();
+            m_manipulator->Detach();
+        }
+        m_draggingGizmo = false;
         for (const auto& s : m_shapes) m_context->Remove(s, Standard_False);
         m_shapes.clear();
         m_baseLook.clear();
+        m_applied.clear();
+        m_shown.clear();
         m_shapes.reserve(surfaces.size());
         // A different set of parts is a different set of things to hide, so the
         // visibility flags start again with them.
@@ -304,17 +323,22 @@ void OcctViewWidget::setScene(GeometryProvider::Scene scene,
         m_receivers.push_back(g);
     }
 
-    Bnd_Box bounds;
+    // Which surfaces genuinely changed. An edit to one object recompiles the
+    // whole document, but the document hands back the same B-Rep for every
+    // object it did not rebuild, so this is usually a single index.
+    bool anyChanged = false;
+
     for (std::size_t i = 0; i < surfaces.size(); ++i) {
         const OpticalSurface& os    = surfaces[i];
         const bool            fresh = i >= m_shapes.size();
+        const bool sameShape = !fresh && i < m_shown.size() && m_shown[i].IsEqual(os.shape);
 
         Handle(AIS_Shape) shape;
         if (fresh) {
             shape = new AIS_Shape(os.shape);
         } else {
             shape = m_shapes[i];
-            shape->SetShape(os.shape);
+            if (!sameShape) shape->SetShape(os.shape);
         }
 
         // What this surface looks like when nothing has it selected. Kept, so
@@ -334,8 +358,21 @@ void OcctViewWidget::setScene(GeometryProvider::Scene scene,
         }
         if (m_baseLook.size() <= i) m_baseLook.resize(i + 1);
         m_baseLook[i] = look;
-        shape->SetColor(look.colour);
-        shape->SetTransparency(look.transparency);
+
+        // The selected surface reads as selected: a scene tree and a viewport
+        // that disagree about what is picked are worse than either alone.
+        Appearance want = look;
+        if (std::find(m_highlight.begin(), m_highlight.end(), int(i)) !=
+            m_highlight.end())
+            want = {Quantity_Color(1.0, 0.72, 0.25, Quantity_TOC_RGB), 0.25f};
+
+        if (m_applied.size() <= i) m_applied.resize(i + 1);
+        const bool lookChanged = fresh || m_applied[i] != want;
+        if (lookChanged) {
+            shape->SetColor(want.colour);
+            shape->SetTransparency(want.transparency);
+            m_applied[i] = want;
+        }
 
         // Where the mesher has already been over this shape, say its tolerance
         // in absolute terms so OCCT reuses the triangulation that is already
@@ -348,41 +385,61 @@ void OcctViewWidget::setScene(GeometryProvider::Scene scene,
         // Geometry that has not been meshed -- a part fresh out of a CAD file,
         // shown before anything is traced -- keeps the relative default, which
         // scales itself to the part and so stays smooth on a small one.
-        if (isTessellated(os.shape)) {
+        if (!sameShape && isTessellated(os.shape)) {
             const Handle(Prs3d_Drawer)& drawer = shape->Attributes();
             drawer->SetTypeOfDeflection(Aspect_TOD_ABSOLUTE);
             drawer->SetMaximalChordialDeviation(os.meshDeflection);
             drawer->SetDeviationAngle(os.meshAngle);
         }
 
-        // The selected surface reads as selected: a scene tree and a viewport
-        // that disagree about what is picked are worse than either alone.
-        if (std::find(m_highlight.begin(), m_highlight.end(), int(i)) !=
-            m_highlight.end()) {
-            shape->SetColor(Quantity_Color(1.0, 0.72, 0.25, Quantity_TOC_RGB));
-            shape->SetTransparency(0.25f);
-        }
+        if (m_shown.size() <= i) m_shown.resize(i + 1);
+        m_shown[i] = os.shape;
 
-        shape->SetDisplayMode(AIS_Shaded);
+        // A gizmo drag leaves its transform on the presentation, deliberately,
+        // so the object stays where it was dropped while the document catches
+        // up. This is the document catching up: the placement is in the B-Rep
+        // now, and leaving it on the presentation as well would apply it twice.
+        if (shape->LocalTransformation().Form() != gp_Identity) shape->ResetTransformation();
+
         if (fresh) {
+            shape->SetDisplayMode(AIS_Shaded);
             // Selection mode 0 is the whole shape: that is what makes a surface
             // clickable, and it is why the ray cloud deliberately has none.
             m_context->Display(shape, AIS_Shaded, 0, Standard_False);
             m_shapes.push_back(shape);
-        } else {
+            anyChanged = true;
+        } else if (!sameShape || lookChanged) {
+            // Recomputing a presentation costs a fresh triangulation upload and
+            // a fresh selection tree. A surface showing the same B-Rep in the
+            // same colour as a moment ago needs neither, and skipping it is
+            // what keeps an edit to one object from redrawing the scene.
             m_context->Redisplay(shape, Standard_False, Standard_False);
+            if (!sameShape) anyChanged = true;
         }
-
-        BRepBndLib::Add(os.shape, bounds);
     }
 
-    if (!bounds.IsVoid()) {
-        double xm, ym, zm, xM, yM, zM;
-        bounds.Get(xm, ym, zm, xM, yM, zM);
-        m_bbMin[0] = xm; m_bbMin[1] = ym; m_bbMin[2] = zm;
-        m_bbMax[0] = xM; m_bbMax[1] = yM; m_bbMax[2] = zM;
-        m_sceneSize = std::max({xM - xm, yM - ym, zM - zm});
+    // The bounding box only moves when the geometry does, and reading it back
+    // walks every shape in the scene.
+    if (anyChanged) {
+        Bnd_Box bounds;
+        for (const OpticalSurface& os : surfaces) BRepBndLib::Add(os.shape, bounds);
+        if (!bounds.IsVoid()) {
+            double xm, ym, zm, xM, yM, zM;
+            bounds.Get(xm, ym, zm, xM, yM, zM);
+            m_bbMin[0] = xm; m_bbMin[1] = ym; m_bbMin[2] = zm;
+            m_bbMax[0] = xM; m_bbMax[1] = yM; m_bbMax[2] = zM;
+            m_sceneSize = std::max({xM - xm, yM - ym, zM - zm});
+        }
     }
+
+    // The overlay's glyphs are a fraction of this, so it is held until the
+    // scene has genuinely changed size rather than tracked continuously.
+    // Following every millimetre of a lens edit makes the emitter cone and the
+    // receiver outline breathe while the user is editing something else --
+    // which is the whole scene appearing to update, from one number.
+    if (m_overlayScale <= 0.0 || m_sceneSize > 1.5 * m_overlayScale ||
+        m_sceneSize < m_overlayScale / 1.5)
+        m_overlayScale = m_sceneSize;
 
     m_sceneKey  = key;
     m_haveScene = true;
@@ -395,6 +452,9 @@ void OcctViewWidget::setScene(GeometryProvider::Scene scene,
 
     rebuildOverlay();
     applyClip();
+    // The presentations the gizmo was holding may be different objects now, and
+    // the object it is centred on has moved or changed size.
+    refreshManipulator();
     if (sceneChanged) {
         resetView();
     } else if (!m_view.IsNull()) {
@@ -454,6 +514,12 @@ void OcctViewWidget::setSurfaceVisible(int index, bool visible) {
     if (visible) m_context->Display(m_shapes[std::size_t(index)], AIS_Shaded, 0,
                                     Standard_False);
     else         m_context->Erase(m_shapes[std::size_t(index)], Standard_False);
+    // Handles floating over a body that is no longer drawn are handles for
+    // something the user cannot see themselves moving. Only when it is a body
+    // the gizmo is actually on, though: this is called once per surface when
+    // the whole scene's visibility is applied.
+    if (std::find(m_highlight.begin(), m_highlight.end(), index) != m_highlight.end())
+        refreshManipulator();
     if (!m_view.IsNull()) { m_view->Invalidate(); update(); }
 }
 
@@ -466,22 +532,29 @@ void OcctViewWidget::setHighlightedSurfaces(const std::vector<int>& indices) {
     if (m_highlight == indices) return;
     m_highlight = indices;
     if (m_context.IsNull()) return;
-    // Repaint every part rather than tracking the previous one: the list is a
-    // handful of shapes, and a stale highlight is the bug this exists to avoid.
+    // Consider every part rather than tracking the previous selection: a stale
+    // highlight is the bug this exists to avoid. Only the ones whose colour
+    // actually differs are repainted, though -- a selection change should cost
+    // two presentations, not one per surface in the scene.
+    bool touched = false;
     for (std::size_t i = 0; i < m_shapes.size(); ++i) {
+        Appearance want = i < m_baseLook.size() ? m_baseLook[i] : Appearance{};
         if (std::find(m_highlight.begin(), m_highlight.end(), int(i)) !=
-            m_highlight.end()) {
-            m_shapes[i]->SetColor(Quantity_Color(1.0, 0.72, 0.25, Quantity_TOC_RGB));
-            m_shapes[i]->SetTransparency(0.25f);
-        } else if (i < m_baseLook.size()) {
-            // Put the surface back to what it is, rather than leaving the last
-            // selection painted on it.
-            m_shapes[i]->SetColor(m_baseLook[i].colour);
-            m_shapes[i]->SetTransparency(m_baseLook[i].transparency);
-        }
+            m_highlight.end())
+            want = {Quantity_Color(1.0, 0.72, 0.25, Quantity_TOC_RGB), 0.25f};
+
+        if (m_applied.size() <= i) m_applied.resize(i + 1);
+        if (m_applied[i] == want) continue;
+        // Put the surface back to what it is, rather than leaving the last
+        // selection painted on it.
+        m_shapes[i]->SetColor(want.colour);
+        m_shapes[i]->SetTransparency(want.transparency);
+        m_applied[i] = want;
         m_context->Redisplay(m_shapes[i], Standard_False, Standard_False);
+        touched = true;
     }
-    if (!m_view.IsNull()) { m_view->Invalidate(); update(); }
+    refreshManipulator();
+    if (touched && !m_view.IsNull()) { m_view->Invalidate(); update(); }
 }
 
 // ---- taking a drop from the object library ---------------------------------
@@ -559,8 +632,49 @@ bool OcctViewWidget::worldPointAt(const QPoint& pos, gp_Pnt& out) {
     return true;
 }
 
+bool OcctViewWidget::overlayUpToDate() const {
+    if (!m_haveOverlay || m_drawnOverlaysOn != m_overlaysOn) return false;
+    if (!m_overlaysOn) return true;                 // nothing drawn either way
+    if (m_drawnScale != m_overlayScale) return false;
+    for (int i = 0; i < 3; ++i)
+        if (m_drawnBbMin[i] != m_bbMin[i] || m_drawnBbMax[i] != m_bbMax[i]) return false;
+
+    if (m_drawnSources.size() != m_sources.size()) return false;
+    for (std::size_t i = 0; i < m_sources.size(); ++i) {
+        const SourceGlyph& a = m_drawnSources[i];
+        const SourceGlyph& b = m_sources[i];
+        if (!a.origin.IsEqual(b.origin, 1e-9) || !a.axis.IsEqual(b.axis, 1e-12) ||
+            a.halfAngleDeg != b.halfAngleDeg || a.collimated != b.collimated ||
+            a.beamRadius != b.beamRadius || a.label != b.label)
+            return false;
+    }
+
+    if (m_drawnReceivers.size() != m_receivers.size()) return false;
+    for (std::size_t i = 0; i < m_receivers.size(); ++i) {
+        const ReceiverGlyph& a = m_drawnReceivers[i];
+        const ReceiverGlyph& b = m_receivers[i];
+        if (!a.centre.IsEqual(b.centre, 1e-9) || !a.u.IsEqual(b.u, 1e-12) ||
+            !a.v.IsEqual(b.v, 1e-12) || !a.n.IsEqual(b.n, 1e-12) ||
+            a.w != b.w || a.h != b.h || a.acceptanceDeg != b.acceptanceDeg)
+            return false;
+    }
+    return true;
+}
+
 void OcctViewWidget::rebuildOverlay() {
     if (m_context.IsNull()) return;
+    // Nothing it draws has moved, so what is on screen is already the answer.
+    // Rebuilding it anyway is what made the emitter marker and the receiver
+    // outline flicker on every step of an unrelated spin box.
+    if (overlayUpToDate()) return;
+
+    m_drawnOverlaysOn = m_overlaysOn;
+    m_drawnSources    = m_sources;
+    m_drawnReceivers  = m_receivers;
+    m_drawnScale      = m_overlayScale;
+    for (int i = 0; i < 3; ++i) { m_drawnBbMin[i] = m_bbMin[i]; m_drawnBbMax[i] = m_bbMax[i]; }
+    m_haveOverlay = true;
+
     if (!m_overlay.IsNull()) {
         m_context->Remove(m_overlay, Standard_False);
         m_overlay.Nullify();
@@ -570,7 +684,8 @@ void OcctViewWidget::rebuildOverlay() {
         return;
     }
 
-    const double scale = std::max(1e-6, m_sceneSize);
+    // The held scene size, not the live one -- see where m_overlayScale is set.
+    const double scale = std::max(1e-6, m_overlayScale > 0.0 ? m_overlayScale : m_sceneSize);
     std::vector<RayCloud::Vertex> v;
     std::vector<RayCloud::Label>  labels;
 
@@ -604,6 +719,11 @@ void OcctViewWidget::rebuildOverlay() {
     // drew a single marker, so an offset typed into the source dialog could
     // only be checked by tracing and reading the pattern back -- and a typo
     // that put an emitter inside the optic had nothing on screen to say so.
+    // Where the discs were last time, so the pickable faces below are only
+    // rebuilt when they have actually moved: making a circular face per emitter
+    // is kernel work, and the overlay is redrawn whenever the scene's bounding
+    // box shifts -- which an edit to any object in it does.
+    const std::vector<SourceDisc> previousDiscs = m_sourceDiscs;
     m_sourceDiscs.assign(m_sources.size(), SourceDisc{});
     for (std::size_t si = 0; si < m_sources.size(); ++si) {
         const SourceGlyph& src = m_sources[si];
@@ -773,7 +893,13 @@ void OcctViewWidget::rebuildOverlay() {
     }
 
     // The emitters' discs, as real faces, from the circles just drawn.
-    rebuildSourceMarkers();
+    bool discsMoved = previousDiscs.size() != m_sourceDiscs.size() ||
+                      m_sourceMarkers.size() != m_sourceDiscs.size();
+    for (std::size_t i = 0; !discsMoved && i < m_sourceDiscs.size(); ++i)
+        discsMoved = !previousDiscs[i].centre.IsEqual(m_sourceDiscs[i].centre, 1e-9) ||
+                     !previousDiscs[i].normal.IsEqual(m_sourceDiscs[i].normal, 1e-12) ||
+                     previousDiscs[i].radius != m_sourceDiscs[i].radius;
+    if (discsMoved) rebuildSourceMarkers();
 
     if (v.empty()) {
         if (!m_view.IsNull()) { m_view->Invalidate(); update(); }
@@ -840,6 +966,143 @@ void OcctViewWidget::setHighlightedSource(int index) {
     if (m_highlightSource == index) return;
     m_highlightSource = index;
     applySourceHighlight();
+    refreshManipulator();
+}
+
+// ---- the transform gizmo ----------------------------------------------------
+//
+// AIS_Manipulator is OCCT's own translate / rotate / scale handle set, and the
+// arrangement here is Blender's: pick an object, choose a tool, drag a handle.
+// One tool is shown at a time, because three sets of handles on one object
+// leave nothing of the object left to click.
+//
+// The document is the one place an object's placement lives, so the gizmo does
+// not get to keep its own answer. During a drag the presentation is moved
+// directly -- that is what makes it follow the cursor at frame rate, with no
+// tessellation in the way -- and on release the *whole* drag is reported once,
+// written into the document, and comes back as real geometry. The presentation
+// keeps the dragged position until it does, so there is no frame in which the
+// object snaps back to where it started.
+
+Handle(AIS_ManipulatorObjectSequence) OcctViewWidget::manipulatorTargets() const {
+    Handle(AIS_ManipulatorObjectSequence) targets = new AIS_ManipulatorObjectSequence();
+    for (int idx : m_highlight) {
+        if (idx < 0 || idx >= int(m_shapes.size())) continue;
+        // A hidden body has nothing on screen to hang a handle off.
+        if (idx < int(m_visible.size()) && !m_visible[std::size_t(idx)]) continue;
+        targets->Append(m_shapes[std::size_t(idx)]);
+    }
+    // An emitter is drawn but never traced, so it has no body at all: its
+    // marker disc is the thing on screen, and it is what the gizmo grabs.
+    if (targets->IsEmpty() && m_highlightSource >= 0 &&
+        m_highlightSource < int(m_sourceMarkers.size()) &&
+        !m_sourceMarkers[std::size_t(m_highlightSource)].IsNull())
+        targets->Append(m_sourceMarkers[std::size_t(m_highlightSource)]);
+    return targets;
+}
+
+void OcctViewWidget::refreshManipulator() {
+    if (m_context.IsNull()) return;
+
+    if (!m_manipulator.IsNull() && m_manipulator->IsAttached()) {
+        if (m_manipulator->HasActiveTransformation()) m_manipulator->StopTransform(Standard_False);
+        m_manipulator->DeactivateCurrentMode();
+        m_manipulator->Detach();
+    }
+    m_draggingGizmo = false;
+
+    Handle(AIS_ManipulatorObjectSequence) targets = manipulatorTargets();
+    if (m_transformMode == TransformMode::None || targets->IsEmpty()) {
+        if (!m_view.IsNull()) { m_view->Invalidate(); update(); }
+        return;
+    }
+
+    const AIS_ManipulatorMode mode = m_transformMode == TransformMode::Translate
+                                         ? AIS_MM_Translation
+                                         : m_transformMode == TransformMode::Rotate
+                                               ? AIS_MM_Rotation
+                                               : AIS_MM_Scaling;
+
+    if (m_manipulator.IsNull()) {
+        m_manipulator = new AIS_Manipulator();
+        // Grabbing a handle on hover rather than on a separate click: a gizmo
+        // that has to be selected before it can be dragged is two gestures for
+        // what the user means as one.
+        m_manipulator->SetModeActivationOnDetection(Standard_True);
+        // A fixed size on screen. Without it the handles are sized from the
+        // object, so they vanish on a small lens and swallow the scene on a
+        // large one.
+        m_manipulator->SetZoomPersistence(Standard_True);
+    }
+
+    // Only the active tool's handles are drawn. The others stay off rather than
+    // being drawn inert, because an inert handle is still something the user
+    // aims at and then finds does nothing.
+    m_manipulator->SetPart(AIS_MM_Translation, mode == AIS_MM_Translation);
+    m_manipulator->SetPart(AIS_MM_Rotation,    mode == AIS_MM_Rotation);
+    m_manipulator->SetPart(AIS_MM_Scaling,     mode == AIS_MM_Scaling);
+    m_manipulator->SetPart(AIS_MM_TranslationPlane, Standard_False);
+
+    AIS_Manipulator::OptionsForAttach options;
+    options.SetAdjustPosition(Standard_True)     // centred on what it moves
+           .SetAdjustSize(Standard_False)        // zoom persistence sizes it
+           .SetEnableModes(Standard_False);      // only the active one, below
+    m_manipulator->Attach(targets, options);
+
+    // Attach answers both "where" and "which way round" from the bounding box:
+    // the centre of it, on the world axes. Both are wrong to keep re-asking.
+    //
+    // The axes are wrong the moment the object is off them -- the rings follow
+    // the object while it is being turned, and squaring them up again on the
+    // next attach made a rotation end with the gizmo snapping back.
+    //
+    // The centre is wrong for a subtler reason: the box is axis-aligned, so the
+    // one round a turned body is not the turned box round the untouched one,
+    // and its centre is a different point of the object every time. Measuring
+    // it once and keeping it -- in the object's own coordinates, where it is a
+    // point of the object and travels with it -- is what makes the gizmo stay
+    // exactly where the drag left it.
+    if (m_gizmoAnchorId != m_selectionId) {
+        m_gizmoAnchor =
+            m_manipulator->Position().Location().Transformed(m_selectionFrame.Inverted());
+        m_gizmoAnchorId = m_selectionId;
+    }
+
+    gp_Trsf rotation = m_selectionFrame;
+    rotation.SetTranslationPart(gp_Vec(0.0, 0.0, 0.0));
+    rotation.SetScaleFactor(1.0);
+    gp_Dir normal(0.0, 0.0, 1.0);
+    gp_Dir xRef(1.0, 0.0, 0.0);
+    normal.Transform(rotation);
+    xRef.Transform(rotation);
+    m_manipulator->SetPosition(
+        gp_Ax2(m_gizmoAnchor.Transformed(m_selectionFrame), normal, xRef));
+
+    m_manipulator->EnableMode(mode);
+
+    if (!m_view.IsNull()) { m_view->Invalidate(); update(); }
+}
+
+void OcctViewWidget::setSelectionFrame(int objectId, const gp_Trsf& world) {
+    bool same = objectId == m_selectionId;
+    for (int i = 1; i <= 3 && same; ++i)
+        for (int j = 1; j <= 4 && same; ++j)
+            same = m_selectionFrame.Value(i, j) == world.Value(i, j);
+    if (same) return;
+
+    // A different object needs its anchor measured afresh; the same object
+    // having moved must keep the one it has, which is the whole point of it.
+    if (objectId != m_selectionId) m_gizmoAnchorId = 0;
+    m_selectionId    = objectId;
+    m_selectionFrame = world;
+    refreshManipulator();
+}
+
+void OcctViewWidget::setTransformMode(TransformMode mode) {
+    if (m_transformMode == mode) return;
+    m_transformMode = mode;
+    refreshManipulator();
+    emit transformModeChanged(int(mode));
 }
 
 // ---- the navigation cube ----------------------------------------------------
@@ -1184,6 +1447,18 @@ void OcctViewWidget::mousePressEvent(QMouseEvent* e) {
     m_lastMouse   = e->pos();
     m_pressPos    = e->pos();
     m_dragButton  = e->button();
+
+    // A press on a gizmo handle starts a transform, not an orbit. The hover
+    // above has already told the manipulator which handle the cursor is on,
+    // which is what HasActiveMode is answering.
+    if (m_dragButton == Qt::LeftButton && !m_manipulator.IsNull() &&
+        m_manipulator->HasActiveMode()) {
+        m_draggingGizmo = true;
+        m_gizmoDelta    = gp_Trsf();
+        m_manipulator->StartTransform(e->pos().x(), e->pos().y(), m_view);
+        return;
+    }
+
     // Pressing a cube facet is the start of a click, not of an orbit: turning
     // the scene from a control that exists to stop the scene turning by hand
     // would be the opposite of what the cube is for.
@@ -1214,6 +1489,17 @@ void OcctViewWidget::mouseMoveEvent(QMouseEvent* e) {
         return;
     }
 
+    if (m_draggingGizmo && !m_manipulator.IsNull()) {
+        // Moves the presentation, not the document. The object follows the
+        // cursor with no kernel work at all, and what the drag amounted to is
+        // written down once, when it ends.
+        m_gizmoDelta = m_manipulator->Transform(e->pos().x(), e->pos().y(), m_view);
+        m_lastMouse  = e->pos();
+        m_view->Invalidate();
+        update();
+        return;
+    }
+
     const QPoint delta = e->pos() - m_lastMouse;
 
     switch (m_dragButton) {
@@ -1238,6 +1524,22 @@ void OcctViewWidget::mouseMoveEvent(QMouseEvent* e) {
 void OcctViewWidget::mouseReleaseEvent(QMouseEvent* e) {
     const Qt::MouseButton button = m_dragButton;
     m_dragButton = Qt::NoButton;
+
+    if (m_draggingGizmo) {
+        m_draggingGizmo = false;
+        if (!m_manipulator.IsNull()) {
+            // Applied, not cancelled: the presentation stays where the user
+            // dropped it until the document has been told and the real geometry
+            // comes back. Cancelling here would snap the object home for the
+            // frame or two that takes.
+            m_manipulator->StopTransform(Standard_True);
+            m_manipulator->DeactivateCurrentMode();
+        }
+        if (m_gizmoDelta.Form() != gp_Identity) emit objectTransformed(m_gizmoDelta);
+        m_gizmoDelta = gp_Trsf();
+        if (!m_view.IsNull()) { m_view->Invalidate(); update(); }
+        return;
+    }
 
     // A left press that did not really move is a click, not an orbit: that is
     // what distinguishes picking a surface from turning the scene, without
@@ -1265,9 +1567,30 @@ void OcctViewWidget::wheelEvent(QWheelEvent* e) {
 }
 
 void OcctViewWidget::keyPressEvent(QKeyEvent* e) {
+    // G / R / S are Blender's transform tools, and S is also this viewport's
+    // walk-backward key. They cannot both win, so the one that wins is the one
+    // that has something to act on: with an object selected there is a
+    // transform to choose, and with nothing selected there is not -- so a
+    // walkthrough keeps all six of its keys, and clicking empty space is how
+    // you hand them back.
+    const bool haveTarget = !manipulatorTargets()->IsEmpty();
+    if (haveTarget) {
+        switch (e->key()) {
+        case Qt::Key_G: setTransformMode(TransformMode::Translate); return;
+        case Qt::Key_R: setTransformMode(TransformMode::Rotate);    return;
+        case Qt::Key_S: setTransformMode(TransformMode::Scale);     return;
+        default: break;
+        }
+    }
     switch (e->key()) {
-    case Qt::Key_F: fitAll();    return;
-    case Qt::Key_R: resetView(); return;
+    case Qt::Key_F: fitAll(); return;
+    // Escape puts the gizmo away whether or not anything is selected, because
+    // "get this off my object" has to work when the handles are what is in the
+    // way of clicking the object.
+    case Qt::Key_Escape: setTransformMode(TransformMode::None); return;
+    // Reset lost R to the gizmo, so it has a key of its own that nothing else
+    // wants rather than one that means two things.
+    case Qt::Key_Home: resetView(); return;
     default: break;
     }
     if (!e->isAutoRepeat()) m_keysDown.insert(e->key());

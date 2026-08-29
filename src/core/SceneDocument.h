@@ -1,5 +1,6 @@
 #pragma once
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 #include <QJsonObject>
@@ -137,6 +138,16 @@ struct SceneObject {
     // spin boxes assumes.
     gp_Pnt position{0, 0, 0};
     double rotationDeg[3] = {0, 0, 0};
+    // Uniform scale about the object's own origin, applied before the rotation
+    // and the offset.
+    //
+    // One number rather than three. gp_Trsf carries a uniform factor natively
+    // and composes it through the group hierarchy for free, while a per-axis
+    // scale needs gp_GTrsf and a genuinely rebuilt B-Rep at every step -- and
+    // it turns a ball lens into an ellipsoid, which is not the same optic at a
+    // different size but a different optic. What the gizmo can express and what
+    // the physics can honour are the same thing here, which is why they agree.
+    double scale = 1.0;
 
     // Geometry parameters, in the slot order typeInfo() declares.
     double p[kMaxParams] = {0, 0, 0, 0, 0, 0, 0, 0};
@@ -246,6 +257,15 @@ public:
     bool setSourceSpec(int id, const SourceSpec& spec);
 
     bool setPlacement(int id, const gp_Pnt& position, const double rotationDeg[3]);
+    // Placement and size in one edit, which is what a gizmo drag produces: a
+    // rotation about a handle moves the object as well as turning it, and
+    // writing the two separately would compile the scene at a position the user
+    // never passed through.
+    bool setTransform(int id, const gp_Pnt& position, const double rotationDeg[3],
+                      double scale);
+    // The smallest and largest an object may be scaled to.
+    static constexpr double kMinScale = 0.01;
+    static constexpr double kMaxScale = 100.0;
     bool setParams(int id, const double* values, int count);
 
     const std::vector<SceneObject>& objects() const { return m_objects; }
@@ -289,6 +309,38 @@ public:
 private:
     void rebuildTutorialParts();
     int  duplicateInto(int id, int newParent);
+
+    // The shape an object compiles to, in its own frame and moved into the
+    // world. `moveIntoWorld` is false for an instanced part, whose placement
+    // composes into its instance transforms instead.
+    //
+    // Cached against everything that determines it, because compile() runs on
+    // the GUI thread on every step of a spin box: re-running the modelling
+    // kernel for every lens in the scene because one of them changed radius is
+    // what made dragging that radius feel like the window had stopped. The
+    // identity matters as much as the cost -- an object that did not change
+    // comes back as the *same* B-Rep handle, which is what lets the tessellator
+    // reuse its triangulation and the viewport skip a presentation it has
+    // already drawn.
+    TopoDS_Shape compiledShape(const SceneObject& o, const gp_Trsf& world,
+                               bool moveIntoWorld) const;
+
+    struct ShapeCacheEntry {
+        ObjectType   type = ObjectType::Group;
+        double       p[SceneObject::kMaxParams] = {};
+        TopoDS_Shape base;
+        bool         haveBase = false;
+        // The base at the world's cumulative scale. Separate from `placed`
+        // because a scale is not a rigid motion: it cannot be carried as a
+        // location and has to be built into the B-Rep.
+        double       factor = 1.0;
+        TopoDS_Shape scaled;
+        bool         haveScaled = false;
+        double       world[12] = {};
+        TopoDS_Shape placed;
+        bool         havePlaced = false;
+    };
+    mutable std::unordered_map<int, ShapeCacheEntry> m_shapeCache;
 
     std::vector<SceneObject> m_objects;
     int                      m_nextId = 1;
