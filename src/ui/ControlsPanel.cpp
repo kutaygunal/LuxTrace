@@ -641,11 +641,38 @@ void ControlsPanel::refreshRayFileLabel() {
 void ControlsPanel::addSource() {
     SourceDialog dlg(this);
     SourceSpec seed;
-    // A new source starts where the scene emitter is, aimed the way it aims,
-    // carrying the same flux -- because "another one of these" is what adding a
-    // source almost always means, and moving it is one number.
-    seed.power = m_power->value();
+    // A new source starts as a copy of the emitter the scene already has, aimed
+    // the way it aims -- because "another one of these" is what adding a source
+    // almost always means, and moving it is one number.
+    //
+    // Only the flux was copied, and everything else came from the struct's
+    // defaults: adding a second source to a collimated 25 mm beam produced a
+    // Lambertian point, and the dialog opened showing that rather than the
+    // source it was supposedly duplicating.
+    seed.type                  = SourceConfig::Type(m_source->currentIndex());
+    seed.shape                 = SourceConfig::Shape(m_shape->currentIndex());
+    seed.spectrum.kind         = SpectrumConfig::Kind(m_spectrum->currentIndex());
+    seed.spectrum.wavelengthNm = m_wavelength->value();
+    seed.spectrum.cct          = m_cct->value();
+    seed.halfAngleDeg          = m_halfAngle->value();
+    seed.sizeA                 = m_sizeA->value();
+    seed.sizeB                 = m_sizeB->value();
+    seed.beamRadius            = m_beamRadius->value();
+    seed.power                 = m_power->value();
+    seed.polarisationState     = m_polState->currentIndex();
     seed.label = QStringLiteral("Source %1").arg(m_extraSources.size() + 2);
+
+    // A scene built around a row of emitters says where the next one goes, so
+    // filling a four-cup array is three clicks rather than nine coordinates
+    // read off the parameter block. An imported part has no lattice to offer,
+    // and neither does any scene with one emitter on one axis.
+    if (!m_importedGeometry) {
+        const std::vector<gp_Pnt> lattice =
+            GeometryProvider::sourceOffsets(scene(), currentParams());
+        if (m_extraSources.size() < lattice.size())
+            seed.offset = lattice[m_extraSources.size()];
+    }
+
     dlg.setSpec(seed);
     if (dlg.exec() != QDialog::Accepted) return;
 

@@ -120,6 +120,9 @@ public:
         IntegratingSphere,      // diffuse white cavity with an exit port
         DiffuserPlate,          // transmissive diffuser over a collimated beam
 
+        // --- multi-source ---
+        LedArrayLuminaire,      // a row of reflector cups, one emitter each
+
         Count
     };
 
@@ -157,6 +160,18 @@ public:
     // Clamps every slot to its declared range and zeroes the unused ones, so a
     // hand-edited config file cannot produce degenerate geometry.
     static SceneParams sanitise(Scene scene, const SceneParams& params);
+
+    // Where a scene expects its *additional* emitters to sit, as offsets in
+    // millimetres from the one `build` places. Empty for a scene built around a
+    // single emitter, which is every scene but the array: one emitter is what
+    // an optic on an axis has, and inventing a lattice for it would put light
+    // where the design does not have any.
+    //
+    // A scene that does declare one is saying something a description cannot:
+    // a four-cup luminaire needs four sources at three known offsets, and
+    // having the scene state them is the difference between clicking Add three
+    // times and typing nine coordinates from the parameter block.
+    static std::vector<gp_Pnt> sourceOffsets(Scene scene, const SceneParams& params);
 
     // Builds the shapes for a scene at the given parameters, together with the
     // source placement they imply. Always appends the planar detector.

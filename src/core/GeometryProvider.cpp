@@ -286,6 +286,35 @@ std::vector<gp_Trsf> gridPlacements(int nx, int ny, double pitch) {
     return out;
 }
 
+// The cup geometry of the LED array, resolved from the parameters once so the
+// builder, the derived readouts and the source lattice cannot disagree about
+// where a cup is -- which they would the moment one of them clamped differently
+// from another.
+struct LedArray {
+    int    cups  = 4;
+    double pitch = 90.0;
+    double radius = 40.0;
+    double focal = 32.0;    // cup focal length; the emitter sits here
+    double x0    = 0.0;     // centre of the first cup, so the row straddles x = 0
+
+    double span() const { return pitch * double(cups - 1) + 2.0 * radius; }
+};
+
+LedArray ledArray(const SceneParams& P) {
+    LedArray a;
+    a.cups   = std::clamp(int(std::lround(P.v[0])), 2, 8);
+    a.pitch  = P.v[1];
+    // Neighbours that overlap would intersect each other's rims, and a ray
+    // caught between two cups is a geometry bug reported as an optical result.
+    a.radius = std::min(P.v[2], 0.48 * a.pitch);
+    // A deep cup: the rim stands 0.31 R proud of the vertex, which subtends
+    // about 128 degrees from the focus. That is what a real LED cup does -- it
+    // has to catch a hemisphere, not a pencil.
+    a.focal  = 0.8 * a.radius;
+    a.x0     = -0.5 * a.pitch * double(a.cups - 1);
+    return a;
+}
+
 // ---- the scene registry ----------------------------------------------------
 
 using Scene = GeometryProvider::Scene;
@@ -375,6 +404,18 @@ const std::array<SceneInfo, std::size_t(Scene::Count)>& registry() {
         {QStringLiteral("Diffuser Plate"),
          QStringLiteral("A transmissive diffuser: light refracts in, then leaves the far face cosine-weighted instead of straight on, washing a bright spot into an even glow."),
          gp_Pnt(0, 0, -80.0), gp_Dir(0, 0, 1)},
+
+        // --- multi-source ---
+        {QStringLiteral("LED Array Luminaire (multi-source)"),
+         QStringLiteral("A row of identical reflector cups, one LED to a cup. The scene "
+                        "places a single emitter, at the focus of the leftmost cup, so a "
+                        "run out of the box lights one cup and leaves the rest dark -- "
+                        "which is the point. Add a source per remaining cup, each offset "
+                        "along x by a whole multiple of the pitch, and the receiver fills "
+                        "in one beam at a time. Every scene in this library is built "
+                        "around a single emitter on an axis; this one cannot be described "
+                        "by one at all."),
+         gp_Pnt(-135.0, 0, 32.0), gp_Dir(0, 0, -1)},
     }};
     return table;
 }
@@ -515,6 +556,19 @@ const std::array<std::vector<SceneParamInfo>, std::size_t(Scene::Count)>& paramT
          mk("Diffusion", "", 0.0, 1.0, 0.90, 0.05, 2,
             "Fraction of the light leaving the far face cosine-weighted rather than refracted straight on."),
          detZ(60, 600, 150)},
+        // LedArrayLuminaire
+        {mk("Cup count", "", 2, 8, 4, 1, 0,
+            "How many reflector cups stand in the row. The scene lights the first "
+            "one; each of the others needs a source of its own, which is what this "
+            "scene exists to exercise."),
+         mk("Cup pitch", "mm", 40, 220, 90, 5, 1,
+            "Centre-to-centre spacing along x. Every added source sits at a whole "
+            "multiple of it, so a four-cup row is one number typed three times -- "
+            "and Add fills the next one in for you."),
+         mk("Cup radius", "mm", 10, 90, 40, 2.5, 1,
+            "Rim radius of one cup. Clamped below half the pitch, because "
+            "neighbouring cups that overlap are not a luminaire."),
+         detZ(200, 1200, 500)},
     }};
     return table;
 }
@@ -943,6 +997,37 @@ std::vector<DerivedQuantity> GeometryProvider::derived(Scene scene, const SceneP
                                         "spreads over roughly this much.")));
         break;
     }
+    case Scene::LedArrayLuminaire: {
+        const LedArray a = ledArray(P);
+        addFNumberAndNa(out, a.focal, a.radius);
+        out.push_back(dq(QStringLiteral("Sources to add"), double(a.cups - 1), 0,
+                         QString(),
+                         QStringLiteral("The scene places one emitter, over the first cup. "
+                                        "This many more light the rest; a run with fewer "
+                                        "reports exactly the dark cups it has.")));
+        QString offsets;
+        for (int i = 1; i < a.cups; ++i) {
+            if (!offsets.isEmpty()) offsets += QStringLiteral(", ");
+            offsets += QString::number(double(i) * a.pitch, 'f', 0);
+        }
+        out.push_back(dqText(QStringLiteral("At x offsets"), offsets, QStringLiteral("mm"),
+                             QStringLiteral("Offsets from the scene emitter, for the "
+                                            "Position box of the source dialog. Add opens "
+                                            "with the next one already filled in.")));
+        out.push_back(dq(QStringLiteral("Array span"), a.span(), 1, QStringLiteral("mm"),
+                         QStringLiteral("Rim to rim across the row. The receiver is sized "
+                                        "from it, so widening the pitch widens the plane "
+                                        "rather than pushing beams off it.")));
+        out.push_back(dq(QStringLiteral("Rim angle"),
+                         2.0 * std::atan2(a.radius,
+                                          a.focal - a.radius * a.radius / (4.0 * a.focal))
+                             / kPi * 180.0,
+                         1, QStringLiteral("deg"),
+                         QStringLiteral("Full angle one cup subtends from its own focus. "
+                                        "The share of a hemisphere it fails to catch is "
+                                        "the spill the receiver sees around the beams.")));
+        break;
+    }
     case Scene::CornerCube:
     case Scene::Count:
         break;
@@ -952,6 +1037,21 @@ std::vector<DerivedQuantity> GeometryProvider::derived(Scene scene, const SceneP
         out.push_back(dq(QStringLiteral("Receiver at z"), detZ, 1, QStringLiteral("mm"),
                          QStringLiteral("Where the measurement plane sits. Moving it is a "
                                         "parameter change, not a special case.")));
+    return out;
+}
+
+std::vector<gp_Pnt> GeometryProvider::sourceOffsets(Scene scene, const SceneParams& raw) {
+    const SceneParams P = sanitise(scene, raw);
+    std::vector<gp_Pnt> out;
+    if (scene != Scene::LedArrayLuminaire) return out;
+
+    // One offset per cup after the first, along the row. Relative, not
+    // absolute: the row is centred on x = 0, so its cups move when the pitch or
+    // the count does, and an offset from the scene emitter follows them while a
+    // world coordinate would not.
+    const LedArray a = ledArray(P);
+    out.reserve(std::size_t(a.cups - 1));
+    for (int i = 1; i < a.cups; ++i) out.emplace_back(double(i) * a.pitch, 0.0, 0.0);
     return out;
 }
 
@@ -1258,6 +1358,34 @@ GeometryProvider::SceneSetup GeometryProvider::build(Scene scene, const ScenePar
         plate.volume.anisotropy  = 0.6;      // forward scattering, as a filler is
         s.push_back(plate);
         s.push_back(detector(std::max(300.0, 3.2 * size), dz));
+        break;
+    }
+
+    // -------------------------------------------------------- multi-source --
+    case Scene::LedArrayLuminaire: {
+        const LedArray a = ledArray(P);
+
+        // One cup, tessellated once and placed `cups` times. An eight-cup row
+        // costs the mesh and the hierarchy of a single cup, which is what makes
+        // widening the array a free parameter rather than a rebuild to wait on.
+        OpticalSurface cups = mirror(paraboloid(a.focal, 0.0, a.radius),
+                                     QStringLiteral("Reflector Cups"));
+        cups.placements.reserve(std::size_t(a.cups));
+        for (int i = 0; i < a.cups; ++i) {
+            gp_Trsf t;
+            t.SetTranslation(gp_Vec(a.x0 + double(i) * a.pitch, 0.0, 0.0));
+            cups.placements.push_back(t);
+        }
+        s.push_back(cups);
+        // Wide enough for every beam plus the spill around them, so a cup that
+        // is lit always lands on the plane and an unlit one reads as the dark
+        // patch it is rather than as light that fell off the edge.
+        s.push_back(detector(std::max(300.0, 1.8 * a.span()), dz));
+
+        // The scene's own emitter belongs to the first cup. Every other cup is
+        // a source the user adds -- see sourceOffsets, which says where.
+        out.sourceOrigin = gp_Pnt(a.x0, 0.0, a.focal);
+        out.sourceAxis   = gp_Dir(0, 0, -1);
         break;
     }
 

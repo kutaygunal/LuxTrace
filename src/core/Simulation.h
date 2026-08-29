@@ -194,6 +194,17 @@ public:
     // a one-element list carrying the whole budget.
     static std::vector<SourceConfig> sourcesFor(const SimConfig& cfg,
                                                 const SceneData& data);
+    // The same, against a bare emitter placement rather than a built scene.
+    //
+    // Placing the extra sources is one rule -- offset from the scene emitter
+    // unless absolute, aimed the way it aims unless overridden -- and the 3D
+    // view has to draw exactly the placement the trace will use or the picture
+    // is a second, differently-wrong answer. So the view asks for the same
+    // list, and an imported setup (which carries a placement but no SceneData)
+    // can ask for it too.
+    static std::vector<SourceConfig> sourcesFor(const SimConfig& cfg,
+                                                const gp_Pnt& origin,
+                                                const gp_Dir& axis);
     static SourceConfig sourceFor(GeometryProvider::Scene scene,
                                   SourceConfig::Type type, int rays);
 

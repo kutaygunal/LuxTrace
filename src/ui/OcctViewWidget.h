@@ -6,6 +6,7 @@
 
 #include <AIS_InteractiveContext.hxx>
 #include <AIS_Shape.hxx>
+#include <AIS_ViewCube.hxx>
 #include <Graphic3d_ClipPlane.hxx>
 #include <V3d_View.hxx>
 #include <V3d_Viewer.hxx>
@@ -27,6 +28,11 @@ class RayCloud;
 //   W / S        walk forward / back        A / D  strafe left / right
 //   E / Q        rise / drop                Shift  x4 speed, Ctrl  x0.25
 //   F            fit the whole scene        R      reset to the default view
+//
+// The navigation cube in the upper-right corner is the other way to aim the
+// camera: click a face for a standard view, an edge for a 45-degree one, a
+// corner for an isometric. It only turns the camera -- the zoom and the pan the
+// user chose are theirs, and F is still what frames the scene.
 class OcctViewWidget : public QWidget {
     Q_OBJECT
 public:
@@ -61,6 +67,21 @@ public:
     // A first-time user cannot tell which of two translucent objects is the
     // measurement plane, and no amount of documentation fixes that as cheaply
     // as drawing it. `halfAngleDeg` >= 180 draws no cone.
+    // One emitter, as the overlay draws it. A run has as many of these as the
+    // configuration has sources: a luminaire with four LEDs that drew one
+    // marker was showing three of them nowhere at all, so the only way to tell
+    // an offset had landed where it was meant to was to trace and read the
+    // pattern back.
+    struct SourceGlyph {
+        gp_Pnt  origin{0, 0, 0};
+        gp_Dir  axis{0, 0, 1};
+        double  halfAngleDeg = 180.0;
+        bool    collimated   = false;
+        double  beamRadius   = 0.0;
+        QString label;
+    };
+
+    void setSourceGlyphs(const std::vector<SourceGlyph>& sources);
     void setSourceGlyph(const gp_Pnt& origin, const gp_Dir& axis, double halfAngleDeg,
                         bool collimated, double beamRadius);
     void clearSourceGlyph();
@@ -78,6 +99,13 @@ public:
     // Perspective is the default; orthographic is the familiar CAD projection,
     // but W/S walking has no visible effect in it.
     void setPerspective(bool on);
+
+    // Whether the lower-left corner holds the navigation cube or the plain
+    // trihedron it replaced. The cube carries its own X/Y/Z axes, so it says
+    // everything the trihedron said and can be clicked as well; switching it
+    // off puts the trihedron back rather than emptying the corner.
+    void setViewCubeVisible(bool on);
+    bool viewCubeVisible() const { return m_cubeVisible; }
 
     void setRayColorMode(RayColor mode);
     // Draw only the legs belonging to a path that reached the receiver. On a
@@ -127,6 +155,15 @@ private:
     void freeLook(double dYaw, double dPitch);
     void rebuildRays();
     void rebuildOverlay();
+    void buildViewCube();
+    // Puts either the navigation cube or the plain trihedron in the lower-left
+    // corner -- one or the other, never both.
+    void applyCornerWidget();
+    // Swings the camera to the orientation a cube facet stands for. Started
+    // here and advanced by the widget's own timer rather than by
+    // AIS_ViewCube::HandleClick, which runs the whole animation in a blocking
+    // loop and would freeze the window for its duration.
+    void startViewCubeAnimation(const Handle(AIS_ViewCubeOwner)& owner);
     void applyClip();
     void pickAt(const QPoint& pos);
     double sceneScale() const;
@@ -141,6 +178,7 @@ private:
     // bar, all as one line-primitive object for the same reason the rays are:
     // a presentation per line would be a presentation per line.
     Handle(RayCloud)               m_overlay;
+    Handle(AIS_ViewCube)           m_viewCube;
     Handle(Graphic3d_ClipPlane)    m_clip;
 
     // The segments as traced, kept so a colour-mode or filter change can redraw
@@ -165,12 +203,12 @@ private:
     bool            m_detectorOnly = false;
     int             m_highlighted = -1;
     bool            m_overlaysOn  = true;
-    bool            m_haveSource  = false;
-    gp_Pnt          m_sourceOrigin{0, 0, 0};
-    gp_Dir          m_sourceAxis{0, 0, 1};
-    double          m_sourceHalfAngle = 180.0;
-    bool            m_sourceCollimated = false;
-    double          m_sourceBeamRadius = 0.0;
+    bool            m_cubeVisible = true;
+    // Whether the last hover landed on the cube. A press there must not start
+    // an orbit, or dragging off a facet would turn the scene instead of doing
+    // nothing.
+    bool            m_hoverOnCube = false;
+    std::vector<SourceGlyph> m_sources;
     // The receivers, as the frames the mesher gave them, so the overlay can
     // outline them and draw their acceptance cones.
     struct ReceiverGlyph {

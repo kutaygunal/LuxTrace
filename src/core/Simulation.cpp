@@ -317,12 +317,22 @@ SourceConfig Simulation::sourceFor(const SimConfig& cfg, const SceneData& data) 
 
 std::vector<SourceConfig> Simulation::sourcesFor(const SimConfig& cfg,
                                                  const SceneData& data) {
+    return sourcesFor(cfg, data.sourceOrigin, data.sourceAxis);
+}
+
+std::vector<SourceConfig> Simulation::sourcesFor(const SimConfig& cfg,
+                                                 const gp_Pnt& origin,
+                                                 const gp_Dir& axis) {
+    SceneData placement;
+    placement.sourceOrigin = origin;
+    placement.sourceAxis   = axis;
+
     std::vector<SourceConfig> out;
     out.reserve(std::size_t(cfg.sourceCount()));
-    out.push_back(sourceFor(cfg, data));
+    out.push_back(sourceFor(cfg, placement));
     if (cfg.extraSources.empty()) return out;
 
-    const gp_Pnt base = data.sourceOrigin;
+    const gp_Pnt base = origin;
     int n = 2;
     for (const SourceSpec& s : cfg.extraSources) {
         SourceConfig c;
@@ -342,7 +352,7 @@ std::vector<SourceConfig> Simulation::sourcesFor(const SimConfig& cfg,
                        : gp_Pnt(base.X() + s.offset.X(),
                                 base.Y() + s.offset.Y(),
                                 base.Z() + s.offset.Z());
-        c.axis   = s.useSceneAxis ? data.sourceAxis : s.axis;
+        c.axis   = s.useSceneAxis ? axis : s.axis;
         c.rayFile            = s.rayFile;
         c.rayFileScale       = s.rayFileScale;
         c.rayFileWavelengths = s.rayFileWavelengths;

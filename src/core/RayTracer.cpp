@@ -173,6 +173,14 @@ constexpr std::size_t kChunkRays = 512;
 constexpr std::uint64_t kEmissionSalt    = 0xD1B54A32D192ED03ull;
 constexpr std::uint64_t kInteractionSalt = 0x9E6C63D0676A9A99ull;
 constexpr std::uint64_t kReservoirSalt   = 0xC2B2AE3D27D4EB4Full;
+// And one more so no two sources coincide with each other. Every source is
+// indexed by its own local ray number -- which is what keeps the first source
+// emitting exactly what it emitted when it was alone -- and that on its own
+// handed every later source the identical sequence of draws. Four LEDs in an
+// array emitted four copies of one angular pattern: the budget bought the
+// variance of a quarter of it, and the replica spread the error bar is read
+// from was measuring a run that had never been made.
+constexpr std::uint64_t kSourceSalt      = 0xA24BAED4963EE407ull;
 
 // ---- emission --------------------------------------------------------------
 
@@ -2016,6 +2024,14 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
     bases.reserve(nSrc);
     for (const SourceConfig& s : srcs) bases.emplace_back(s.axis);
 
+    // One emission stream per source, so two sources are two samples of the
+    // scene rather than one sample counted twice. The first source's salt is
+    // the identity, which is what keeps a one-source run -- and therefore every
+    // reference value in the corpus -- bit-identical to what it always was.
+    std::vector<std::uint64_t> srcSeed(nSrc, opt.seed);
+    for (std::size_t s = 1; s < nSrc; ++s)
+        srcSeed[s] = mix64(opt.seed ^ (std::uint64_t(s) * kSourceSalt));
+
     // The ray budget is split into independent Owen scrambles, so the spread
     // across them measures the error the quasi-Monte Carlo estimator actually
     // achieved rather than the one an equivalent random run would have had.
@@ -2471,10 +2487,10 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
                                                               local / perReplica[sIdx]);
                 ctx.replica = int(rep);
                 const EmittedRay ray = sampleEmission(
-                    bases[sIdx], srcS, specs[sIdx], local, opt.seed,
+                    bases[sIdx], srcS, specs[sIdx], local, srcSeed[sIdx],
                     opt.estimator.lowDiscrepancy,
                     aimCenter[sIdx], aimRadius, local - rep * perReplica[sIdx],
-                    std::uint32_t(mix64(opt.seed ^ ((rep + 1) * kEmissionSalt)) >> 32));
+                    std::uint32_t(mix64(srcSeed[sIdx] ^ ((rep + 1) * kEmissionSalt)) >> 32));
                 // A source ray is worth power_s / rays_s, applied at emission so
                 // one shared grid holds every source correctly weighted.
                 const double k = kScale[sIdx];

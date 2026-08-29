@@ -813,6 +813,235 @@ TEST(multisource, sources_stay_reproducible_at_any_thread_count) {
     CHECK_NEAR(many.sources[1].flux, one.sources[1].flux, 0.0);
 }
 
+TEST(multisource, five_sources_share_the_budget_and_still_close_the_balance) {
+    // Two sources were the only count anything checked, and two is the one
+    // count where "share the budget in proportion to power" cannot go wrong:
+    // the loop that hands out rays reserves one for every source still to
+    // come, and with a single iteration there is nothing to reserve.
+    SimConfig cfg = quickConfig(GeometryProvider::Scene::Reflector, 30000);
+    cfg.power = 5.0;
+    const double powers[4] = {4.0, 3.0, 2.0, 1.0};
+    for (int i = 0; i < 4; ++i) {
+        SourceSpec s;
+        s.label  = QStringLiteral("extra %1").arg(i + 1);
+        s.power  = powers[i];
+        s.offset = gp_Pnt(6.0 * (i + 1), 0.0, 0.0);
+        cfg.extraSources.push_back(s);
+    }
+
+    const Simulation::SceneRef data = Simulation::dataFor(cfg);
+    const auto srcs = Simulation::sourcesFor(cfg, *data);
+    CHECK(srcs.size() == 5);
+
+    // Every ray the user asked for is traced, and none twice.
+    int budget = 0;
+    for (const SourceConfig& c : srcs) {
+        CHECK(c.rays >= 1);
+        budget += c.rays;
+    }
+    CHECK(budget == 30000);
+
+    // In proportion to power: 5, 4, 3, 2, 1 out of 15.
+    const double total = 15.0;
+    for (std::size_t i = 0; i < srcs.size(); ++i) {
+        const double want = srcs[i].power / total * 30000.0;
+        CHECK(std::fabs(double(srcs[i].rays) - want) <= 2.0);
+    }
+
+    const SimulationResult res = Simulation::run(cfg);
+    CHECK(res.sources.size() == 5);
+    CHECK_NEAR(res.sourcePower, 15.0, 1e-12);
+    CHECK_NEAR(res.fluxAccounted(), res.sourcePower, 1e-6);
+
+    // The per-source flux is a decomposition of the total, not a second
+    // estimate of it.
+    double summed = 0.0;
+    for (std::size_t i = 0; i < res.sources.size(); ++i) {
+        CHECK(res.sources[i].rays == std::size_t(srcs[i].rays));
+        CHECK(res.sources[i].flux >= 0.0);
+        summed += res.sources[i].flux;
+    }
+    CHECK_NEAR(summed, res.fluxDetector, 1e-9 * res.sourcePower);
+}
+
+TEST(multisource, a_ray_budget_smaller_than_the_source_count_still_gives_each_one_a_ray) {
+    // The degenerate end of the budget split. A source that gets no rays is a
+    // source that silently is not in the run, and a zero flux beside a stated
+    // power is a wrong answer rather than a small one.
+    SimConfig cfg = quickConfig(GeometryProvider::Scene::Reflector, 3);
+    for (int i = 0; i < 5; ++i) {
+        SourceSpec s;
+        s.power  = (i == 0) ? 1000.0 : 0.001;   // as lopsided as it gets
+        s.offset = gp_Pnt(4.0 * (i + 1), 0.0, 0.0);
+        cfg.extraSources.push_back(s);
+    }
+    const Simulation::SceneRef data = Simulation::dataFor(cfg);
+    const auto srcs = Simulation::sourcesFor(cfg, *data);
+    CHECK(srcs.size() == 6);
+    int budget = 0;
+    for (const SourceConfig& c : srcs) {
+        CHECK(c.rays >= 1);
+        budget += c.rays;
+    }
+    CHECK(budget == 6);          // raised to one per source, and spent exactly
+}
+
+TEST(multisource, every_source_draws_its_own_emission_stream) {
+    // Each source is indexed by its own local ray number, which is what keeps
+    // the first one emitting exactly what it emitted alone. On its own that
+    // handed every later source the identical sequence of draws: four LEDs in
+    // an array emitted four copies of one angular pattern, so the budget bought
+    // the variance of a quarter of it and the replica spread the error bar is
+    // read from was measuring a run nobody had made.
+    //
+    // Small enough that every ray of both sources is inside the segment budget,
+    // so the recorded first legs are the emitted directions themselves.
+    SimConfig cfg = quickConfig(GeometryProvider::Scene::Reflector, 400);
+    SourceSpec s;
+    s.type         = cfg.source;
+    s.shape        = cfg.shape;
+    s.spectrum     = cfg.spectrum;
+    s.halfAngleDeg = cfg.halfAngleDeg;
+    s.power        = cfg.power;      // co-located, identical: nothing but the
+    cfg.extraSources.push_back(s);   // stream can tell the two apart
+
+    const SimulationResult res = Simulation::run(cfg);
+    CHECK(res.sources.size() == 2);
+
+    std::vector<Vec3> first, second;
+    for (const RaySegment& g : res.raySegments) {
+        if (g.depth != 0) continue;
+        const Vec3 d = (g.b - g.a).normalized();
+        if (g.source == 0) first.push_back(d);
+        else               second.push_back(d);
+    }
+    CHECK(!first.empty());
+    CHECK(!second.empty());
+
+    std::size_t shared = 0;
+    const std::size_t n = std::min(first.size(), second.size());
+    for (std::size_t i = 0; i < n; ++i)
+        if (std::fabs(first[i].x - second[i].x) < 1e-12 &&
+            std::fabs(first[i].y - second[i].y) < 1e-12 &&
+            std::fabs(first[i].z - second[i].z) < 1e-12) ++shared;
+    if (shared > n / 10)
+        std::printf("       %zu of %zu leading directions duplicated\n", shared, n);
+    // A coincidence or two is a draw landing twice; every one of them is one
+    // source copied onto another.
+    CHECK(shared <= n / 10);
+}
+
+TEST(multisource, the_placement_overload_agrees_with_the_built_scene) {
+    // The 3D view places its markers through the bare-placement overload and
+    // the tracer places its emitters through the SceneData one. Two rules would
+    // be two answers, and the picture would be quietly lying about where the
+    // light starts.
+    SimConfig cfg = quickConfig(GeometryProvider::Scene::Reflector, 1000);
+    SourceSpec a;
+    a.offset = gp_Pnt(12.0, -3.0, 4.0);
+    SourceSpec b;
+    b.absolute = true;
+    b.offset   = gp_Pnt(-40.0, 8.0, 55.0);
+    b.useSceneAxis = false;
+    b.axis   = gp_Dir(1, 0, 0);
+    cfg.extraSources.push_back(a);
+    cfg.extraSources.push_back(b);
+
+    const Simulation::SceneRef data = Simulation::dataFor(cfg);
+    const auto viaScene = Simulation::sourcesFor(cfg, *data);
+    const auto viaPlace = Simulation::sourcesFor(cfg, data->sourceOrigin, data->sourceAxis);
+    CHECK(viaScene.size() == viaPlace.size());
+    for (std::size_t i = 0; i < viaScene.size() && i < viaPlace.size(); ++i) {
+        CHECK_NEAR(viaPlace[i].origin.Distance(viaScene[i].origin), 0.0, 0.0);
+        CHECK_NEAR(viaPlace[i].axis.Angle(viaScene[i].axis), 0.0, 0.0);
+        CHECK(viaPlace[i].rays == viaScene[i].rays);
+    }
+}
+
+// ------------------------------------------------------- the array scene ---
+
+TEST(multisource, the_led_array_states_where_its_remaining_emitters_go) {
+    const auto scene  = GeometryProvider::Scene::LedArrayLuminaire;
+    const SceneParams P = GeometryProvider::defaultParams(scene);
+    const auto offsets  = GeometryProvider::sourceOffsets(scene, P);
+
+    // Four cups, so the scene places one emitter and names three more.
+    CHECK(offsets.size() == 3);
+    const double pitch = P.v[1];
+    for (std::size_t i = 0; i < offsets.size(); ++i) {
+        CHECK_NEAR(offsets[i].X(), double(i + 1) * pitch, 1e-9);
+        CHECK_NEAR(offsets[i].Y(), 0.0, 1e-12);
+        CHECK_NEAR(offsets[i].Z(), 0.0, 1e-12);
+    }
+
+    // Every other scene is built around one emitter and must not invent a
+    // lattice: an offset there would put light where the design has none.
+    for (int i = 0; i < GeometryProvider::count(); ++i) {
+        const auto s = GeometryProvider::Scene(i);
+        if (s == scene) continue;
+        CHECK(GeometryProvider::sourceOffsets(s, GeometryProvider::defaultParams(s)).empty());
+    }
+
+    // The emitter the scene places sits at the focus of the first cup, and the
+    // offsets step from cup to cup -- so a source added at one lands on a cup
+    // axis rather than between two of them.
+    const auto setup = GeometryProvider::build(scene, P);
+    const int  cups  = int(std::lround(P.v[0]));
+    CHECK_NEAR(setup.sourceOrigin.X(), -0.5 * pitch * double(cups - 1), 1e-9);
+    CHECK(setup.sourceAxis.Z() < 0.0);      // aimed down into its cup
+    CHECK(setup.surfaces.size() == 2);      // the instanced cups, and the receiver
+    CHECK(setup.surfaces.front().placements.size() == std::size_t(cups));
+}
+
+TEST(multisource, filling_the_led_array_lights_every_cup_equally) {
+    // The scene exists to be traced with more than one source, so this is the
+    // end-to-end statement of it: place a source over each cup and every cup
+    // must deliver the same flux, because every cup is the same cup.
+    SimConfig cfg = quickConfig(GeometryProvider::Scene::LedArrayLuminaire, 60000);
+    cfg.useSceneDefaults = false;
+    cfg.params  = GeometryProvider::defaultParams(cfg.scene);
+    cfg.source  = SourceConfig::Type::Lambertian;
+    cfg.halfAngleDeg = 90.0;
+    cfg.power   = 1.0;
+
+    for (const gp_Pnt& off : GeometryProvider::sourceOffsets(cfg.scene, cfg.params)) {
+        SourceSpec s;
+        s.type         = cfg.source;
+        s.halfAngleDeg = cfg.halfAngleDeg;
+        s.power        = 1.0;
+        s.offset       = off;
+        cfg.extraSources.push_back(s);
+    }
+    CHECK(cfg.sourceCount() == int(std::lround(cfg.params.v[0])));
+
+    const SimulationResult res = Simulation::run(cfg);
+    CHECK(res.sources.size() == std::size_t(cfg.sourceCount()));
+    CHECK_NEAR(res.sourcePower, double(cfg.sourceCount()), 1e-12);
+    CHECK_NEAR(res.fluxAccounted(), res.sourcePower, 1e-6);
+    CHECK(res.fluxDetector > 0.0);
+
+    // Identical cups, identical emitters: the spread across them is Monte Carlo
+    // noise, not geometry. A misplaced offset -- an emitter between two cups,
+    // or outside the row -- shows up here as one source far off the rest.
+    double lo = 1e30, hi = -1e30;
+    for (const SourceSummary& s : res.sources) {
+        lo = std::min(lo, s.efficiency());
+        hi = std::max(hi, s.efficiency());
+    }
+    if (!(hi - lo <= 0.05 * (hi + lo)))
+        std::printf("       per-cup efficiency %.4f .. %.4f\n", lo, hi);
+    CHECK(hi - lo <= 0.05 * (hi + lo));
+
+    // And the row delivers what one cup delivers, once per cup: the second lamp
+    // adds light rather than redistributing the first one.
+    SimConfig one = cfg;
+    one.extraSources.clear();
+    const SimulationResult single = Simulation::run(one);
+    CHECK_NEAR(res.efficiency, single.efficiency,
+               6.0 * (res.efficiencyStdErr + single.efficiencyStdErr) + 1e-6);
+    CHECK(res.fluxDetector > 2.0 * single.fluxDetector);
+}
+
 // ============================================================= regression ===
 
 TEST(regression, every_scene_matches_the_stored_reference_to_the_last_digits) {

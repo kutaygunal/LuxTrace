@@ -8,6 +8,7 @@
 #include <QTimer>
 #include <QWheelEvent>
 
+#include <AIS_AnimationCamera.hxx>
 #include <Aspect_DisplayConnection.hxx>
 #include <Bnd_Box.hxx>
 #include <BRepBndLib.hxx>
@@ -16,6 +17,8 @@
 #include <Graphic3d_AspectLine3d.hxx>
 #include <Graphic3d_Camera.hxx>
 #include <Graphic3d_Group.hxx>
+#include <Graphic3d_SequenceOfHClipPlane.hxx>
+#include <Graphic3d_TransformPers.hxx>
 #include <OpenGl_GraphicDriver.hxx>
 #include <Poly_Triangulation.hxx>
 #include <Prs3d_Drawer.hxx>
@@ -215,8 +218,13 @@ void OcctViewWidget::initViewer() {
         m_view->Camera()->SetProjectionType(Graphic3d_Camera::Projection_Perspective);
         m_view->Camera()->SetFOVy(50.0);
         m_view->SetProj(V3d_XposYnegZpos);
-        m_view->TriedronDisplay(Aspect_TOTP_LEFT_LOWER, Quantity_NOC_WHITE, 0.08,
-                                V3d_ZBUFFER);
+
+        // The navigation cube stands in the lower-left corner, where the plain
+        // trihedron used to be. It says everything the trihedron said -- it
+        // carries its own X/Y/Z axes -- and it can be clicked, so the corner
+        // stops being a read-only badge and becomes the control it looks like.
+        buildViewCube();
+        applyCornerWidget();
         m_view->MustBeResized();
     } catch (const Standard_Failure& e) {
         // A machine without a usable OpenGL driver should not take the app down;
@@ -391,20 +399,25 @@ void OcctViewWidget::setScene(GeometryProvider::Scene scene,
 // documentation, and they are lines: one primitive array, drawn the way the
 // rays already are.
 
-void OcctViewWidget::setSourceGlyph(const gp_Pnt& origin, const gp_Dir& axis,
-                                    double halfAngleDeg, bool collimated,
-                                    double beamRadius) {
-    m_sourceOrigin     = origin;
-    m_sourceAxis       = axis;
-    m_sourceHalfAngle  = halfAngleDeg;
-    m_sourceCollimated = collimated;
-    m_sourceBeamRadius = beamRadius;
-    m_haveSource       = true;
+void OcctViewWidget::setSourceGlyphs(const std::vector<SourceGlyph>& sources) {
+    m_sources = sources;
     rebuildOverlay();
 }
 
+void OcctViewWidget::setSourceGlyph(const gp_Pnt& origin, const gp_Dir& axis,
+                                    double halfAngleDeg, bool collimated,
+                                    double beamRadius) {
+    SourceGlyph g;
+    g.origin       = origin;
+    g.axis         = axis;
+    g.halfAngleDeg = halfAngleDeg;
+    g.collimated   = collimated;
+    g.beamRadius   = beamRadius;
+    setSourceGlyphs({g});
+}
+
 void OcctViewWidget::clearSourceGlyph() {
-    m_haveSource = false;
+    m_sources.clear();
     rebuildOverlay();
 }
 
@@ -480,40 +493,51 @@ void OcctViewWidget::rebuildOverlay() {
         }
     };
 
-    // ---- the source ---------------------------------------------------------
-    if (m_haveSource) {
+    // ---- the sources --------------------------------------------------------
+    //
+    // Every one of them, not just the one the scene placed. A four-LED array
+    // drew a single marker, so an offset typed into the source dialog could
+    // only be checked by tracing and reading the pattern back -- and a typo
+    // that put an emitter inside the optic had nothing on screen to say so.
+    for (std::size_t si = 0; si < m_sources.size(); ++si) {
+        const SourceGlyph& src = m_sources[si];
         // Warmer and more saturated than the ray amber, so the emitter is not
-        // mistaken for the brightest bundle leaving it.
-        const Quantity_Color amber(1.0, 0.52, 0.12, Quantity_TOC_RGB);
+        // mistaken for the brightest bundle leaving it. The scene's own source
+        // keeps that amber and the added ones are a step lighter, so which one
+        // the scene places is answerable at a glance.
+        const Quantity_Color amber = si == 0
+                                         ? Quantity_Color(1.0, 0.52, 0.12, Quantity_TOC_RGB)
+                                         : Quantity_Color(1.0, 0.78, 0.34, Quantity_TOC_RGB);
         const double reach = 0.22 * scale;
-        const gp_Vec ax(m_sourceAxis);
+        const gp_Vec ax(src.axis);
 
-        labels.push_back({m_sourceOrigin.Translated(gp_Vec(0, 0, 0.05 * scale)),
-                          QStringLiteral("source"), amber});
+        labels.push_back({src.origin.Translated(gp_Vec(0, 0, 0.05 * scale)),
+                          src.label.isEmpty() ? QStringLiteral("source") : src.label,
+                          amber});
 
         // A short cross at the emitter, so its position is unambiguous even
         // when the cone is edge-on.
         const double tick = 0.03 * scale;
         for (int a = 0; a < 3; ++a) {
             gp_Vec d(a == 0 ? tick : 0.0, a == 1 ? tick : 0.0, a == 2 ? tick : 0.0);
-            line(m_sourceOrigin.Translated(-d), m_sourceOrigin.Translated(d), amber);
+            line(src.origin.Translated(-d), src.origin.Translated(d), amber);
         }
 
-        if (m_sourceCollimated) {
+        if (src.collimated) {
             // A parallel bundle: the beam's own circle, extruded a little.
-            const double r = m_sourceBeamRadius > 0.0 ? m_sourceBeamRadius : 0.05 * scale;
-            ring(m_sourceOrigin, m_sourceAxis, r, amber);
-            const gp_Pnt tip = m_sourceOrigin.Translated(ax * reach);
-            ring(tip, m_sourceAxis, r, amber);
+            const double r = src.beamRadius > 0.0 ? src.beamRadius : 0.05 * scale;
+            ring(src.origin, src.axis, r, amber);
+            const gp_Pnt tip = src.origin.Translated(ax * reach);
+            ring(tip, src.axis, r, amber);
             for (int i = 0; i < 4; ++i) {
                 const double t = 2.0 * M_PI * double(i) / 4.0;
                 gp_Vec up(0, 0, 1);
-                if (std::fabs(m_sourceAxis.Dot(gp_Dir(0, 0, 1))) > 0.99) up = gp_Vec(1, 0, 0);
+                if (std::fabs(src.axis.Dot(gp_Dir(0, 0, 1))) > 0.99) up = gp_Vec(1, 0, 0);
                 gp_Vec e1 = ax.Crossed(up); if (e1.Magnitude() < 1e-12) continue;
                 e1.Normalize();
                 gp_Vec e2 = ax.Crossed(e1); e2.Normalize();
                 const gp_Vec off = e1 * (r * std::cos(t)) + e2 * (r * std::sin(t));
-                line(m_sourceOrigin.Translated(off), tip.Translated(off), amber);
+                line(src.origin.Translated(off), tip.Translated(off), amber);
             }
         } else {
             // The emission cone, as eight ribs and the circle they end on.
@@ -525,15 +549,29 @@ void OcctViewWidget::rebuildOverlay() {
             // size of the scene, and a very narrow one draw a spike too short
             // to see. This way a wide source reads as a flat disc and a narrow
             // one as a long spike, which is what those two things look like.
-            const double half  = std::clamp(m_sourceHalfAngle, 1.0, 89.5);
-            const double r     = 0.10 * scale;
+            //
+            // A row of emitters has to stay a row of readable markers, so the
+            // cone is also held under a share of the gap to its nearest
+            // neighbour: four overlapping discs are one blur, and the picture
+            // exists to show that the four are apart.
+            const double half = std::clamp(src.halfAngleDeg, 1.0, 89.5);
+            double r = 0.10 * scale;
+            if (m_sources.size() > 1) {
+                double nearest = 1e30;
+                for (std::size_t sj = 0; sj < m_sources.size(); ++sj)
+                    if (sj != si)
+                        nearest = std::min(nearest,
+                                           src.origin.Distance(m_sources[sj].origin));
+                if (nearest < 1e29)
+                    r = std::min(r, std::max(0.02 * scale, 0.35 * nearest));
+            }
             const double reachC = std::clamp(r / std::tan(half * M_PI / 180.0),
                                              0.01 * scale, 0.30 * scale);
-            const gp_Pnt tip   = m_sourceOrigin.Translated(ax * reachC);
-            ring(tip, m_sourceAxis, r, amber);
+            const gp_Pnt tip = src.origin.Translated(ax * reachC);
+            ring(tip, src.axis, r, amber);
 
             gp_Vec up(0, 0, 1);
-            if (std::fabs(m_sourceAxis.Dot(gp_Dir(0, 0, 1))) > 0.99) up = gp_Vec(1, 0, 0);
+            if (std::fabs(src.axis.Dot(gp_Dir(0, 0, 1))) > 0.99) up = gp_Vec(1, 0, 0);
             gp_Vec e1 = ax.Crossed(up);
             if (e1.Magnitude() > 1e-12) {
                 e1.Normalize();
@@ -542,11 +580,11 @@ void OcctViewWidget::rebuildOverlay() {
                 for (int i = 0; i < 8; ++i) {
                     const double t = 2.0 * M_PI * double(i) / 8.0;
                     const gp_Vec off = e1 * (r * std::cos(t)) + e2 * (r * std::sin(t));
-                    line(m_sourceOrigin, tip.Translated(off), amber);
+                    line(src.origin, tip.Translated(off), amber);
                 }
                 // A second, half-size ring so the cone reads as a solid of
                 // revolution rather than as a wire star.
-                ring(m_sourceOrigin.Translated(ax * (0.5 * reachC)), m_sourceAxis,
+                ring(src.origin.Translated(ax * (0.5 * reachC)), src.axis,
                      0.5 * r, amber, 32);
             }
         }
@@ -635,6 +673,105 @@ void OcctViewWidget::rebuildOverlay() {
     // the things worth clicking on.
     m_context->Display(m_overlay, 0, -1, Standard_False);
     if (!m_view.IsNull()) { m_view->Invalidate(); update(); }
+}
+
+// ---- the navigation cube ----------------------------------------------------
+//
+// AIS_ViewCube is an ordinary interactive object that pins itself to a screen
+// corner through transform persistence: its facets, edges and corners are
+// separate selection owners, each standing for a camera orientation, and
+// clicking one animates the camera to it.
+//
+// Two things it needs from the host that are easy to get wrong, and both are
+// why this is not simply "display it and hope":
+//
+//   The animation has to be driven. AIS_ViewCube::HandleClick will run the
+//   whole thing itself, but it does so in a blocking loop that redraws the view
+//   from inside the click handler -- the window stops answering for the
+//   duration. This widget already has a 60 Hz timer for the WASD walk, so the
+//   animation is started on click and advanced a frame at a time there.
+//
+//   It has to survive the section plane. The clip plane is added to the *view*,
+//   so it cuts everything the view draws, and a sliced navigation cube in the
+//   corner is a puzzle rather than a control. An empty clip-plane set marked
+//   ToOverrideGlobal replaces the view's planes for this object alone.
+
+void OcctViewWidget::buildViewCube() {
+    if (m_context.IsNull() || !m_viewCube.IsNull()) return;
+
+    m_viewCube = new AIS_ViewCube();
+
+    // Pixels, not model units: transform persistence keeps it the same size
+    // whatever the scene is. SetSize adapts the facet extension, the axes
+    // padding and the font with it.
+    m_viewCube->SetSize(58.0);
+    m_viewCube->SetFontHeight(12.0);
+    m_viewCube->SetBoxColor(Quantity_Color(0.24, 0.26, 0.32, Quantity_TOC_RGB));
+    m_viewCube->SetTextColor(Quantity_Color(0.92, 0.94, 0.98, Quantity_TOC_RGB));
+    m_viewCube->SetInnerColor(Quantity_Color(0.16, 0.17, 0.21, Quantity_TOC_RGB));
+
+    // Half a second: long enough to read as a turn rather than a jump cut,
+    // short enough not to be in the way.
+    m_viewCube->SetDuration(0.45);
+    // The camera's up direction comes back to vertical, so TOP is always the
+    // same TOP however the free-look left the roll.
+    m_viewCube->SetResetCamera(Standard_True);
+    // Orientation only. The zoom and the pan are the user's -- refitting on
+    // every cube click would throw away the framing they chose, which is the
+    // same reason a parameter edit does not refit either. F still fits.
+    m_viewCube->SetFitSelected(Standard_False);
+    // Started here, advanced by stepWalk.
+    m_viewCube->SetAutoStartAnimation(Standard_False);
+    m_viewCube->SetFixedAnimationLoop(Standard_False);
+
+    // Lower left, and far enough in that the axis labels clear the window edge:
+    // the offset is to the cube's centre, and the labelled axes reach well past
+    // the box itself.
+    m_viewCube->SetTransformPersistence(
+        new Graphic3d_TransformPers(Graphic3d_TMF_TriedronPers, Aspect_TOTP_LEFT_LOWER,
+                                    Graphic3d_Vec2i(95, 95)));
+
+    // Immune to the section plane; see the note above.
+    Handle(Graphic3d_SequenceOfHClipPlane) noClipping = new Graphic3d_SequenceOfHClipPlane();
+    noClipping->SetOverrideGlobal(Standard_True);
+    m_viewCube->SetClipPlanes(noClipping);
+
+}
+
+// Which orientation widget occupies the lower-left corner.
+//
+// One or the other, never both: two of them in the same corner disagreeing
+// about which way is up would be worse than either. Turning the cube off brings
+// the plain trihedron back rather than leaving the corner empty, because
+// knowing which way the model is facing is not optional.
+void OcctViewWidget::applyCornerWidget() {
+    if (m_view.IsNull() || m_context.IsNull()) return;
+
+    if (m_cubeVisible) {
+        m_view->TriedronErase();
+        if (!m_viewCube.IsNull()) m_context->Display(m_viewCube, Standard_False);
+    } else {
+        if (!m_viewCube.IsNull()) m_context->Erase(m_viewCube, Standard_False);
+        m_view->TriedronDisplay(Aspect_TOTP_LEFT_LOWER, Quantity_NOC_WHITE, 0.08,
+                                V3d_ZBUFFER);
+    }
+    m_view->Invalidate();
+    update();
+}
+
+void OcctViewWidget::setViewCubeVisible(bool on) {
+    if (m_cubeVisible == on) return;
+    m_cubeVisible = on;
+    applyCornerWidget();
+}
+
+void OcctViewWidget::startViewCubeAnimation(const Handle(AIS_ViewCubeOwner)& owner) {
+    if (m_viewCube.IsNull() || owner.IsNull() || m_view.IsNull()) return;
+    // StartAnimation reads the view off the animation object rather than being
+    // handed one, so it has to be bound before the first click and after any
+    // rebuild of the view.
+    m_viewCube->ViewAnimation()->SetView(m_view);
+    m_viewCube->StartAnimation(owner);
 }
 
 void OcctViewWidget::setRays(const std::vector<RaySegment>& segments) {
@@ -780,6 +917,18 @@ void OcctViewWidget::pickAt(const QPoint& pos) {
     int found = -1;
     if (m_context->HasDetected()) {
         const Handle(SelectMgr_EntityOwner)& owner = m_context->DetectedOwner();
+
+        // A cube facet is not a surface: it is a camera instruction, and it
+        // must not clear the surface selection or report a pick of -1 that the
+        // scene tree would act on.
+        Handle(AIS_ViewCubeOwner) cubeOwner = Handle(AIS_ViewCubeOwner)::DownCast(owner);
+        if (!cubeOwner.IsNull()) {
+            startViewCubeAnimation(cubeOwner);
+            m_view->Invalidate();
+            update();
+            return;
+        }
+
         Handle(AIS_InteractiveObject) detected;
         if (!owner.IsNull()) {
             const Handle(Standard_Transient)& sel = owner->Selectable();
@@ -847,12 +996,36 @@ void OcctViewWidget::mousePressEvent(QMouseEvent* e) {
     m_lastMouse   = e->pos();
     m_pressPos    = e->pos();
     m_dragButton  = e->button();
-    if (m_dragButton == Qt::LeftButton)
+    // Pressing a cube facet is the start of a click, not of an orbit: turning
+    // the scene from a control that exists to stop the scene turning by hand
+    // would be the opposite of what the cube is for.
+    if (m_dragButton == Qt::LeftButton && !m_hoverOnCube)
         m_view->StartRotation(e->pos().x(), e->pos().y());
 }
 
 void OcctViewWidget::mouseMoveEvent(QMouseEvent* e) {
-    if (m_view.IsNull() || m_dragButton == Qt::NoButton) return;
+    if (m_view.IsNull()) return;
+
+    if (m_dragButton == Qt::NoButton) {
+        // Nothing is being dragged, so this is a hover: ask the context what is
+        // under the cursor. That is what makes a cube facet light up before it
+        // is clicked, and it tells the user which surface a click would pick.
+        if (!m_context.IsNull()) {
+            m_context->MoveTo(e->pos().x(), e->pos().y(), m_view, Standard_False);
+            const bool wasOnCube = m_hoverOnCube;
+            m_hoverOnCube =
+                m_context->HasDetected() &&
+                !Handle(AIS_ViewCubeOwner)::DownCast(m_context->DetectedOwner()).IsNull();
+            setCursor(m_hoverOnCube ? Qt::PointingHandCursor : Qt::ArrowCursor);
+            if (wasOnCube != m_hoverOnCube || m_context->HasDetected()) {
+                m_view->Invalidate();
+                update();
+            }
+        }
+        m_lastMouse = e->pos();
+        return;
+    }
+
     const QPoint delta = e->pos() - m_lastMouse;
 
     switch (m_dragButton) {
@@ -926,7 +1099,18 @@ void OcctViewWidget::focusOutEvent(QFocusEvent* e) {
 
 void OcctViewWidget::stepWalk() {
     const double seconds = double(m_walkClock.restart()) / 1000.0;
-    if (m_view.IsNull() || m_keysDown.isEmpty()) return;
+    if (m_view.IsNull()) return;
+
+    // The cube's swing to a standard view, one frame at a time. Doing it here
+    // rather than inside HandleClick is what keeps the window answering while
+    // the camera moves.
+    if (!m_viewCube.IsNull() && m_viewCube->HasAnimation()) {
+        m_viewCube->UpdateAnimation(Standard_True);
+        m_view->Invalidate();
+        update();
+    }
+
+    if (m_keysDown.isEmpty()) return;
     applyWalk(std::min(seconds, 0.1));   // clamp, so a stall is not a teleport
 }
 
