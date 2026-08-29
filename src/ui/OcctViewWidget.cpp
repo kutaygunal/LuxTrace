@@ -1,5 +1,6 @@
 #include "OcctViewWidget.h"
 
+#include <QDebug>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
@@ -47,6 +48,7 @@
 #include <gp_Trsf.hxx>
 
 #include <algorithm>
+#include <cstdio>
 #include <cmath>
 
 // ---------------------------------------------------------------------------
@@ -1028,10 +1030,20 @@ void OcctViewWidget::pickAt(const QPoint& pos) {
             return;
         }
 
+        // Held by value, deliberately.
+        //
+        // Selectable() returns a handle *by value*, and OCCT converts between
+        // handle types through a conversion operator that reinterpret_casts to
+        // a reference. So binding the result to a `const Handle(...)&` of a
+        // different type -- which is how this was written, and which looks free
+        // -- binds to a temporary that is not lifetime-extended: it dies at the
+        // end of the declaration and takes its reference count with it. Every
+        // pick then downcast a dangling handle, got null, and reported empty
+        // space, so nothing in the 3D view could be selected at all.
         Handle(AIS_InteractiveObject) detected;
         if (!owner.IsNull()) {
-            const Handle(Standard_Transient)& sel = owner->Selectable();
-            detected = Handle(AIS_InteractiveObject)::DownCast(sel);
+            const Handle(SelectMgr_SelectableObject) selectable = owner->Selectable();
+            detected = Handle(AIS_InteractiveObject)::DownCast(selectable);
         }
         if (!detected.IsNull())
             for (std::size_t i = 0; i < m_shapes.size(); ++i)

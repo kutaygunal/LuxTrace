@@ -24,6 +24,7 @@
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QDialog>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -40,6 +41,7 @@
 #include <QPushButton>
 #include <QSlider>
 #include <QSpinBox>
+#include <QScreen>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QTabWidget>
@@ -99,10 +101,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_metrics->setMinimumHeight(150);
     m_metrics->setHtml(QStringLiteral("<i>Run a simulation to see the metrics.</i>"));
 
-    // ---- what can be made, what is in the scene, what the selection does ----
+    // ---- left: what can be made, and what is in the scene -------------------
     //
-    // Three panels, in the order the work goes: pick a thing from the library,
-    // drop it, and the tree and the property sheet below are what it became.
+    // Two panels, in the order the work goes: pick a thing from the library,
+    // drop it, and the tree below is what it became.
     m_library   = new ObjectLibraryPanel(this);
     m_sceneTree = new SceneTreePanel(this);
     m_object    = new ObjectInspector(this);
@@ -111,42 +113,41 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     auto* leftCol = new QSplitter(Qt::Vertical, this);
     leftCol->addWidget(m_library);
     leftCol->addWidget(m_sceneTree);
-    leftCol->addWidget(m_object);
-    leftCol->setStretchFactor(0, 2);
-    leftCol->setStretchFactor(1, 3);
-    leftCol->setStretchFactor(2, 5);
+    leftCol->setStretchFactor(0, 3);
+    leftCol->setStretchFactor(1, 4);
 
-    // ---- the views, and the metrics under them ------------------------------
-    auto* centre = new QSplitter(Qt::Vertical, this);
-    centre->addWidget(m_tabs);
-    centre->addWidget(m_metrics);
-    centre->setStretchFactor(0, 4);
-    centre->setStretchFactor(1, 1);
-
+    // ---- the views, and what the last run said under them --------------------
     m_result = new QLabel(QStringLiteral("Ready. Load a tutorial from the File menu, "
                                          "or drag an object in."), this);
     m_result->setWordWrap(true);
     m_result->setFrameShape(QFrame::StyledPanel);
 
-    // The quantities the parameters imply, live, before anything is traced.
-    // This is the difference between a form and an instrument.
-    m_derived = new QLabel(this);
-    m_derived->setWordWrap(true);
-    m_derived->setStyleSheet(QStringLiteral("color:#9aa0b0; font-size:11px;"));
-    m_derived->setVisible(false);
-
-    // Where the light went, drawn rather than printed. It sits under the
-    // controls because it is the answer to the question the Run button asks.
+    // Where the light went, drawn rather than printed. It sits with the metrics
+    // because it is the answer to the question the Run button asks.
     m_energyBar = new EnergyBarWidget(this);
 
-    // ---- the run: everything that is a property of the trace, not of a part -
-    auto* right = new QWidget(this);
-    auto* rv = new QVBoxLayout(right);
-    rv->setContentsMargins(0, 0, 0, 0);
-    rv->addWidget(m_controls, 1);
-    rv->addWidget(m_derived, 0);
-    rv->addWidget(m_energyBar, 0);
-    rv->addWidget(m_result, 0);
+    auto* results = new QWidget(this);
+    auto* resv    = new QVBoxLayout(results);
+    resv->setContentsMargins(0, 0, 0, 0);
+    resv->setSpacing(4);
+    resv->addWidget(m_metrics, 1);
+    resv->addWidget(m_energyBar, 0);
+    resv->addWidget(m_result, 0);
+
+    auto* centre = new QSplitter(Qt::Vertical, this);
+    centre->addWidget(m_tabs);
+    centre->addWidget(results);
+    centre->setStretchFactor(0, 4);
+    centre->setStretchFactor(1, 1);
+
+    // ---- right: the selected object ------------------------------------------
+    //
+    // Whatever is selected -- a lens, a light source, a receiver, a whole group
+    // -- is described here, beside the view it was picked in. What the *run*
+    // does lives in its own window instead: a ray budget and a lens's radius of
+    // curvature are not the same kind of setting, and putting them in one
+    // column made the panel read as a form for the application rather than a
+    // description of the thing under the cursor.
 
     // Both side columns are draggable against the viewport rather than pinned
     // at whatever width they were built with, and the 3D view is where the
@@ -154,12 +155,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     auto* columns = new QSplitter(Qt::Horizontal, this);
     columns->addWidget(leftCol);
     columns->addWidget(centre);
-    columns->addWidget(right);
+    columns->addWidget(m_object);
     columns->setStretchFactor(0, 0);
     columns->setStretchFactor(1, 1);
     columns->setStretchFactor(2, 0);
     columns->setChildrenCollapsible(false);
-    columns->setSizes({330, 1100, right->sizeHint().width()});
+    columns->setSizes({300, 1000, 360});
 
     auto* central = new QWidget(this);
     auto* main = new QHBoxLayout(central);
@@ -167,6 +168,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     main->addWidget(columns);
     setCentralWidget(central);
 
+    buildSimulationWindow();
     buildMenus();
     statusBar()->showMessage(QStringLiteral("Ready"));
 
@@ -232,6 +234,30 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     // registry is the parabolic collimator, which is the one that explains what
     // the application is for in one picture.
     loadTutorial(GeometryProvider::Scene::Reflector);
+
+    // The simulation window opens beside the main one on first launch, so the
+    // Run button is where it can be found. From then on it is the user's window
+    // to place, close, and reopen from the Run menu.
+    QTimer::singleShot(0, this, [this] {
+        if (!m_simWindow) return;
+        QRect where(frameGeometry().right() + 8, frameGeometry().top(),
+                    m_simWindow->width(), m_simWindow->height());
+        if (QScreen* onScreen = screen()) {
+            const QRect avail = onScreen->availableGeometry();
+            // Nowhere to put it beside the window -- a maximised main window
+            // leaves no "beside" -- so it goes over the viewport rather than
+            // over the property column it was just moved out of.
+            if (where.right() > avail.right()) {
+                constexpr int kPropertyColumn = 380;
+                where.moveRight(std::max(avail.left() + where.width(),
+                                         frameGeometry().right() - kPropertyColumn));
+            }
+            if (where.bottom() > avail.bottom())
+                where.setHeight(std::max(420, avail.bottom() - where.top()));
+        }
+        m_simWindow->setGeometry(where);
+        m_simWindow->show();
+    });
 }
 
 // ---- tab construction ------------------------------------------------------
@@ -1618,6 +1644,48 @@ void MainWindow::refreshImageQuality() {
                             : QStringLiteral("Modulation transfer"));
 }
 
+// Everything about the run rather than about a part, in a window of its own.
+//
+// It used to be the right-hand column, sharing a strip with nothing else, and
+// that put "how many rays" beside "what is this lens made of" as though they
+// were the same kind of question. They are not: one describes the experiment
+// and the other describes a thing in it. So the column became the property
+// sheet for whatever is selected, and the experiment moved here -- a window the
+// user can leave open beside the viewport, park on a second screen, or close
+// entirely and drive from the Run menu.
+void MainWindow::buildSimulationWindow() {
+    m_simWindow = new QDialog(this);
+    m_simWindow->setWindowTitle(QStringLiteral("Simulation — LuxTrace"));
+    // A window, not a dialog box: it is not asking anything, and it has to be
+    // possible to leave it open, move it aside and keep working in the viewport.
+    m_simWindow->setWindowFlag(Qt::Window, true);
+    m_simWindow->setModal(false);
+    m_simWindow->setSizeGripEnabled(true);
+
+    // What the dimensions above imply, live, before anything is traced. This is
+    // the difference between a form and an instrument, and it belongs with the
+    // dimensions it is derived from.
+    m_derived = new QLabel(m_simWindow);
+    m_derived->setWordWrap(true);
+    m_derived->setStyleSheet(QStringLiteral("color:#9aa0b0; font-size:11px;"));
+    m_derived->setVisible(false);
+
+    auto* v = new QVBoxLayout(m_simWindow);
+    v->setContentsMargins(8, 8, 8, 8);
+    v->setSpacing(6);
+    v->addWidget(m_controls, 1);
+    v->addWidget(m_derived, 0);
+
+    m_simWindow->resize(m_controls->sizeHint().width() + 32, 760);
+}
+
+void MainWindow::onShowSimulationWindow() {
+    if (!m_simWindow) return;
+    m_simWindow->show();
+    m_simWindow->raise();
+    m_simWindow->activateWindow();
+}
+
 void MainWindow::buildMenus() {
     QMenu* file = menuBar()->addMenu(QStringLiteral("&File"));
 
@@ -1704,9 +1772,16 @@ void MainWindow::buildMenus() {
             "tool."));
 
     QMenu* run = menuBar()->addMenu(QStringLiteral("&Run"));
-    run->addAction(QStringLiteral("&Trace"), QKeySequence(Qt::Key_F5), this, &MainWindow::onRun);
+    run->addAction(QStringLiteral("&Run Simulation"), QKeySequence(Qt::Key_F5),
+                   this, &MainWindow::onRun);
     run->addAction(QStringLiteral("&Cancel"), QKeySequence(Qt::Key_Escape),
                    this, &MainWindow::onCancel);
+    run->addSeparator();
+    run->addAction(QStringLiteral("&Simulation window..."), QKeySequence(Qt::Key_F4),
+                   this, &MainWindow::onShowSimulationWindow)
+        ->setStatusTip(QStringLiteral(
+            "The dimensions, the physics model and the ray budget the next run "
+            "uses, in a window you can leave open beside the viewport."));
     run->addSeparator();
     run->addAction(QStringLiteral("Con&vergence sweep"), this, &MainWindow::onRunConvergence);
     run->addAction(QStringLiteral("Through-&focus sweep"), this, &MainWindow::onFocusSweep);

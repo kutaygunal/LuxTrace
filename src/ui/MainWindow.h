@@ -30,6 +30,7 @@ class QSlider;
 class QSpinBox;
 class QGroupBox;
 class QPushButton;
+class QDialog;
 class QTabWidget;
 class QTextBrowser;
 class QTimer;
@@ -96,6 +97,10 @@ private slots:
     // A single ray through the optic, with every interaction it had.
     void onInspectRay();
 
+    // Brings the simulation window up, or back to the front if it is already
+    // open behind the main one.
+    void onShowSimulationWindow();
+
     void onSaveConfig();
     void onLoadConfig();
     // Reads a Zemax .agf glass catalogue or a refractiveindex.info entry into
@@ -120,6 +125,10 @@ private:
     QWidget* buildDesignTab();
     QWidget* buildToleranceTab();
     QWidget* buildProbeTab();
+    // The window that holds everything about the run rather than about a part:
+    // the tutorial's dimensions, the physics switches, the ray budget, and the
+    // button that starts it.
+    void     buildSimulationWindow();
     void     buildMenus();
 
     // ---- the document, and everything that reads it ------------------------
@@ -166,6 +175,7 @@ private:
     SimConfig currentConfig() const;
 
     ControlsPanel*      m_controls = nullptr;
+    QDialog*            m_simWindow = nullptr;
     ObjectLibraryPanel* m_library  = nullptr;
     SceneTreePanel*     m_sceneTree = nullptr;
     ObjectInspector*    m_object   = nullptr;
