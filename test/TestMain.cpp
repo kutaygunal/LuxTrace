@@ -1088,6 +1088,7 @@ TEST(patterns, retroreflectors_only_score_by_sending_light_back) {
 #include "NewTests_T3-001.inc"
 #include "NewTests_T3-002.inc"
 #include "NewTests_T3-003.inc"
+#include "NewTests_T3-004.inc"
 #include "NewTests_T3-005.inc"
 #include "AuditTests.inc"
 

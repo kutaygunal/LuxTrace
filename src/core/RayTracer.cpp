@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <thread>
@@ -634,6 +635,10 @@ struct TraceContext {
     // first one's frame; each now has its own block of cells.
     const std::vector<DetectorInfo>* dets = nullptr;
     std::vector<double>* grid       = nullptr;  // per-thread bins, all receivers
+    // Large receivers: ONE shared atomic accumulation grid. Either this or
+    // `grid` is used, never both -- the atomic path routes the same cell adds
+    // here, so a large grid is a single copy no matter how many cores trace it.
+    std::vector<std::atomic<double>>* atomicGrid = nullptr;
     std::vector<double>* bandGrid   = nullptr;  // per-thread 3 x bins of receiver 0
     std::vector<double>* intensity  = nullptr;  // per-thread far-field bins
     RayStats*            stats      = nullptr;  // per-chunk scalar totals
@@ -661,6 +666,18 @@ struct TraceContext {
     // The state the source emits, normalised to unit intensity.
     polarisation::Stokes emitted;
 };
+
+// Relaxed atomic accumulation into a shared receiver bin. std::atomic has no
+// fetch_add for floating point, so it is a compare-exchange loop; the addition
+// order across threads is non-deterministic, but each single add is atomic and
+// the sums agree with the deterministic path well inside tolerance.
+inline void atomicAddRelaxed(std::atomic<double>& cell, double v) {
+    double cur = cell.load(std::memory_order_relaxed);
+    for (;;) {
+        const double next = cur + v;
+        if (cell.compare_exchange_weak(cur, next, std::memory_order_relaxed)) return;
+    }
+}
 
 // Bins a direction leaving the system into the far-field intensity grid.
 inline void binDirection(TraceContext& ctx, const Vec3& d, double energy) {
@@ -836,7 +853,9 @@ double nextEventEstimate(TraceContext& ctx, const Vec3& p, const Vec3& n, double
         if (det.binOf(conn[di].q, bx, by)) {
             const std::size_t cell = scene.detectorOffsets()[di] +
                                      std::size_t(by) * std::size_t(det.nx) + std::size_t(bx);
-            (*ctx.grid)[cell] += contribution;
+            // One shared atomic grid above the size threshold, per-thread below.
+            if (ctx.atomicGrid) atomicAddRelaxed((*ctx.atomicGrid)[cell], contribution);
+            else                (*ctx.grid)[cell] += contribution;
             if (ctx.bandGrid && ctx.bands && di == 0)
                 for (int b = 0; b < 3; ++b)
                     (*ctx.bandGrid)[std::size_t(b) * ctx.bandCells + cell] +=
@@ -877,7 +896,7 @@ double nextEventEstimate(TraceContext& ctx, const Vec3& p, const Vec3& n, double
 void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double energy) {
     const TraceScene&     scene = *ctx.scene;
     RayStats&             ts    = *ctx.stats;
-    std::vector<double>&  grid  = *ctx.grid;
+    std::vector<double>*  grid  = ctx.grid;  // null on the atomic-receiver path
     const PhysicsOptions& phys  = ctx.physics;
 
     double rayDetector = 0.0;   // this ray's total contribution to the receiver
@@ -1075,7 +1094,8 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
                 const std::size_t cell = scene.detectorOffsets()[std::size_t(di)] +
                                          std::size_t(by) * std::size_t(det.nx) +
                                          std::size_t(bx);
-                grid[cell] += e;
+                if (ctx.atomicGrid) atomicAddRelaxed((*ctx.atomicGrid)[cell], e);
+                else                (*grid)[cell] += e;
                 // The colour bands describe the first receiver, which is the one
                 // the heatmap draws.
                 if (ctx.bandGrid && ctx.bands && di == 0) {
@@ -2125,21 +2145,31 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
     if (threads == 0) threads = std::max(1u, std::thread::hardware_concurrency());
     threads = unsigned(std::max<std::size_t>(1, std::min<std::size_t>(threads, numChunks)));
 
-    // Bound what the per-thread accumulators can cost.
+    // Receiver bins are per-thread below a size threshold and shared atomically
+    // above it. A 256x256 grid is 512 KB per thread -- harmless. A 1024x1024
+    // grid is 8 MB per thread, and on a many-core machine those copies alone
+    // can exceed any sane budget before a single ray is traced; receiver
+    // resolution was effectively bounded by how many cores happened to be
+    // present. Above the threshold we accumulate into ONE atomic grid instead
+    // of a copy per thread, so resolution stops depending on the hardware.
+    // Below it, the per-thread copies are cheap, cache-local and bit-exact --
+    // strictly better than contended atomics -- so they are kept.
+    const std::size_t allCells = std::max<std::size_t>(1, scene.detectorCells());
+    constexpr std::size_t kAtomicThresholdCells = 64u * 1024u;  // one 256x256
+    const bool atomicGrid = allCells >= kAtomicThresholdCells;
+
+    // Bound what the remaining per-thread accumulators can cost. In the atomic
+    // path the all-receivers grid is a single shared copy, so it is not counted
+    // per thread here; the band and far-field grids always stay per-thread.
     //
-    // Every thread holds a full copy of the all-receivers grid, and with a
-    // progressive preview enabled its slot holds another. At a fine grid across
-    // several receivers on a many-core machine that is hundreds of megabytes,
-    // and nothing stopped it.
-    //
-    // The fix is to spend fewer threads rather than more memory, which is a
-    // trade this tracer can make and most cannot: the scalar totals reduce in
-    // chunk order and the grids are reduced in thread-index order, so the
-    // answer does not depend on the thread count at all -- there is a test that
-    // says so. A capped run is slower and identical, not slower and different.
+    // The cap is to spend fewer threads rather than more memory, a trade this
+    // tracer can make: the scalar totals reduce in chunk order and the grids are
+    // reduced in a fixed order, so the answer does not depend on the thread
+    // count -- there is a test that says so. A capped run is slower and
+    // identical, not slower and different.
     {
         const std::size_t perThreadCells =
-            std::max<std::size_t>(1, scene.detectorCells()) +
+            (atomicGrid ? 0 : allCells) +
             (spectral ? std::size_t(nx) * std::size_t(ny) * 3 : 0) +
             std::size_t(nThetaMaster) * std::size_t(nPhi);
         // A preview doubles it: the worker's own accumulator plus the delta it
@@ -2152,13 +2182,16 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
         }
     }
 
-    // Irradiance and far-field bins stay per thread (a per-chunk grid would cost
-    // tens of KB per chunk); the scalar totals are per chunk so they reduce in a
-    // fixed order.
-    const std::size_t cells    = std::size_t(nx) * std::size_t(ny);
-    const std::size_t allCells = std::max<std::size_t>(1, scene.detectorCells());
-    const std::size_t angles   = std::size_t(nThetaMaster) * std::size_t(nPhi);
-    std::vector<std::vector<double>> grids(threads);
+    // Irradiance bands and far-field bins stay per thread (a per-chunk grid
+    // would cost tens of KB per chunk); the scalar totals are per chunk so they
+    // reduce in a fixed order. On the atomic path the all-receivers grid IS the
+    // shared accumulator; on the small-receiver path it is one per thread.
+    const std::size_t cells  = std::size_t(nx) * std::size_t(ny);
+    const std::size_t angles = std::size_t(nThetaMaster) * std::size_t(nPhi);
+    // The shared atomic all-receivers grid (large receivers), or an empty one.
+    std::vector<std::atomic<double>> atomicBins(atomicGrid ? allCells : 0);
+    for (auto& a : atomicBins) a.store(0.0, std::memory_order_relaxed);
+    std::vector<std::vector<double>> grids(atomicGrid ? 0 : threads);
     std::vector<std::vector<double>> bandGrids(spectral ? threads : 0);
     std::vector<std::vector<double>> angleGrids(angles ? threads : 0);
     for (auto& g : grids)      g.assign(allCells, 0.0);
@@ -2381,11 +2414,23 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
                 PreviewSlot& slot = preview[t];
                 if (slot.published.load(std::memory_order_acquire) == epoch) {
                     previewStats[t] = slot.stats;
-                    accumulate(previewGrid, slot.grid);
+                    // The all-receivers grid is per-thread on the small path;
+                    // on the atomic path the single shared grid is read
+                    // directly below, after the workers have had a moment to
+                    // publish their epochs.
+                    if (!atomicGrid) accumulate(previewGrid, slot.grid);
                     if (spectral) accumulate(previewBand, slot.bandGrid);
                     if (angles)   accumulate(previewAngle, slot.angleGrid);
                 }
                 total.add(previewStats[t]);
+            }
+            // The large-receiver grid is one shared atomic accumulator; snapshot
+            // it by relaxing each cell. A worker may still be adding to it, but
+            // an atomic load is never torn, so this is a consistent-enough view
+            // for a progressive preview.
+            if (atomicGrid) {
+                for (std::size_t i = 0; i < allCells; ++i)
+                    previewGrid[i] = atomicBins[i].load(std::memory_order_relaxed);
             }
             if (total.raysDone == 0) return;
 
@@ -2445,8 +2490,9 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
         ctx.scene     = &scene;
         ctx.surfs     = &surfs;
         ctx.dets      = &dets;
-        ctx.grid      = &grids[tid];
-        ctx.bandGrid  = spectral ? &bandGrids[tid] : nullptr;
+        ctx.grid        = atomicGrid ? nullptr : &grids[tid];
+        ctx.atomicGrid  = atomicGrid ? &atomicBins : nullptr;
+        ctx.bandGrid    = spectral ? &bandGrids[tid] : nullptr;
         ctx.bandCells = cells;
         ctx.bands     = spectral;
         ctx.intensity = angles ? &angleGrids[tid] : nullptr;
@@ -2486,7 +2532,10 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
                             last[i]  = now[i];
                         }
                     };
-                    publishDelta(grids[tid], lastGrid, slot.grid);
+                    // The all-receivers grid publishes per-thread only on the
+                    // small-receiver path; the atomic path reads the one shared
+                    // grid straight from the workers at snapshot time.
+                    if (!atomicGrid) publishDelta(grids[tid], lastGrid, slot.grid);
                     if (spectral) publishDelta(bandGrids[tid], lastBand, slot.bandGrid);
                     if (angles)   publishDelta(angleGrids[tid], lastAngle, slot.angleGrid);
                     // Release: everything above is visible to whoever sees this.
@@ -2598,7 +2647,13 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
     std::vector<double> allBins(allCells, 0.0);
     std::vector<double> bandBins(spectral ? cells * 3 : 0, 0.0);
     std::vector<double> angleBins(angles, 0.0);
-    reduceGrid(grids, allBins);
+    if (atomicGrid) {
+        // The shared grid already holds the converged total; read it out.
+        for (std::size_t i = 0; i < allCells; ++i)
+            allBins[i] = atomicBins[i].load(std::memory_order_relaxed);
+    } else {
+        reduceGrid(grids, allBins);
+    }
     reduceGrid(bandGrids, bandBins);
     reduceGrid(angleGrids, angleBins);
 
