@@ -1,5 +1,13 @@
 # Handoff — LuxTrace (Optical Design Studio)
 
+> **Snapshot, not the current program.** This document is the record of one
+> development pass, written as of **24 Aug 2026**. It predates four subsystems
+> the current program has and this document does not describe: the Python API,
+> the AVX2 SIMD path, the material and ray-file readers, and multi-source. The
+> live "What is still open" list has been folded into the README's **Notes /
+> limits**; the rest of this file is archaeology, kept for the record. For the
+> program as it is now, read [README.md](README.md).
+
 Location: `C:/Users/kutay/Desktop/Projects/LightTools` (the folder still carries
 the working name; the product, the executable and the CMake project are
 **LuxTrace**)
@@ -452,43 +460,13 @@ with a yield and a sensitivity ranking; MTF, OPD and Strehl.
 
 ## What is still open
 
-1. **Ray-surface intersection is still against the tessellation**, not the exact
-   B-Rep. It matters far less than it did — the *normals* are exact now, so what
-   a coarse mesh costs is hit position rather than surface direction — but an
-   adaptive mesh driven by curvature and by whether a face is optically active
-   (review item G-4) is still unbuilt, and would let the triangle count fall
-   further.
-2. **`SceneParams` is still capped at four doubles** (review item G-5). A doublet
-   with two radii, two thicknesses, a spacing and a receiver is already six.
-3. **The far field bins uniformly in theta** (review item D-2), so a 1.3-degree
-   beam is resolved by less than one 2-degree bin and the polar cells are starved
-   of samples. Equal-solid-angle binning is the fix.
-4. **Imported CAD is not in the scene list and does not persist.** Import now
-   assembles a full traceable scene -- the parts, a receiver beyond them and the
-   source placement that aims at them, along whichever of the six axes was
-   chosen -- and a run traces that rather than the selected scene
-   (`SimConfig::imported`). What is still missing: the import does not appear in
-   the scene combo, so touching a geometry parameter replaces it and the file has
-   to be imported again; a saved config records the selected scene rather than
-   the file; and studies that vary a dimension decline on it, since an imported
-   solid declares none. The source origin and axis are fixed at import rather
-   than being editable afterwards.
-5. **The through-focus sweep assumes clear space** between the receiver and the
-   swept planes, since it propagates recorded arrivals in a straight line. True
-   near the receiver, which is the region of interest, but it would quietly
-   mislead across an intervening optic; review item A-5 is to refuse the range
-   rather than answer it.
-6. **`raysHitDetector` counts path branches and next-event connections**, not
-   rays. Heavy-tailed, so it swings run to run while the flux stays stable.
-   Documented in `SimulationResult.h`; judge runs by flux. Labelled "Detector
-   arrivals" in the UI.
-7. **Per-thread detector grids will not scale past a fine receiver** (review item
-   P-4). At 64 x 64 they cost 32 KB per thread; at 1024 x 1024 they are 8 MB per
-   thread, and a progressive snapshot copies them.
-8. **No collision in the walkthrough** — the camera passes straight through
-   geometry.
-9. **No logging or diagnostics capture** (review item R-5), and the config format
-   string has no versioned migration path.
+This list has been folded into the README's **Notes / limits** section, which is
+where a live list belongs — a document that is the current program should carry
+the current limits, and a snapshot should not try to. The items that were still
+true when this pass ended (the tessellation intersection, the four-double
+`SceneParams` cap, the uniform-theta far-field binning, imported CAD not
+persisting, the per-thread detector grids, no walkthrough collision, and no
+logging or diagnostics capture) are all stated there, in the README's voice.
 
 ## Build / run
 

@@ -69,7 +69,15 @@ class LuxTraceDown(Exception):
 
 
 def _default_exe() -> str | None:
-    """Where the executable usually is, checked in order."""
+    """Where the executable is, checked in order.
+
+    LUXTRACE_EXE wins: the in-app Python panel sets it to the running build, so
+    a script launched from the app always reaches that app rather than whichever
+    build a search happens to find first. Everything after it is the relative
+    layout of this repository, resolved from this file rather than from the
+    working directory. No absolute path is written here -- one that names a
+    particular machine is a dead entry on every other one.
+    """
     candidates = []
     env = os.environ.get("LUXTRACE_EXE")
     if env:
@@ -80,8 +88,6 @@ def _default_exe() -> str | None:
                 os.path.join("build", "Release", "LuxTrace.exe"),
                 os.path.join("build", "Debug", "LuxTrace.exe")):
         candidates.append(os.path.normpath(os.path.join(here, rel)))
-    candidates.append(os.path.join(
-        r"C:\Users\kutay\Desktop\Projects\LuxTrace\build\Release\LuxTrace.exe"))
     for c in candidates:
         if c and os.path.isfile(c):
             return c

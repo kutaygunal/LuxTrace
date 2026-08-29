@@ -4239,3 +4239,125 @@ TEST(geometry, a_burst_of_requests_coalesces_onto_the_last_one) {
         if (i > 0) CHECK(delivered[i] > delivered[i - 1]);
     }
 }
+
+// ---------------------------------------------------------------------------
+// pythonenv -- finding the interpreter the Python panel runs scripts with.
+//
+// Discovery itself depends on what is installed on the machine running the
+// tests, so what is pinned here is everything that does not: what counts as a
+// usable interpreter, and the policy that decides between a remembered choice
+// and whatever was found. The one thing asserted about discovery is the
+// invariant the panel relies on -- that every path it hands back is one that
+// can actually be launched.
+// ---------------------------------------------------------------------------
+
+TEST(pythonenv, a_path_that_is_not_there_is_not_usable) {
+    CHECK(!pythonenv::isUsable(QString()));
+    CHECK(!pythonenv::isUsable(scratchFile(QStringLiteral("luxtrace_no_such_python.exe"))));
+    // A directory satisfies "exists" and is not an interpreter.
+    CHECK(!pythonenv::isUsable(QDir::tempPath()));
+}
+
+TEST(pythonenv, the_store_alias_with_no_bytes_in_it_is_rejected) {
+    // Windows ships python.exe as an app-execution alias: a zero-byte reparse
+    // point that passes every existence check and opens the Microsoft Store
+    // instead of running anything. Size is what separates it from the real one.
+    const QString stub = scratchFile(QStringLiteral("luxtrace_store_python.exe"));
+    QFile::remove(stub);
+    QFile f(stub);
+    CHECK(f.open(QIODevice::WriteOnly));
+    f.close();
+    CHECK(QFileInfo(stub).size() == 0);
+    CHECK(!pythonenv::isUsable(stub));
+
+    // The same path with bytes in it is accepted, so the rejection is about
+    // emptiness rather than about the name.
+    QFile g(stub);
+    CHECK(g.open(QIODevice::WriteOnly));
+    g.write("MZ");
+    g.close();
+    CHECK(pythonenv::isUsable(stub));
+    QFile::remove(stub);
+}
+
+TEST(pythonenv, a_remembered_interpreter_beats_everything_discovery_found) {
+    const QString chosen = scratchFile(QStringLiteral("luxtrace_chosen_python.exe"));
+    QFile::remove(chosen);
+    QFile f(chosen);
+    CHECK(f.open(QIODevice::WriteOnly));
+    f.write("MZ");
+    f.close();
+
+    std::vector<pythonenv::Interpreter> found;
+    found.push_back({chosen + QStringLiteral(".other"), QStringLiteral("on PATH"),
+                     QStringLiteral("3.13")});
+
+    // Configuring one is the whole point of being able to: it wins even when
+    // discovery ranked something else first.
+    CHECK(pythonenv::choose(chosen, found) == chosen);
+    QFile::remove(chosen);
+}
+
+TEST(pythonenv, a_remembered_interpreter_that_was_uninstalled_falls_back) {
+    const QString real = scratchFile(QStringLiteral("luxtrace_real_python.exe"));
+    QFile::remove(real);
+    QFile f(real);
+    CHECK(f.open(QIODevice::WriteOnly));
+    f.write("MZ");
+    f.close();
+
+    std::vector<pythonenv::Interpreter> found;
+    found.push_back({real, QStringLiteral("on PATH"), QStringLiteral("3.13")});
+
+    // A stale setting must not break the panel: the answer is the working
+    // interpreter, not the one that is no longer there.
+    const QString gone = scratchFile(QStringLiteral("luxtrace_uninstalled_python.exe"));
+    QFile::remove(gone);
+    CHECK(pythonenv::choose(gone, found) == real);
+
+    // And with nothing configured at all, discovery decides.
+    CHECK(pythonenv::choose(QString(), found) == real);
+    QFile::remove(real);
+}
+
+TEST(pythonenv, unusable_candidates_are_skipped_rather_than_returned) {
+    const QString real = scratchFile(QStringLiteral("luxtrace_second_python.exe"));
+    QFile::remove(real);
+    QFile f(real);
+    CHECK(f.open(QIODevice::WriteOnly));
+    f.write("MZ");
+    f.close();
+
+    std::vector<pythonenv::Interpreter> found;
+    // First in the ranking, but not launchable: the Store alias case, arriving
+    // through discovery rather than through the setting.
+    found.push_back({scratchFile(QStringLiteral("luxtrace_absent_python.exe")),
+                     QStringLiteral("on PATH"), QString()});
+    found.push_back({real, QStringLiteral("installed"), QStringLiteral("3.12")});
+
+    CHECK(pythonenv::choose(QString(), found) == real);
+    QFile::remove(real);
+}
+
+TEST(pythonenv, no_interpreter_anywhere_is_an_empty_answer_not_a_guess) {
+    // The panel reports this rather than launching something that is not there.
+    CHECK(pythonenv::choose(QString(), {}).isEmpty());
+    CHECK(pythonenv::choose(scratchFile(QStringLiteral("luxtrace_nothing.exe")), {}).isEmpty());
+}
+
+TEST(pythonenv, everything_discovery_returns_can_actually_be_launched) {
+    const std::vector<pythonenv::Interpreter> found = pythonenv::discover();
+
+    // Machine-dependent in content, not in shape: whatever is installed here,
+    // every entry has to be runnable and listed once, because the panel offers
+    // them as choices and runs the first one without asking again.
+    for (std::size_t i = 0; i < found.size(); ++i) {
+        CHECK(pythonenv::isUsable(found[i].path));
+        CHECK(!found[i].label.isEmpty());
+        for (std::size_t j = i + 1; j < found.size(); ++j)
+            CHECK(found[i].path.compare(found[j].path, Qt::CaseInsensitive) != 0);
+    }
+    // And the automatic choice is one of them, never something invented.
+    const QString automatic = pythonenv::choose(QString(), found);
+    if (!automatic.isEmpty()) CHECK(automatic == found.front().path);
+}

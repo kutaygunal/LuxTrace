@@ -68,6 +68,7 @@ add_library(optics_core STATIC
     src/core/Material.h src/core/Material.cpp
     src/core/RayFile.h src/core/RayFile.cpp
     src/core/MaterialFile.h src/core/MaterialFile.cpp
+    src/core/PythonEnv.h src/core/PythonEnv.cpp
     src/core/Bsdf.h src/core/Bsdf.cpp
     src/core/Coating.h src/core/Coating.cpp
     src/core/Polarisation.h src/core/Polarisation.cpp

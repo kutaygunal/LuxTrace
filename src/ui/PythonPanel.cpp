@@ -1,8 +1,12 @@
 #include "PythonPanel.h"
 
+#include "core/PythonEnv.h"
+
+#include <QComboBox>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QSettings>
 #include <QDesktopServices>
 #include <QUrl>
 #include <QHBoxLayout>
@@ -163,11 +167,34 @@ PythonPanel::PythonPanel(QWidget* parent) : QWidget(parent) {
     buttons->addStretch(1);
     buttons->addWidget(m_status);
 
+    // The interpreter row. A machine can carry three Pythons and the panel has
+    // to run one of them; this says which, and remembers the answer.
+    m_python = new QComboBox(this);
+    m_python->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_python->setMinimumContentsLength(44);
+    m_python->setToolTip(QStringLiteral(
+        "Which Python runs the script. Automatic picks the best one found on "
+        "this machine; anything else is remembered for next time."));
+    auto* browseBtn = new QPushButton(QStringLiteral("Bro&wse..."), this);
+    browseBtn->setToolTip(QStringLiteral("Choose a python.exe that was not found automatically"));
+
+    auto* interp = new QHBoxLayout();
+    interp->setContentsMargins(0, 0, 0, 0);
+    interp->addWidget(new QLabel(QStringLiteral("Interpreter:"), this));
+    interp->addWidget(m_python, 1);
+    interp->addWidget(browseBtn);
+
     auto* lv = new QVBoxLayout(this);
     lv->setContentsMargins(4, 4, 4, 4);
     lv->addWidget(m_editor, 5);
+    lv->addLayout(interp, 0);
     lv->addLayout(buttons, 0);
     lv->addWidget(m_log, 4);
+
+    rescanInterpreters();
+    connect(m_python, &QComboBox::currentIndexChanged,
+            this, &PythonPanel::onInterpreterChosen);
+    connect(browseBtn, &QPushButton::clicked, this, &PythonPanel::onBrowseInterpreter);
 
     connect(m_run,  &QPushButton::clicked, this, &PythonPanel::onRun);
     connect(m_stop, &QPushButton::clicked, this, &PythonPanel::onStop);
@@ -189,6 +216,127 @@ PythonPanel::~PythonPanel() {
         m_proc->kill();
         m_proc->waitForFinished(2000);
     }
+}
+
+// ---------------------------------------------------------- interpreter --
+//
+// The stored choice lives in QSettings, which on Windows is
+// HKCU\Software\LuxTrace\LuxTrace -- main() has already named the organisation
+// and the application, so the default constructor lands in the right place.
+
+QString PythonPanel::configuredInterpreter() const {
+    return QSettings().value(QStringLiteral("python/interpreter")).toString();
+}
+
+void PythonPanel::setConfiguredInterpreter(const QString& path) {
+    QSettings s;
+    if (path.isEmpty()) s.remove(QStringLiteral("python/interpreter"));
+    else                s.setValue(QStringLiteral("python/interpreter"), path);
+}
+
+QString PythonPanel::currentInterpreter() const {
+    if (!m_python) return QString();
+    const QString picked = m_python->currentData().toString();
+    if (!picked.isEmpty()) return picked;
+    // "Automatic": whatever the machine offers today, re-read rather than
+    // remembered, so installing a Python does not require a restart.
+    return pythonenv::choose(QString(), pythonenv::discover());
+}
+
+void PythonPanel::rescanInterpreters(const QString& selectPath) {
+    const std::vector<pythonenv::Interpreter> found = pythonenv::discover();
+    const QString configured = selectPath.isEmpty() ? configuredInterpreter() : selectPath;
+    const QString automatic  = pythonenv::choose(QString(), found);
+
+    m_fillingPythons = true;
+    m_python->clear();
+
+    // Index 0 is always "Automatic", and it carries no path: that is what makes
+    // it distinguishable from having picked the same interpreter by hand, which
+    // would pin the choice even after a better one is installed.
+    m_python->addItem(automatic.isEmpty()
+                          ? QStringLiteral("Automatic - none found")
+                          : QStringLiteral("Automatic - %1").arg(automatic),
+                      QString());
+
+    for (const pythonenv::Interpreter& i : found) {
+        QStringList notes;
+        if (!i.version.isEmpty()) notes << QStringLiteral("Python ") + i.version;
+        if (!i.label.isEmpty())   notes << i.label;
+        m_python->addItem(notes.isEmpty()
+                              ? i.path
+                              : QStringLiteral("%1   (%2)").arg(i.path, notes.join(
+                                    QStringLiteral(", "))),
+                          i.path);
+    }
+
+    // An interpreter that was chosen by hand but that discovery does not know
+    // about still belongs in the list -- otherwise the setting could not be
+    // shown, and an uninstalled one could not be seen to be the problem.
+    int index = configured.isEmpty() ? 0 : m_python->findData(configured);
+    const bool missing = !configured.isEmpty() && !pythonenv::isUsable(configured);
+    if (!configured.isEmpty() && index < 0) {
+        m_python->addItem(QStringLiteral("%1   (%2)").arg(
+                              configured, missing ? QStringLiteral("missing")
+                                                  : QStringLiteral("chosen")),
+                          configured);
+        index = m_python->count() - 1;
+    }
+    m_python->setCurrentIndex(index < 0 ? 0 : index);
+    m_fillingPythons = false;
+
+    if (missing)
+        log(QStringLiteral("[panel] the chosen interpreter is no longer there (%1); "
+                           "Run will fall back to Automatic").arg(configured), true);
+}
+
+void PythonPanel::onInterpreterChosen(int index) {
+    if (m_fillingPythons || index < 0) return;
+
+    const QString path = m_python->itemData(index).toString();
+    setConfiguredInterpreter(path);
+
+    if (path.isEmpty()) {
+        const QString resolved = currentInterpreter();
+        log(resolved.isEmpty()
+                ? QStringLiteral("[panel] interpreter: automatic - none found")
+                : QStringLiteral("[panel] interpreter: automatic (%1)").arg(resolved));
+        return;
+    }
+    const QString version = pythonenv::versionOf(path);
+    log(version.isEmpty()
+            ? QStringLiteral("[panel] interpreter: %1 - remembered").arg(path)
+            : QStringLiteral("[panel] interpreter: %1 (Python %2) - remembered")
+                  .arg(path, version));
+}
+
+void PythonPanel::onBrowseInterpreter() {
+#ifdef Q_OS_WIN
+    const QString filter = QStringLiteral(
+        "Python interpreter (python.exe python3.exe py.exe);;"
+        "Executables (*.exe);;All files (*)");
+#else
+    const QString filter = QStringLiteral("All files (*)");
+#endif
+    const QString start = QFileInfo(currentInterpreter()).absolutePath();
+    const QString path  = QFileDialog::getOpenFileName(
+        this, QStringLiteral("Choose a Python interpreter"), start, filter);
+    if (path.isEmpty()) return;
+
+    if (!pythonenv::isUsable(path)) {
+        log(QStringLiteral("[panel] %1 is not an interpreter this can run "
+                           "(a Microsoft Store alias is the usual reason)").arg(path), true);
+        return;
+    }
+    const QString native = QDir::toNativeSeparators(path);
+    setConfiguredInterpreter(native);
+    rescanInterpreters(native);
+
+    const QString version = pythonenv::versionOf(native);
+    log(version.isEmpty()
+            ? QStringLiteral("[panel] interpreter: %1 - remembered").arg(native)
+            : QStringLiteral("[panel] interpreter: %1 (Python %2) - remembered")
+                  .arg(native, version));
 }
 
 QString PythonPanel::runnerPath() const {
@@ -281,10 +429,14 @@ void PythonPanel::onRun() {
             "(set LUXTRACE_RUNNER to its path).", true);
         return;
     }
-    // Where a Python lives: PATH's `python`, or the launcher that always
-    // exists beside it on Windows.
-    QString python = QStandardPaths::findExecutable(QStringLiteral("python"));
-    if (python.isEmpty()) python = QStandardPaths::findExecutable(QStringLiteral("py"));
+    // The interpreter the panel is set to: the one chosen and remembered, or
+    // the best one on the machine when that is Automatic.
+    const QString python = currentInterpreter();
+    if (python.isEmpty()) {
+        log("[panel] no Python interpreter found on this machine. Install one, "
+            "or point at it with Browse.", true);
+        return;
+    }
 
     QFile f(scriptPath());
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
@@ -298,6 +450,11 @@ void PythonPanel::onRun() {
     // UTF-8 on every pipe it owns, and the log expects that too.
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     env.insert(QStringLiteral("PYTHONIOENCODING"), QStringLiteral("utf-8"));
+    // The runner otherwise has to guess which LuxTrace to talk to by walking
+    // relative paths from its own location. This app knows exactly where it is,
+    // and a script run from the panel should reach *this* build rather than
+    // whichever one a search happens to land on first.
+    env.insert(QStringLiteral("LUXTRACE_EXE"), QCoreApplication::applicationFilePath());
     m_proc->setProcessEnvironment(env);
 
     QStringList args{runner, scriptPath()};
