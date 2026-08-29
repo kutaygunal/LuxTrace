@@ -32,6 +32,8 @@
 #include <TopoDS_Compound.hxx>
 #include <gp_Ax1.hxx>
 #include <gp_Vec.hxx>
+#include <Bnd_Box.hxx>
+#include <BRepBndLib.hxx>
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
@@ -53,6 +55,7 @@
 #include "core/Sampling.h"
 #include "core/Optics.h"
 #include "core/RayTracer.h"
+#include "core/SceneDocument.h"
 #include "core/Simulation.h"
 #include "core/SimulationWorker.h"
 #include "core/Studies.h"
@@ -1091,6 +1094,10 @@ TEST(patterns, retroreflectors_only_score_by_sending_light_back) {
 #include "NewTests_T3-004.inc"
 #include "NewTests_T3-005.inc"
 #include "AuditTests.inc"
+
+// Tests for the assembled-scene document: the object model the scene tree, the
+// object library and the property editor are all views onto.
+#include "SceneDocTests.inc"
 
 // =================================================================== main ===
 

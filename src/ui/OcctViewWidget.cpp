@@ -1,12 +1,19 @@
 #include "OcctViewWidget.h"
 
+#include <QDebug>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
 #include <QGuiApplication>
 #include <QKeyEvent>
+#include <QMimeData>
 #include <QMouseEvent>
 #include <QResizeEvent>
 #include <QString>
 #include <QTimer>
 #include <QWheelEvent>
+
+#include "core/SceneDocument.h"
 
 #include <AIS_AnimationCamera.hxx>
 #include <Aspect_DisplayConnection.hxx>
@@ -37,10 +44,15 @@
 #include <WNT_Window.hxx>
 #include <gp_Ax1.hxx>
 #include <gp_Ax3.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
+#include <gp_Circ.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Trsf.hxx>
 
 #include <algorithm>
+#include <cstdio>
 #include <cmath>
 
 // ---------------------------------------------------------------------------
@@ -178,6 +190,8 @@ OcctViewWidget::OcctViewWidget(QWidget* parent) : QWidget(parent) {
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
     setMinimumSize(320, 240);
+    // The viewport is where an object from the library becomes a position.
+    setAcceptDrops(true);
 
     auto* timer = new QTimer(this);
     connect(timer, &QTimer::timeout, this, &OcctViewWidget::stepWalk);
@@ -258,11 +272,12 @@ void OcctViewWidget::setScene(GeometryProvider::Scene scene,
     if (m_shapes.size() != surfaces.size()) {
         for (const auto& s : m_shapes) m_context->Remove(s, Standard_False);
         m_shapes.clear();
+        m_baseLook.clear();
         m_shapes.reserve(surfaces.size());
         // A different set of parts is a different set of things to hide, so the
         // visibility flags start again with them.
         m_visible.assign(surfaces.size(), true);
-        m_highlighted = -1;
+        m_highlight.clear();
     }
     if (m_visible.size() != surfaces.size()) m_visible.assign(surfaces.size(), true);
 
@@ -302,22 +317,25 @@ void OcctViewWidget::setScene(GeometryProvider::Scene scene,
             shape->SetShape(os.shape);
         }
 
+        // What this surface looks like when nothing has it selected. Kept, so
+        // that clearing a highlight has something to put back.
+        Appearance look;
         if (os.isDetector) {
-            shape->SetColor(Quantity_Color(0.25, 0.85, 0.45, Quantity_TOC_RGB));
-            shape->SetTransparency(0.55f);
+            look = {Quantity_Color(0.25, 0.85, 0.45, Quantity_TOC_RGB), 0.55f};
         } else if (os.scatter > 0.5 && os.index <= 0.0) {
             // A matte white cavity: paint it as one, so an integrating sphere
             // does not read as a mirror.
-            shape->SetColor(Quantity_Color(0.92, 0.92, 0.88, Quantity_TOC_RGB));
-            shape->SetTransparency(0.35f);
+            look = {Quantity_Color(0.92, 0.92, 0.88, Quantity_TOC_RGB), 0.35f};
         } else if (os.index > 0.0) {
             // Refractive solids: glassy and see-through, so rays stay visible.
-            shape->SetColor(Quantity_Color(0.45, 0.72, 0.95, Quantity_TOC_RGB));
-            shape->SetTransparency(0.65f);
+            look = {Quantity_Color(0.45, 0.72, 0.95, Quantity_TOC_RGB), 0.65f};
         } else {
-            shape->SetColor(Quantity_Color(0.78, 0.78, 0.82, Quantity_TOC_RGB));
-            shape->SetTransparency(0.15f);
+            look = {Quantity_Color(0.78, 0.78, 0.82, Quantity_TOC_RGB), 0.15f};
         }
+        if (m_baseLook.size() <= i) m_baseLook.resize(i + 1);
+        m_baseLook[i] = look;
+        shape->SetColor(look.colour);
+        shape->SetTransparency(look.transparency);
 
         // Where the mesher has already been over this shape, say its tolerance
         // in absolute terms so OCCT reuses the triangulation that is already
@@ -339,7 +357,8 @@ void OcctViewWidget::setScene(GeometryProvider::Scene scene,
 
         // The selected surface reads as selected: a scene tree and a viewport
         // that disagree about what is picked are worse than either alone.
-        if (int(i) == m_highlighted) {
+        if (std::find(m_highlight.begin(), m_highlight.end(), int(i)) !=
+            m_highlight.end()) {
             shape->SetColor(Quantity_Color(1.0, 0.72, 0.25, Quantity_TOC_RGB));
             shape->SetTransparency(0.25f);
         }
@@ -439,19 +458,105 @@ void OcctViewWidget::setSurfaceVisible(int index, bool visible) {
 }
 
 void OcctViewWidget::setHighlightedSurface(int index) {
-    if (m_highlighted == index) return;
-    m_highlighted = index;
+    if (index < 0) setHighlightedSurfaces({});
+    else           setHighlightedSurfaces({index});
+}
+
+void OcctViewWidget::setHighlightedSurfaces(const std::vector<int>& indices) {
+    if (m_highlight == indices) return;
+    m_highlight = indices;
     if (m_context.IsNull()) return;
     // Repaint every part rather than tracking the previous one: the list is a
     // handful of shapes, and a stale highlight is the bug this exists to avoid.
     for (std::size_t i = 0; i < m_shapes.size(); ++i) {
-        if (int(i) == index) {
+        if (std::find(m_highlight.begin(), m_highlight.end(), int(i)) !=
+            m_highlight.end()) {
             m_shapes[i]->SetColor(Quantity_Color(1.0, 0.72, 0.25, Quantity_TOC_RGB));
             m_shapes[i]->SetTransparency(0.25f);
+        } else if (i < m_baseLook.size()) {
+            // Put the surface back to what it is, rather than leaving the last
+            // selection painted on it.
+            m_shapes[i]->SetColor(m_baseLook[i].colour);
+            m_shapes[i]->SetTransparency(m_baseLook[i].transparency);
         }
         m_context->Redisplay(m_shapes[i], Standard_False, Standard_False);
     }
     if (!m_view.IsNull()) { m_view->Invalidate(); update(); }
+}
+
+// ---- taking a drop from the object library ---------------------------------
+
+static bool carriesObject(const QMimeData* mime) {
+    return mime && mime->hasFormat(QLatin1String(scenedoc::dragMimeType()));
+}
+
+void OcctViewWidget::dragEnterEvent(QDragEnterEvent* e) {
+    if (carriesObject(e->mimeData())) e->acceptProposedAction();
+    else                              e->ignore();
+}
+
+void OcctViewWidget::dragMoveEvent(QDragMoveEvent* e) {
+    if (carriesObject(e->mimeData())) e->acceptProposedAction();
+    else                              e->ignore();
+}
+
+void OcctViewWidget::dropEvent(QDropEvent* e) {
+    if (!carriesObject(e->mimeData())) { e->ignore(); return; }
+    const QString key = QString::fromUtf8(
+        e->mimeData()->data(QLatin1String(scenedoc::dragMimeType())));
+    e->acceptProposedAction();
+
+    gp_Pnt where(0, 0, 0);
+    worldPointAt(e->position().toPoint(), where);
+    emit objectDropped(key, where);
+}
+
+bool OcctViewWidget::worldPointAt(const QPoint& pos, gp_Pnt& out) {
+    if (m_view.IsNull()) return false;
+
+    // Landing on a part that is already there is the unambiguous case: the
+    // depth is the depth of whatever was under the cursor.
+    if (!m_context.IsNull()) {
+        m_context->MoveTo(pos.x(), pos.y(), m_view, Standard_False);
+        if (m_context->HasDetected()) {
+            const Handle(SelectMgr_EntityOwner)& owner = m_context->DetectedOwner();
+            if (!owner.IsNull() &&
+                Handle(AIS_ViewCubeOwner)::DownCast(owner).IsNull()) {
+                const gp_Pnt hit = m_context->MainSelector()->PickedPoint(1);
+                // A degenerate pick reads as the origin, which is exactly the
+                // answer the plane fallback exists to improve on.
+                if (hit.SquareDistance(gp_Pnt(0, 0, 0)) > 1e-18) {
+                    out = hit;
+                    return true;
+                }
+            }
+        }
+    }
+
+    // Otherwise: the eye ray through the cursor, met with the plane through the
+    // scene centre facing the camera. That is the depth the user is looking at,
+    // which is the only depth a click on empty space can mean.
+    Standard_Real x = 0, y = 0, z = 0;
+    m_view->Convert(pos.x(), pos.y(), x, y, z);
+    Standard_Real dx = 0, dy = 0, dz = 0;
+    m_view->Proj(dx, dy, dz);
+
+    const gp_Pnt p0(x, y, z);
+    const gp_Vec dir(dx, dy, dz);
+    if (dir.Magnitude() < 1e-12) { out = p0; return true; }
+
+    const gp_Pnt centre(0.5 * (m_bbMin[0] + m_bbMax[0]),
+                        0.5 * (m_bbMin[1] + m_bbMax[1]),
+                        0.5 * (m_bbMin[2] + m_bbMax[2]));
+    const gp_Vec n    = dir.Normalized();
+    const double denom = n.Dot(n);
+    const double t     = gp_Vec(p0, centre).Dot(n) / denom;
+    out = p0.Translated(n * t);
+
+    // Whole millimetres: a drop is a gesture, not a measurement, and a lens at
+    // z = 41.8371 is a number the user has to tidy up before it means anything.
+    out = gp_Pnt(std::round(out.X()), std::round(out.Y()), std::round(out.Z()));
+    return true;
 }
 
 void OcctViewWidget::rebuildOverlay() {
@@ -499,6 +604,7 @@ void OcctViewWidget::rebuildOverlay() {
     // drew a single marker, so an offset typed into the source dialog could
     // only be checked by tracing and reading the pattern back -- and a typo
     // that put an emitter inside the optic had nothing on screen to say so.
+    m_sourceDiscs.assign(m_sources.size(), SourceDisc{});
     for (std::size_t si = 0; si < m_sources.size(); ++si) {
         const SourceGlyph& src = m_sources[si];
         // Warmer and more saturated than the ray amber, so the emitter is not
@@ -527,6 +633,7 @@ void OcctViewWidget::rebuildOverlay() {
             // A parallel bundle: the beam's own circle, extruded a little.
             const double r = src.beamRadius > 0.0 ? src.beamRadius : 0.05 * scale;
             ring(src.origin, src.axis, r, amber);
+            m_sourceDiscs[si] = {src.origin, src.axis, r};
             const gp_Pnt tip = src.origin.Translated(ax * reach);
             ring(tip, src.axis, r, amber);
             for (int i = 0; i < 4; ++i) {
@@ -569,6 +676,7 @@ void OcctViewWidget::rebuildOverlay() {
                                              0.01 * scale, 0.30 * scale);
             const gp_Pnt tip = src.origin.Translated(ax * reachC);
             ring(tip, src.axis, r, amber);
+            m_sourceDiscs[si] = {tip, src.axis, r};
 
             gp_Vec up(0, 0, 1);
             if (std::fabs(src.axis.Dot(gp_Dir(0, 0, 1))) > 0.99) up = gp_Vec(1, 0, 0);
@@ -664,6 +772,9 @@ void OcctViewWidget::rebuildOverlay() {
                           QStringLiteral("%1 mm").arg(step, 0, 'g', 3), grey});
     }
 
+    // The emitters' discs, as real faces, from the circles just drawn.
+    rebuildSourceMarkers();
+
     if (v.empty()) {
         if (!m_view.IsNull()) { m_view->Invalidate(); update(); }
         return;
@@ -673,6 +784,62 @@ void OcctViewWidget::rebuildOverlay() {
     // the things worth clicking on.
     m_context->Display(m_overlay, 0, -1, Standard_False);
     if (!m_view.IsNull()) { m_view->Invalidate(); update(); }
+}
+
+// A clickable disc at each emitter.
+//
+// The overlay is one line-primitive object with no selection at all, which is
+// right for tens of thousands of ray segments and wrong for the handful of
+// things a user actually wants to click. A source is drawn but never traced, so
+// it has no surface in the scene: it was the one thing in the viewport that
+// could be seen and not selected. These are the same circles the overlay draws,
+// as faces, so what is pickable and what is visible cannot drift apart.
+void OcctViewWidget::rebuildSourceMarkers() {
+    if (m_context.IsNull()) return;
+    for (const Handle(AIS_Shape)& marker : m_sourceMarkers)
+        m_context->Remove(marker, Standard_False);
+    m_sourceMarkers.assign(m_sourceDiscs.size(), Handle(AIS_Shape)());
+
+    for (std::size_t i = 0; i < m_sourceDiscs.size(); ++i) {
+        const SourceDisc& d = m_sourceDiscs[i];
+        if (d.radius <= 1e-9) continue;
+
+        const gp_Ax2 frame(d.centre, d.normal);
+        BRepBuilderAPI_MakeEdge edge(gp_Circ(frame, d.radius));
+        if (!edge.IsDone()) continue;
+        BRepBuilderAPI_MakeWire wire(edge.Edge());
+        if (!wire.IsDone()) continue;
+        BRepBuilderAPI_MakeFace face(gp_Pln(frame), wire.Wire(), Standard_True);
+        if (!face.IsDone()) continue;
+
+        Handle(AIS_Shape) marker = new AIS_Shape(face.Shape());
+        marker->SetDisplayMode(AIS_Shaded);
+        // Nearly transparent: the disc is a handle to grab, not another thing
+        // to look at. The overlay's own ring is what draws the emitter.
+        m_context->Display(marker, AIS_Shaded, 0, Standard_False);
+        m_sourceMarkers[i] = marker;
+    }
+    applySourceHighlight();
+}
+
+void OcctViewWidget::applySourceHighlight() {
+    if (m_context.IsNull()) return;
+    for (std::size_t i = 0; i < m_sourceMarkers.size(); ++i) {
+        if (m_sourceMarkers[i].IsNull()) continue;
+        const bool on = int(i) == m_highlightSource;
+        m_sourceMarkers[i]->SetColor(
+            on ? Quantity_Color(1.0, 0.72, 0.25, Quantity_TOC_RGB)
+               : Quantity_Color(1.0, 0.52, 0.12, Quantity_TOC_RGB));
+        m_sourceMarkers[i]->SetTransparency(on ? 0.35f : 0.80f);
+        m_context->Redisplay(m_sourceMarkers[i], Standard_False, Standard_False);
+    }
+    if (!m_view.IsNull()) { m_view->Invalidate(); update(); }
+}
+
+void OcctViewWidget::setHighlightedSource(int index) {
+    if (m_highlightSource == index) return;
+    m_highlightSource = index;
+    applySourceHighlight();
 }
 
 // ---- the navigation cube ----------------------------------------------------
@@ -914,7 +1081,8 @@ void OcctViewWidget::pickAt(const QPoint& pos) {
     // myLastPicked with no null check, so clicking empty space crashes inside
     // the library. HasDetected()/DetectedOwner() are the null-safe accessors:
     // guard first, then resolve the owner's selectable ourselves.
-    int found = -1;
+    int found       = -1;
+    int foundSource = -1;
     if (m_context->HasDetected()) {
         const Handle(SelectMgr_EntityOwner)& owner = m_context->DetectedOwner();
 
@@ -929,14 +1097,31 @@ void OcctViewWidget::pickAt(const QPoint& pos) {
             return;
         }
 
+        // Held by value, deliberately.
+        //
+        // Selectable() returns a handle *by value*, and OCCT converts between
+        // handle types through a conversion operator that reinterpret_casts to
+        // a reference. So binding the result to a `const Handle(...)&` of a
+        // different type -- which is how this was written, and which looks free
+        // -- binds to a temporary that is not lifetime-extended: it dies at the
+        // end of the declaration and takes its reference count with it. Every
+        // pick then downcast a dangling handle, got null, and reported empty
+        // space, so nothing in the 3D view could be selected at all.
         Handle(AIS_InteractiveObject) detected;
         if (!owner.IsNull()) {
-            const Handle(Standard_Transient)& sel = owner->Selectable();
-            detected = Handle(AIS_InteractiveObject)::DownCast(sel);
+            const Handle(SelectMgr_SelectableObject) selectable = owner->Selectable();
+            detected = Handle(AIS_InteractiveObject)::DownCast(selectable);
         }
-        if (!detected.IsNull())
+        if (!detected.IsNull()) {
             for (std::size_t i = 0; i < m_shapes.size(); ++i)
                 if (m_shapes[i] == detected) { found = int(i); break; }
+            if (found < 0)
+                for (std::size_t i = 0; i < m_sourceMarkers.size(); ++i)
+                    if (!m_sourceMarkers[i].IsNull() && m_sourceMarkers[i] == detected) {
+                        foundSource = int(i);
+                        break;
+                    }
+        }
     }
 
     m_context->ClearSelected(Standard_False);
@@ -944,7 +1129,10 @@ void OcctViewWidget::pickAt(const QPoint& pos) {
 
     m_view->Invalidate();
     update();
-    emit surfacePicked(found);
+    // One or the other, never both: reporting an emitter *and* an empty surface
+    // pick would select the source and then immediately clear it again.
+    if (foundSource >= 0) emit sourcePicked(foundSource);
+    else                  emit surfacePicked(found);
 }
 
 // ---- painting --------------------------------------------------------------

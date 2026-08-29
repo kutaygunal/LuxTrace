@@ -992,6 +992,8 @@ int main(int argc, char** argv) {
 
     MainWindow win;
     win.resize(1150, 780);
-    win.show();
+    // Maximised: three columns beside a 3D viewport want the whole screen, and
+    // the size above is what un-maximising gives back.
+    win.showMaximized();
     return app.exec();
 }

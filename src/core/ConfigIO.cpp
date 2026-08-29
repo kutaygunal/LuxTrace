@@ -1,6 +1,7 @@
 #include "ConfigIO.h"
 #include "Material.h"
 #include "RayFile.h"
+#include "SceneDocument.h"
 
 #include <algorithm>
 #include <cmath>
@@ -141,15 +142,12 @@ coating::Coating coatingFromJson(const QJsonObject& o, coating::Coating c) {
     return c;
 }
 
-QJsonObject overrideToJson(const SurfaceOverride& ov) {
-    const SurfaceOptics& s = ov.optics;
+// One surface's optical behaviour, flat. Written by a surface override and by
+// every object in a scene document, because they are describing the same
+// struct: a second encoding of SurfaceOptics would be a second thing to keep
+// in step with the engine.
+QJsonObject opticsJson(const SurfaceOptics& s) {
     QJsonObject o;
-    o[QStringLiteral("label")] = ov.label;
-    // A 64-bit hash does not survive a JSON double, so it is written as hex.
-    o[QStringLiteral("identity")] =
-        QStringLiteral("%1").arg(ov.identity, 16, 16, QLatin1Char('0'));
-    o[QStringLiteral("surfaceHint")]    = ov.surface;
-
     o[QStringLiteral("reflectivity")]   = s.reflectivity;
     o[QStringLiteral("transmissivity")] = s.transmissivity;
     o[QStringLiteral("index")]          = s.index;
@@ -193,16 +191,19 @@ QJsonObject overrideToJson(const SurfaceOverride& ov) {
     return o;
 }
 
-SurfaceOverride overrideFromJson(const QJsonObject& o) {
-    SurfaceOverride ov;
-    ov.label   = o.value(QStringLiteral("label")).toString();
-    ov.surface = int(num(o, "surfaceHint", -1.0));
-    bool okHex = false;
-    const std::uint64_t id =
-        o.value(QStringLiteral("identity")).toString().toULongLong(&okHex, 16);
-    ov.identity = okHex ? id : 0;
+QJsonObject overrideToJson(const SurfaceOverride& ov) {
+    QJsonObject o = opticsJson(ov.optics);
+    o[QStringLiteral("label")] = ov.label;
+    // A 64-bit hash does not survive a JSON double, so it is written as hex.
+    o[QStringLiteral("identity")] =
+        QStringLiteral("%1").arg(ov.identity, 16, 16, QLatin1Char('0'));
+    o[QStringLiteral("surfaceHint")] = ov.surface;
+    return o;
+}
 
-    SurfaceOptics& s = ov.optics;
+// The inverse. Anything missing keeps whatever `s` already carries, so a type's
+// own defaults survive a partial object rather than being zeroed by it.
+SurfaceOptics opticsFrom(const QJsonObject& o, SurfaceOptics s) {
     s.reflectivity   = std::clamp(num(o, "reflectivity",   s.reflectivity),   0.0, 1.0);
     s.transmissivity = std::clamp(num(o, "transmissivity", s.transmissivity), 0.0, 1.0);
     s.index          = std::clamp(num(o, "index",          s.index),          0.0, 10.0);
@@ -236,6 +237,18 @@ SurfaceOverride overrideFromJson(const QJsonObject& o) {
         s.detRejectMode    = SurfaceOptics::RejectMode(
             indexOf(kRejectMode, det.value(QStringLiteral("reject")).toString(), 0));
     }
+    return s;
+}
+
+SurfaceOverride overrideFromJson(const QJsonObject& o) {
+    SurfaceOverride ov;
+    ov.label   = o.value(QStringLiteral("label")).toString();
+    ov.surface = int(num(o, "surfaceHint", -1.0));
+    bool okHex = false;
+    const std::uint64_t id =
+        o.value(QStringLiteral("identity")).toString().toULongLong(&okHex, 16);
+    ov.identity = okHex ? id : 0;
+    ov.optics   = opticsFrom(o, ov.optics);
     return ov;
 }
 
@@ -353,7 +366,18 @@ SourceSpec sourceSpecFromJson(const QJsonObject& o, QStringList* warnings) {
 
 } // namespace
 
-QString toJson(const SimConfig& cfg) {
+// Exposed so a scene document writes its objects with the same encoding a
+// surface override and a source list already use.
+QJsonObject   opticsToJson(const SurfaceOptics& optics)  { return opticsJson(optics); }
+SurfaceOptics opticsFromJson(const QJsonObject& o, SurfaceOptics fallback) {
+    return opticsFrom(o, fallback);
+}
+QJsonObject sourceToJson(const SourceSpec& spec) { return sourceSpecToJson(spec); }
+SourceSpec  sourceFromJson(const QJsonObject& o, QStringList* warnings) {
+    return sourceSpecFromJson(o, warnings);
+}
+
+QString toJson(const SimConfig& cfg, const scenedoc::SceneDocument* doc) {
     QJsonObject root;
     root[QStringLiteral("format")] = QStringLiteral("occt-optics-studio/1");
 
@@ -438,18 +462,25 @@ QString toJson(const SimConfig& cfg) {
     run[QStringLiteral("detectorBins")] = cfg.detectorBins;
     root[QStringLiteral("run")] = run;
 
+    // An empty document writes nothing at all, so a configuration saved from a
+    // scene nobody has composed is byte-for-byte what it was before documents
+    // existed.
+    if (doc && !doc->empty()) root[QStringLiteral("document")] = doc->toJson();
+
     return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Indented));
 }
 
-bool fromJson(const QString& json, SimConfig& out, QString* errorOut,
-              QStringList* warnings) {
+QString toJson(const SimConfig& cfg) { return toJson(cfg, nullptr); }
+
+bool fromJson(const QString& json, SimConfig& out, scenedoc::SceneDocument* doc,
+              QString* errorOut, QStringList* warnings) {
     QJsonParseError err{};
-    const QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8(), &err);
-    if (doc.isNull() || !doc.isObject()) {
+    const QJsonDocument parsed = QJsonDocument::fromJson(json.toUtf8(), &err);
+    if (parsed.isNull() || !parsed.isObject()) {
         if (errorOut) *errorOut = err.errorString();
         return false;
     }
-    const QJsonObject root = doc.object();
+    const QJsonObject root = parsed.object();
 
     SimConfig cfg;   // every field starts at its default and is only overwritten
 
@@ -523,16 +554,31 @@ bool fromJson(const QString& json, SimConfig& out, QString* errorOut,
     cfg.detectorBins = std::clamp(int(num(run, "detectorBins", cfg.detectorBins)), 0, 4096);
 
     out = cfg;
+
+    // A file with no "document" leaves the caller's document alone rather than
+    // clearing it: the old format is a bare configuration, and a scene the user
+    // has composed is not something opening one should silently discard. The
+    // window decides what to do about that; here it is simply not overwritten.
+    if (doc && root.contains(QStringLiteral("document")))
+        *doc = scenedoc::SceneDocument::fromJson(
+            root.value(QStringLiteral("document")).toObject(), warnings);
+
     return true;
 }
 
-bool save(const QString& path, const SimConfig& cfg, QString* errorOut) {
+bool fromJson(const QString& json, SimConfig& out, QString* errorOut,
+              QStringList* warnings) {
+    return fromJson(json, out, nullptr, errorOut, warnings);
+}
+
+bool save(const QString& path, const SimConfig& cfg, const scenedoc::SceneDocument* doc,
+          QString* errorOut) {
     QFile f(path);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
         if (errorOut) *errorOut = f.errorString();
         return false;
     }
-    const QByteArray bytes = toJson(cfg).toUtf8();
+    const QByteArray bytes = toJson(cfg, doc).toUtf8();
     if (f.write(bytes) != bytes.size()) {
         if (errorOut) *errorOut = f.errorString();
         return false;
@@ -540,14 +586,23 @@ bool save(const QString& path, const SimConfig& cfg, QString* errorOut) {
     return true;
 }
 
-bool load(const QString& path, SimConfig& out, QString* errorOut,
-          QStringList* warnings) {
+bool save(const QString& path, const SimConfig& cfg, QString* errorOut) {
+    return save(path, cfg, nullptr, errorOut);
+}
+
+bool load(const QString& path, SimConfig& out, scenedoc::SceneDocument* doc,
+          QString* errorOut, QStringList* warnings) {
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
         if (errorOut) *errorOut = f.errorString();
         return false;
     }
-    return fromJson(QString::fromUtf8(f.readAll()), out, errorOut, warnings);
+    return fromJson(QString::fromUtf8(f.readAll()), out, doc, errorOut, warnings);
+}
+
+bool load(const QString& path, SimConfig& out, QString* errorOut,
+          QStringList* warnings) {
+    return load(path, out, nullptr, errorOut, warnings);
 }
 
 } // namespace configio
