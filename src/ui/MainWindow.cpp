@@ -2,6 +2,9 @@
 
 #include "ControlsPanel.h"
 #include "HeatmapWidget.h"
+#include "ObjectInspector.h"
+#include "ObjectLibraryPanel.h"
+#include "SceneTreePanel.h"
 #include "OcctViewWidget.h"
 #include "PlotWidget.h"
 #include "PolarPlotWidget.h"
@@ -11,10 +14,10 @@
 #include "core/Report.h"
 #include "EnergyBarWidget.h"
 #include "ImportDialog.h"
-#include "SurfaceInspector.h"
 #include "PythonPanel.h"
 #include "core/ConfigIO.h"
 #include "core/MaterialFile.h"
+#include "core/SceneDocument.h"
 #include "core/SimulationWorker.h"
 #include "core/StudyWorker.h"
 
@@ -41,7 +44,6 @@
 #include <QStatusBar>
 #include <QTabWidget>
 #include <QTextBrowser>
-#include <QTreeWidget>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -88,7 +90,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_tabs->addTab(buildStudiesTab(),    QStringLiteral("Studies"));
     m_tabs->addTab(buildDesignTab(),     QStringLiteral("Design"));
     m_tabs->addTab(buildToleranceTab(),  QStringLiteral("Tolerance"));
-    m_tabs->addTab(buildSurfacesTab(),   QStringLiteral("Surfaces"));
+    m_tabs->addTab(buildProbeTab(),      QStringLiteral("Ray probe"));
     m_python = new PythonPanel(this);
     m_tabs->addTab(m_python,               QStringLiteral("Python"));
 
@@ -97,13 +99,32 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_metrics->setMinimumHeight(150);
     m_metrics->setHtml(QStringLiteral("<i>Run a simulation to see the metrics.</i>"));
 
-    auto* right = new QSplitter(Qt::Vertical, this);
-    right->addWidget(m_tabs);
-    right->addWidget(m_metrics);
-    right->setStretchFactor(0, 4);
-    right->setStretchFactor(1, 1);
+    // ---- what can be made, what is in the scene, what the selection does ----
+    //
+    // Three panels, in the order the work goes: pick a thing from the library,
+    // drop it, and the tree and the property sheet below are what it became.
+    m_library   = new ObjectLibraryPanel(this);
+    m_sceneTree = new SceneTreePanel(this);
+    m_object    = new ObjectInspector(this);
+    m_sceneTree->setDocument(&m_document);
 
-    m_result = new QLabel(QStringLiteral("Ready. Choose a scene and run."), this);
+    auto* leftCol = new QSplitter(Qt::Vertical, this);
+    leftCol->addWidget(m_library);
+    leftCol->addWidget(m_sceneTree);
+    leftCol->addWidget(m_object);
+    leftCol->setStretchFactor(0, 2);
+    leftCol->setStretchFactor(1, 3);
+    leftCol->setStretchFactor(2, 5);
+
+    // ---- the views, and the metrics under them ------------------------------
+    auto* centre = new QSplitter(Qt::Vertical, this);
+    centre->addWidget(m_tabs);
+    centre->addWidget(m_metrics);
+    centre->setStretchFactor(0, 4);
+    centre->setStretchFactor(1, 1);
+
+    m_result = new QLabel(QStringLiteral("Ready. Load a tutorial from the File menu, "
+                                         "or drag an object in."), this);
     m_result->setWordWrap(true);
     m_result->setFrameShape(QFrame::StyledPanel);
 
@@ -118,25 +139,27 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     // controls because it is the answer to the question the Run button asks.
     m_energyBar = new EnergyBarWidget(this);
 
-    auto* left = new QWidget(this);
-    auto* lv = new QVBoxLayout(left);
-    lv->setContentsMargins(0, 0, 0, 0);
-    lv->addWidget(m_controls, 1);
-    lv->addWidget(m_derived, 0);
-    lv->addWidget(m_energyBar, 0);
-    lv->addWidget(m_result, 0);
+    // ---- the run: everything that is a property of the trace, not of a part -
+    auto* right = new QWidget(this);
+    auto* rv = new QVBoxLayout(right);
+    rv->setContentsMargins(0, 0, 0, 0);
+    rv->addWidget(m_controls, 1);
+    rv->addWidget(m_derived, 0);
+    rv->addWidget(m_energyBar, 0);
+    rv->addWidget(m_result, 0);
 
-    // The controls column is draggable against the viewport rather than pinned
-    // at whatever width it was built with: a long scene name, a wide parameter
-    // label or a set of derived quantities is a reason to give it more room,
-    // and the 3D view is where that room comes from.
+    // Both side columns are draggable against the viewport rather than pinned
+    // at whatever width they were built with, and the 3D view is where the
+    // window's growth goes.
     auto* columns = new QSplitter(Qt::Horizontal, this);
-    columns->addWidget(left);
+    columns->addWidget(leftCol);
+    columns->addWidget(centre);
     columns->addWidget(right);
-    columns->setStretchFactor(0, 0);   // the viewport takes the window's growth
+    columns->setStretchFactor(0, 0);
     columns->setStretchFactor(1, 1);
+    columns->setStretchFactor(2, 0);
     columns->setChildrenCollapsible(false);
-    columns->setSizes({left->sizeHint().width(), 1200});
+    columns->setSizes({330, 1100, right->sizeHint().width()});
 
     auto* central = new QWidget(this);
     auto* main = new QHBoxLayout(central);
@@ -149,7 +172,6 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     connect(m_controls, &ControlsPanel::runRequested,    this, &MainWindow::onRun);
     connect(m_controls, &ControlsPanel::cancelRequested, this, &MainWindow::onCancel);
-    connect(m_controls, &ControlsPanel::sceneChanged,    this, &MainWindow::onSceneChanged);
     connect(m_controls, &ControlsPanel::geometryChanged, this, &MainWindow::onGeometryChanged);
     // Adding, editing or removing a source changes where the light comes from
     // without changing a triangle, so the markers have to follow it. Nothing
@@ -171,6 +193,31 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(m_study,  &StudyWorker::toleranceReady,    this, &MainWindow::onToleranceReady);
 
     connect(m_view3d, &OcctViewWidget::surfacePicked, this, &MainWindow::onSurfacePicked);
+    connect(m_view3d, &OcctViewWidget::objectDropped, this, &MainWindow::onObjectDropped);
+
+    // ---- the scene document -------------------------------------------------
+    connect(m_library, &ObjectLibraryPanel::createRequested, this,
+            [this](scenedoc::ObjectType type) { onCreateObject(type, 0); });
+
+    connect(m_sceneTree, &SceneTreePanel::selectionChanged,    this, &MainWindow::onObjectSelected);
+    connect(m_sceneTree, &SceneTreePanel::visibilityChanged,   this, &MainWindow::onObjectVisibility);
+    connect(m_sceneTree, &SceneTreePanel::renamed,             this, &MainWindow::onObjectRenamed);
+    connect(m_sceneTree, &SceneTreePanel::deleteRequested,     this, &MainWindow::onObjectDelete);
+    connect(m_sceneTree, &SceneTreePanel::duplicateRequested,  this, &MainWindow::onObjectDuplicate);
+    connect(m_sceneTree, &SceneTreePanel::reparentRequested,   this, &MainWindow::onObjectReparent);
+    connect(m_sceneTree, &SceneTreePanel::createRequested,     this, &MainWindow::onCreateObject);
+    connect(m_sceneTree, &SceneTreePanel::groupRequested,      this, &MainWindow::onAddGroup);
+    connect(m_sceneTree, &SceneTreePanel::isolateRequested,    this, &MainWindow::onIsolateObject);
+    connect(m_sceneTree, &SceneTreePanel::showAllRequested,    this, &MainWindow::onShowAllObjects);
+
+    connect(m_object, &ObjectInspector::nameEdited, this, [this](int id) {
+        onObjectRenamed(id, m_object->object().name);
+    });
+    connect(m_object, &ObjectInspector::placementEdited,      this, &MainWindow::onObjectPlacementEdited);
+    connect(m_object, &ObjectInspector::parametersEdited,     this, &MainWindow::onObjectParametersEdited);
+    connect(m_object, &ObjectInspector::sourceEdited,         this, &MainWindow::onObjectSourceEdited);
+    connect(m_object, &ObjectInspector::opticsEdited,         this, &MainWindow::onObjectOpticsEdited);
+    connect(m_object, &ObjectInspector::opticsResetRequested, this, &MainWindow::onObjectOpticsReset);
     connect(m_heatmap, &HeatmapWidget::cutMoved, this, &MainWindow::onCutMoved);
 
     // Hand the viewport keyboard focus when its tab comes up, so WASD works
@@ -181,7 +228,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     refreshSweepAxes();
     refreshDerivedQuantities();
-    onSceneChanged();   // show the starting geometry before the first run
+    // Something to look at before anything is chosen. The first tutorial in the
+    // registry is the parabolic collimator, which is the one that explains what
+    // the application is for in one picture.
+    loadTutorial(GeometryProvider::Scene::Reflector);
 }
 
 // ---- tab construction ------------------------------------------------------
@@ -612,11 +662,11 @@ void MainWindow::refreshSweepAxes() {
 
 void MainWindow::refreshDerivedQuantities() {
     if (!m_derived) return;
-    // These follow from the selected scene's dimensions. While a file stands in
-    // for that scene they describe an optic that is not being traced, which is
-    // exactly the kind of leftover that makes an import look like it kept the
-    // previous shape's behaviour.
-    if (m_showingImported && m_imported) {
+    // These follow from the tutorial's dimensions. Once the scene has been
+    // assembled or imported they describe an optic that is not being traced,
+    // which is exactly the kind of leftover that makes an edited scene look
+    // like it kept the previous shape's behaviour.
+    if (!m_document.linkedToTutorial()) {
         m_derived->clear();
         m_derived->setVisible(false);
         return;
@@ -857,8 +907,6 @@ void MainWindow::onClearPin() {
 
 const std::vector<OpticalSurface>& MainWindow::currentSurfaces() const {
     static const std::vector<OpticalSurface> kEmpty;
-    if (m_showingImported && m_imported && !m_imported->surfaces.empty())
-        return m_imported->surfaces;
     return m_sceneData ? m_sceneData->surfaces : kEmpty;
 }
 
@@ -875,45 +923,15 @@ const std::vector<OpticalSurface>& MainWindow::currentSurfaces() const {
 // the editor exposed four -- so nearly every accuracy feature in the engine
 // existed and could not be driven from the application.
 
-QWidget* MainWindow::buildSurfacesTab() {
+QWidget* MainWindow::buildProbeTab() {
     auto* page  = new QWidget(this);
     auto* outer = new QVBoxLayout(page);
     outer->setContentsMargins(6, 6, 6, 6);
 
-    auto* split = new QSplitter(Qt::Horizontal, page);
-
-    // ---- the tree -----------------------------------------------------------
-    auto* leftSide = new QWidget(split);
-    auto* lv       = new QVBoxLayout(leftSide);
-    lv->setContentsMargins(0, 0, 0, 0);
-
-    m_surfaceTree = new QTreeWidget(leftSide);
-    m_surfaceTree->setColumnCount(3);
-    m_surfaceTree->setHeaderLabels({QStringLiteral("Surface"), QStringLiteral("What it is"),
-                                    QStringLiteral("Edited")});
-    m_surfaceTree->setRootIsDecorated(false);
-    m_surfaceTree->setAlternatingRowColors(true);
-    m_surfaceTree->setToolTip(QStringLiteral(
-        "Every surface in the scene, whether or not it can be clicked in the 3D "
-        "view. The checkbox hides one; a surface carrying an edit is badged, so "
-        "an edited optic is not indistinguishable from an untouched one."));
-    lv->addWidget(m_surfaceTree, 1);
-
-    m_isolate  = new QPushButton(QStringLiteral("Isolate"), leftSide);
-    m_showAll  = new QPushButton(QStringLiteral("Show all"), leftSide);
-    m_resetAll = new QPushButton(QStringLiteral("Reset all edits"), leftSide);
-    m_isolate->setToolTip(QStringLiteral("Hide everything except the selected surface."));
-    m_resetAll->setToolTip(QStringLiteral(
-        "Put every surface back to the optics its scene declares."));
-    auto* buttons = new QHBoxLayout;
-    buttons->setContentsMargins(0, 0, 0, 0);
-    buttons->addWidget(m_isolate, 1);
-    buttons->addWidget(m_showAll, 1);
-    buttons->addWidget(m_resetAll, 1);
-    lv->addLayout(buttons);
-
-    // ---- the single-ray probe ----------------------------------------------
-    auto* probeBox  = new QGroupBox(QStringLiteral("Single ray"), leftSide);
+    // What a surface *is* moved to the object inspector with everything else
+    // about an object; what is left here is the one thing that is not a
+    // property of anything -- a single ray, and what happened to it.
+    auto* probeBox  = new QGroupBox(QStringLiteral("Single ray"), page);
     auto* probeForm = new QFormLayout(probeBox);
     probeBox->setToolTip(QStringLiteral(
         "Fires one ray through the optic with the estimators switched off, so "
@@ -930,8 +948,8 @@ QWidget* MainWindow::buildSurfacesTab() {
     m_probeY->setRange(-10000.0, 10000.0);
     m_probeY->setDecimals(3);
     m_probeY->setSuffix(QStringLiteral(" mm"));
-    for (QDoubleSpinBox* s : {m_probeX, m_probeY})
-        s->setToolTip(QStringLiteral(
+    for (QDoubleSpinBox* sp : {m_probeX, m_probeY})
+        sp->setToolTip(QStringLiteral(
             "Where the ray leaves the source plane, across the optical axis. "
             "The direction is the scene's own emission axis."));
 
@@ -940,146 +958,268 @@ QWidget* MainWindow::buildSurfacesTab() {
     probeForm->addRow(QStringLiteral("Offset x:"), m_probeX);
     probeForm->addRow(QStringLiteral("Offset y:"), m_probeY);
     probeForm->addRow(m_inspectRay);
-    lv->addWidget(probeBox);
+    outer->addWidget(probeBox, 0);
 
-    m_rayLog = new QTextBrowser(leftSide);
+    m_rayLog = new QTextBrowser(page);
     m_rayLog->setMinimumHeight(140);
     m_rayLog->setHtml(QStringLiteral("<i>Trace one ray to see every interaction "
                                      "it had.</i>"));
-    lv->addWidget(m_rayLog, 1);
+    outer->addWidget(m_rayLog, 1);
 
-    // ---- the inspector ------------------------------------------------------
-    m_inspector = new SurfaceInspector(split);
-
-    split->addWidget(leftSide);
-    split->addWidget(m_inspector);
-    split->setStretchFactor(0, 3);
-    split->setStretchFactor(1, 2);
-    outer->addWidget(split);
-
-    connect(m_surfaceTree, &QTreeWidget::currentItemChanged, this,
-            [this](QTreeWidgetItem*, QTreeWidgetItem*) { onSurfaceRowChanged(); });
-    connect(m_surfaceTree, &QTreeWidget::itemChanged, this,
-            &MainWindow::onSurfaceVisibilityChanged);
-    connect(m_isolate,  &QPushButton::clicked, this, &MainWindow::onIsolateSurface);
-    connect(m_showAll,  &QPushButton::clicked, this, &MainWindow::onShowAllSurfaces);
-    connect(m_resetAll, &QPushButton::clicked, this, &MainWindow::onResetAllSurfaces);
     connect(m_inspectRay, &QPushButton::clicked, this, &MainWindow::onInspectRay);
-    connect(m_inspector, &SurfaceInspector::edited, this, &MainWindow::onSurfaceEdited);
-    connect(m_inspector, &SurfaceInspector::resetRequested, this,
-            &MainWindow::onResetSurface);
-
     return page;
 }
 
-SurfaceOptics MainWindow::effectiveOptics(int surface) const {
-    const auto& surfs = currentSurfaces();
-    if (surface < 0 || surface >= int(surfs.size())) return SurfaceOptics{};
-    SurfaceOptics o = surfs[std::size_t(surface)];
-    for (const SurfaceOverride& ov : m_overrides)
-        if (ov.surface == surface) o = ov.optics;
-    return o;
+// ---- the scene document ----------------------------------------------------
+
+void MainWindow::loadTutorial(GeometryProvider::Scene scene) {
+    m_document.loadTutorial(scene, GeometryProvider::defaultParams(scene));
+    m_controls->setScene(scene);
+    m_controls->setParams(m_document.tutorialParams());
+    m_selectedObject = 0;
+    m_sceneTree->setSelectedId(0);
+    // A different optic is a different subject, so the camera is allowed to
+    // reframe and the previous optic's rays do not belong to it.
+    m_view3d->setRays({});
+    syncDocument(true);
+    refreshSweepAxes();
+    statusBar()->showMessage(QStringLiteral("%1 — %2")
+                                 .arg(GeometryProvider::info(scene).name,
+                                      GeometryProvider::info(scene).description),
+                             8000);
 }
 
-bool MainWindow::surfaceIsEdited(int surface) const {
-    for (const SurfaceOverride& ov : m_overrides)
-        if (ov.surface == surface) return true;
-    return false;
+QString MainWindow::detachReason() const {
+    if (m_document.linkedToTutorial()) return {};
+    return QStringLiteral(
+        "The scene is assembled: %1 object(s) are traced exactly as the tree "
+        "lists them. These dimensions describe the tutorial they started from, "
+        "which is no longer what a run traces.")
+        .arg(m_document.count());
 }
 
-void MainWindow::rebuildSurfaceTree() {
-    if (!m_surfaceTree) return;
-    const auto& surfs = currentSurfaces();
+void MainWindow::syncDocument(bool rebuildGeometry) {
+    m_compiled = m_document.compile();
+    m_sceneTree->rebuild();
+    m_controls->setGeometryDetached(detachReason());
+    refreshInspector();
+    refreshDerivedQuantities();
 
-    m_loadingTree = true;
-    m_surfaceTree->clear();
-    for (std::size_t i = 0; i < surfs.size(); ++i) {
-        const OpticalSurface& s = surfs[i];
-        auto* item = new QTreeWidgetItem(m_surfaceTree);
-        item->setData(0, Qt::UserRole, int(i));
-        item->setText(0, s.label.isEmpty()
-                             ? QStringLiteral("Surface %1").arg(i + 1) : s.label);
-        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        item->setCheckState(0, Qt::Checked);
-
-        QString what;
-        if (s.isDetector)          what = QStringLiteral("receiver");
-        else if (s.index > 0.0)    what = QStringLiteral("refractive, n_d %1")
-                                              .arg(s.index, 0, 'f', 3);
-        else if (s.material.isMetal()) what = QStringLiteral("metal mirror");
-        else                       what = QStringLiteral("mirror, R %1")
-                                              .arg(s.reflectivity, 0, 'f', 2);
-        item->setText(1, what);
+    if (rebuildGeometry) {
+        onGeometryChanged();
+    } else {
+        applySurfaceVisibility();
+        refreshSourceGlyphs();
     }
-    m_surfaceTree->resizeColumnToContents(0);
-    m_loadingTree = false;
-
-    refreshSurfaceTreeBadges();
-    if (m_pickedSurface >= 0 && m_pickedSurface < int(surfs.size()))
-        m_surfaceTree->setCurrentItem(m_surfaceTree->topLevelItem(m_pickedSurface));
-    else
-        updateSurfacePanel();
 }
 
-void MainWindow::refreshSurfaceTreeBadges() {
-    if (!m_surfaceTree) return;
-    const bool wasLoading = m_loadingTree;
-    m_loadingTree = true;
-    for (int i = 0; i < m_surfaceTree->topLevelItemCount(); ++i) {
-        QTreeWidgetItem* item = m_surfaceTree->topLevelItem(i);
-        const bool edited = surfaceIsEdited(i);
-        item->setText(2, edited ? QStringLiteral("edited") : QString());
-        item->setForeground(2, QColor(176, 112, 24));
+void MainWindow::refreshInspector() {
+    const scenedoc::SceneObject* o = m_document.find(m_selectedObject);
+    if (!o) {
+        m_object->clearObject();
+        m_view3d->setHighlightedSurfaces({});
+        return;
     }
-    m_loadingTree = wasLoading;
-    if (m_resetAll) m_resetAll->setEnabled(!m_overrides.empty());
+    m_object->setObject(*o, o->sceneOptics);
+    m_view3d->setHighlightedSurfaces(surfacesForObject(o->id));
 }
 
-void MainWindow::onSurfaceRowChanged() {
-    if (m_loadingTree || !m_surfaceTree) return;
-    QTreeWidgetItem* item = m_surfaceTree->currentItem();
-    m_pickedSurface = item ? item->data(0, Qt::UserRole).toInt() : -1;
-    updateSurfacePanel();
-    // Keep the viewport's own idea of the selection in step, so clicking a row
-    // and clicking the solid mean the same thing.
-    m_view3d->setHighlightedSurface(m_pickedSurface);
-}
-
-void MainWindow::onSurfaceVisibilityChanged(QTreeWidgetItem* item, int column) {
-    if (m_loadingTree || !item || column != 0) return;
-    const int index = item->data(0, Qt::UserRole).toInt();
-    m_view3d->setSurfaceVisible(index, item->checkState(0) == Qt::Checked);
-}
-
-void MainWindow::onIsolateSurface() {
-    if (!m_surfaceTree) return;
-    const int keep = m_pickedSurface;
-    m_loadingTree = true;
-    for (int i = 0; i < m_surfaceTree->topLevelItemCount(); ++i) {
-        const bool show = (i == keep);
-        m_surfaceTree->topLevelItem(i)->setCheckState(0, show ? Qt::Checked : Qt::Unchecked);
-        m_view3d->setSurfaceVisible(i, show);
+void MainWindow::applySurfaceVisibility() {
+    for (const scenedoc::SceneObject& o : m_document.objects()) {
+        if (o.isGroup() || o.isSource()) continue;
+        for (int idx : surfacesForObject(o.id)) m_view3d->setSurfaceVisible(idx, o.visible);
     }
-    m_loadingTree = false;
 }
 
-void MainWindow::onShowAllSurfaces() {
-    if (!m_surfaceTree) return;
-    m_loadingTree = true;
-    for (int i = 0; i < m_surfaceTree->topLevelItemCount(); ++i) {
-        m_surfaceTree->topLevelItem(i)->setCheckState(0, Qt::Checked);
-        m_view3d->setSurfaceVisible(i, true);
+int MainWindow::objectForSurface(int surfaceIndex) const {
+    if (surfaceIndex < 0) return 0;
+    if (m_document.linkedToTutorial()) {
+        for (const scenedoc::SceneObject& o : m_document.objects())
+            if (o.tutorialIndex == surfaceIndex) return o.id;
+        return 0;
     }
-    m_loadingTree = false;
+    if (surfaceIndex < int(m_compiled.surfaceObject.size()))
+        return m_compiled.surfaceObject[std::size_t(surfaceIndex)];
+    return 0;
 }
 
-void MainWindow::onResetAllSurfaces() {
-    if (m_overrides.empty()) return;
-    m_overrides.clear();
-    refreshSurfaceTreeBadges();
-    updateSurfacePanel();
+std::vector<int> MainWindow::surfacesForObject(int id) const {
+    std::vector<int> out;
+    if (id == 0) return out;
+    // A group covers everything under it, which is what makes selecting one
+    // light up the whole assembly rather than nothing at all.
+    if (m_document.linkedToTutorial()) {
+        for (const scenedoc::SceneObject& o : m_document.objects())
+            if (o.tutorialIndex >= 0 && m_document.isAncestorOf(id, o.id))
+                out.push_back(o.tutorialIndex);
+    } else {
+        for (std::size_t i = 0; i < m_compiled.surfaceObject.size(); ++i)
+            if (m_document.isAncestorOf(id, m_compiled.surfaceObject[i]))
+                out.push_back(int(i));
+    }
+    return out;
+}
+
+std::vector<SurfaceOverride> MainWindow::overridesFromDocument() const {
+    std::vector<SurfaceOverride> out;
+    for (const scenedoc::SceneObject& o : m_document.objects()) {
+        if (!o.opticsEdited || o.tutorialIndex < 0) continue;
+        SurfaceOverride ov;
+        // Keyed by what the surface *is*, not by where it sat, so a saved
+        // config reopened against changed geometry cannot land the edit on
+        // whatever now occupies the slot.
+        ov.label   = o.name;
+        ov.surface = o.tutorialIndex;
+        if (m_sceneData && o.tutorialIndex < int(m_sceneData->surfaces.size()))
+            ov.identity = m_sceneData->scene.surfaceIdentity(o.tutorialIndex);
+        ov.optics = o.optics;
+        out.push_back(std::move(ov));
+    }
+    return out;
+}
+
+// ---- what the panels ask the document for ----------------------------------
+
+void MainWindow::onObjectDropped(const QString& typeKey, const gp_Pnt& where) {
+    bool ok = false;
+    const scenedoc::ObjectType type = scenedoc::typeFromKey(typeKey, &ok);
+    if (!ok) return;
+
+    const int id = m_document.add(type, where, 0);
+    m_selectedObject = id;
+    syncDocument(true);
+    m_sceneTree->setSelectedId(id);
     statusBar()->showMessage(
-        QStringLiteral("Every surface restored to the optics its scene declares"), 4000);
+        QStringLiteral("%1 placed at %2, %3, %4 mm")
+            .arg(scenedoc::typeInfo(type).name)
+            .arg(where.X(), 0, 'f', 1).arg(where.Y(), 0, 'f', 1).arg(where.Z(), 0, 'f', 1),
+        5000);
+}
+
+void MainWindow::onCreateObject(scenedoc::ObjectType type, int parent) {
+    const int id = m_document.add(type, gp_Pnt(0, 0, 0), parent);
+    m_selectedObject = id;
+    syncDocument(true);
+    m_sceneTree->setSelectedId(id);
+}
+
+void MainWindow::onAddGroup() {
+    const int id = m_document.add(scenedoc::ObjectType::Group, gp_Pnt(0, 0, 0), 0);
+    m_selectedObject = id;
+    syncDocument(false);
+    m_sceneTree->setSelectedId(id);
+}
+
+void MainWindow::onObjectSelected(int id) {
+    m_selectedObject = id;
+    refreshInspector();
+}
+
+void MainWindow::onObjectVisibility(int id, bool visible) {
+    if (!m_document.setVisible(id, visible)) return;
+    for (int idx : surfacesForObject(id)) m_view3d->setSurfaceVisible(idx, visible);
+}
+
+void MainWindow::onObjectRenamed(int id, const QString& name) {
+    if (!m_document.setName(id, name)) return;
+    syncDocument(false);
+    m_sceneTree->setSelectedId(m_selectedObject);
+}
+
+void MainWindow::onObjectDelete(int id) {
+    const scenedoc::SceneObject* o = m_document.find(id);
+    if (!o) return;
+    const QString name = o->name;
+    if (m_document.remove(id) == 0) return;
+    if (!m_document.find(m_selectedObject)) m_selectedObject = 0;
+    syncDocument(true);
+    statusBar()->showMessage(QStringLiteral("%1 removed").arg(name), 4000);
+}
+
+void MainWindow::onObjectDuplicate(int id) {
+    const int copy = m_document.duplicate(id);
+    if (copy == 0) return;
+    m_selectedObject = copy;
+    syncDocument(true);
+    m_sceneTree->setSelectedId(copy);
+}
+
+void MainWindow::onObjectReparent(int id, int newParent) {
+    if (!m_document.reparent(id, newParent)) return;
+    syncDocument(true);
+    m_sceneTree->setSelectedId(m_selectedObject);
+}
+
+void MainWindow::onIsolateObject(int id) {
+    for (const scenedoc::SceneObject& o : m_document.objects())
+        m_document.setVisible(o.id, m_document.isAncestorOf(id, o.id));
+    syncDocument(false);
+    m_sceneTree->setSelectedId(m_selectedObject);
+}
+
+void MainWindow::onShowAllObjects() {
+    for (const scenedoc::SceneObject& o : m_document.objects())
+        m_document.setVisible(o.id, true);
+    syncDocument(false);
+    m_sceneTree->setSelectedId(m_selectedObject);
+}
+
+void MainWindow::onObjectPlacementEdited(int id) {
+    const scenedoc::SceneObject& edited = m_object->object();
+    if (!m_document.setPlacement(id, edited.position, edited.rotationDeg)) return;
+    syncDocument(true);
+}
+
+void MainWindow::onObjectParametersEdited(int id) {
+    const scenedoc::SceneObject& edited = m_object->object();
+    if (!m_document.setParams(id, edited.p, scenedoc::SceneObject::kMaxParams)) return;
+    syncDocument(true);
+}
+
+void MainWindow::onObjectSourceEdited(int id) {
+    if (!m_document.setSourceSpec(id, m_object->object().source)) return;
+    // Nothing about an emitter is geometry, so this costs a redraw of the
+    // markers and a trace -- not a tessellation.
+    m_compiled = m_document.compile();
+    refreshSourceGlyphs();
+    refreshDerivedQuantities();
+}
+
+void MainWindow::onObjectOpticsEdited(int id) {
+    const scenedoc::SceneObject* before = m_document.find(id);
+    if (!before) return;
+    const bool wasDetector = before->optics.isDetector;
+    const int  oldNX = before->optics.detNX, oldNY = before->optics.detNY;
+
+    if (!m_document.setOptics(id, m_object->object().optics)) return;
+
+    // Whether this costs a trace or a rebuild depends on what was touched: a
+    // receiver's bin grid is baked into the geometry, and everything else is a
+    // ray-time property the cached tessellation and hierarchy do not care about.
+    const scenedoc::SceneObject* after = m_document.find(id);
+    const bool binsChanged = wasDetector && after &&
+                             (after->optics.detNX != oldNX || after->optics.detNY != oldNY);
+    if (binsChanged) m_haveRequested = false;
+
+    m_compiled = m_document.compile();
+    m_sceneTree->rebuild();
+    m_sceneTree->setSelectedId(m_selectedObject);
+    statusBar()->showMessage(
+        binsChanged
+            ? QStringLiteral("%1 edited — the bin grid is geometry, so this rebuilds")
+                  .arg(after ? after->name : QString())
+            : QStringLiteral("%1 edited — run to trace it (no rebuild needed)")
+                  .arg(after ? after->name : QString()),
+        4000);
+    if (binsChanged) onGeometryChanged();
+}
+
+void MainWindow::onObjectOpticsReset(int id) {
+    if (!m_document.resetOptics(id)) return;
+    m_compiled = m_document.compile();
+    refreshInspector();
+    statusBar()->showMessage(QStringLiteral("Surface restored to the optics its type "
+                                            "declares"), 3000);
 }
 
 // ---- the single-ray inspector ----------------------------------------------
@@ -1180,92 +1320,57 @@ void MainWindow::onInspectRay() {
     m_view3d->setRays(single.raySegments);
 }
 
-void MainWindow::updateSurfacePanel() {
-    if (!m_inspector) return;
-    const auto& surfs = currentSurfaces();
-    const bool have = !surfs.empty() && m_pickedSurface >= 0 &&
-                      m_pickedSurface < int(surfs.size());
-    if (!have) {
-        m_inspector->clearSurface();
-        return;
-    }
-
-    const OpticalSurface& base = surfs[std::size_t(m_pickedSurface)];
-    m_loadingSurface = true;
-    m_inspector->setSurface(base.label, effectiveOptics(m_pickedSurface), base,
-                            surfaceIsEdited(m_pickedSurface));
-    m_loadingSurface = false;
-}
-
-void MainWindow::onSurfaceEdited() {
-    const auto& surfs = currentSurfaces();
-    if (m_loadingSurface || surfs.empty() || m_pickedSurface < 0 ||
-        m_pickedSurface >= int(surfs.size()))
-        return;
-    const OpticalSurface& base = surfs[std::size_t(m_pickedSurface)];
-
-    SurfaceOverride ov;
-    // Keyed by what the surface *is*, not by where it sat, so a saved config
-    // reopened against changed geometry cannot land the edit on whatever now
-    // occupies the slot.
-    ov.label   = base.label;
-    ov.surface = m_pickedSurface;
-    if (m_sceneData) ov.identity = m_sceneData->scene.surfaceIdentity(m_pickedSurface);
-    ov.optics  = m_inspector->optics();
-
-    auto it = std::find_if(m_overrides.begin(), m_overrides.end(),
-                           [&](const SurfaceOverride& o) { return o.surface == m_pickedSurface; });
-    if (it != m_overrides.end()) *it = ov;
-    else                         m_overrides.push_back(ov);
-
-    refreshSurfaceTreeBadges();
-
-    // Whether this costs a trace or a rebuild depends on what was touched: a
-    // receiver's bin grid is baked into the geometry, and everything else is a
-    // ray-time property the cached tessellation and hierarchy do not care about.
-    const bool binsChanged = base.isDetector &&
-                             (ov.optics.detNX != base.detNX || ov.optics.detNY != base.detNY);
-    statusBar()->showMessage(
-        binsChanged
-            ? QStringLiteral("%1 edited — the bin grid is geometry, so this rebuilds")
-                  .arg(base.label)
-            : QStringLiteral("%1 edited — run to trace it (no rebuild needed)")
-                  .arg(base.label),
-        4000);
-    if (binsChanged) onGeometryChanged();
-}
-
-void MainWindow::onResetSurface() {
-    m_overrides.erase(std::remove_if(m_overrides.begin(), m_overrides.end(),
-                                     [&](const SurfaceOverride& o) {
-                                         return o.surface == m_pickedSurface;
-                                     }),
-                      m_overrides.end());
-    refreshSurfaceTreeBadges();
-    updateSurfacePanel();
-    statusBar()->showMessage(QStringLiteral("Surface restored to the scene's own optics"), 3000);
-}
 
 SimConfig MainWindow::currentConfig() const {
     SimConfig cfg = m_controls->config();
-    cfg.surfaceOverrides = m_overrides;
-    // What is on screen is what gets traced. Without this the run took the
-    // scene enum the controls still carried and traced the built-in optic
-    // behind it, which is why an imported part appeared in the viewport while
-    // the rays went through the shape it had replaced.
-    if (m_showingImported && m_imported) cfg.imported = m_imported;
+
+    // What is on screen is what gets traced, and there are two ways for that to
+    // be true.
+    //
+    // While the document is still exactly what a tutorial builds, the geometry
+    // comes from the registry at the dimensions in the panel -- which is what
+    // leaves the sweeps, the optimiser and the tolerance study with numbers to
+    // vary -- and any optical edit reaches the trace as an override.
+    //
+    // Once it has been assembled or imported, there is no parameter set that
+    // describes it, so the compiled scene is handed over whole through the same
+    // field a CAD import has always used.
+    if (m_document.linkedToTutorial()) {
+        cfg.surfaceOverrides = overridesFromDocument();
+    } else {
+        cfg.imported = m_compiled.setup;
+    }
+
+    // The emitters are objects, wherever the geometry came from.
+    if (m_compiled.havePrimary) {
+        const SourceSpec& s      = m_compiled.primary;
+        cfg.source               = s.type;
+        cfg.shape                = s.shape;
+        cfg.spectrum             = s.spectrum;
+        cfg.halfAngleDeg         = s.halfAngleDeg;
+        cfg.sizeA                = s.sizeA;
+        cfg.sizeB                = s.sizeB;
+        cfg.beamRadius           = s.beamRadius;
+        cfg.power                = s.power;
+        cfg.polarisationState    = s.polarisationState;
+        cfg.rayFile              = s.rayFile;
+        cfg.rayFileScale         = s.rayFileScale;
+        cfg.rayFileWavelengths   = s.rayFileWavelengths;
+    }
+    cfg.extraSources = m_compiled.extraSources;
     return cfg;
 }
 
 bool MainWindow::requireParametricScene(const QString& what) {
-    if (!(m_showingImported && m_imported)) return true;
+    if (m_document.linkedToTutorial()) return true;
     QMessageBox::information(
         this, windowTitle(),
-        QStringLiteral("%1 varies the scene's own dimensions, and imported geometry "
-                       "has none: the file is a fixed solid, not a parametric optic.\n\n"
-                       "Trace it, sweep the ray count, or edit a surface's optics — "
-                       "those all apply. To sweep a dimension, pick a built-in scene "
-                       "from the list, which replaces the imported part.").arg(what));
+        QStringLiteral("%1 varies the scene's own dimensions, and an assembled scene "
+                       "has none: what is on screen is a set of placed objects, not a "
+                       "parametric optic.\n\n"
+                       "Trace it, sweep the ray count, or edit any object — those all "
+                       "apply. To sweep a dimension, load a tutorial from File > "
+                       "Tutorials, which replaces the assembled scene.").arg(what));
     return false;
 }
 
@@ -1515,6 +1620,47 @@ void MainWindow::refreshImageQuality() {
 
 void MainWindow::buildMenus() {
     QMenu* file = menuBar()->addMenu(QStringLiteral("&File"));
+
+    // The twenty-six built-in scenes, as tutorials.
+    //
+    // They were a combo box at the top of the controls column, which put
+    // "which optic am I learning about" in the same place as "how many rays",
+    // and made the scene look like a setting of the run rather than the thing
+    // being designed. Under File they are what they are: worked examples to
+    // open, each of which becomes an ordinary editable scene the moment it
+    // lands.
+    //
+    // The groups follow the registry's own order. Naming the first scene of
+    // each group rather than an index means inserting a scene into a group
+    // needs no edit here.
+    struct TutorialGroup { const char* name; GeometryProvider::Scene first; };
+    static const TutorialGroup kGroups[] = {
+        {"&Reflective",                 GeometryProvider::Scene::Reflector},
+        {"Re&fractive",                 GeometryProvider::Scene::Lens},
+        {"&Total internal reflection",  GeometryProvider::Scene::LightGuide},
+        {"&Scattering",                 GeometryProvider::Scene::IntegratingSphere},
+        {"&Multi-source",               GeometryProvider::Scene::LedArrayLuminaire},
+    };
+
+    QMenu* tutorials = file->addMenu(QStringLiteral("&Tutorials"));
+    tutorials->setStatusTip(QStringLiteral(
+        "A worked optic, loaded as a scene you can then edit: every part of it "
+        "appears in the scene tree, and its dimensions stay live until you "
+        "change something the tutorial does not describe."));
+
+    QMenu* group = nullptr;
+    for (int i = 0; i < GeometryProvider::count(); ++i) {
+        const auto scene = GeometryProvider::Scene(i);
+        for (const TutorialGroup& g : kGroups)
+            if (g.first == scene) { group = tutorials->addMenu(QLatin1String(g.name)); break; }
+        if (!group) group = tutorials->addMenu(QStringLiteral("Other"));
+
+        const auto& info = GeometryProvider::info(scene);
+        group->addAction(info.name, this, [this, scene] { loadTutorial(scene); })
+            ->setStatusTip(info.description);
+    }
+    file->addSeparator();
+
     file->addAction(QStringLiteral("&Import CAD (STEP / IGES)..."),
                     this, &MainWindow::onImportCad)
         ->setStatusTip(QStringLiteral(
@@ -1585,54 +1731,44 @@ void MainWindow::buildMenus() {
 
 // ---- scene / geometry ------------------------------------------------------
 
-void MainWindow::onSceneChanged() {
-    // A different optic has different dimensions, and any surface edits belonged
-    // to the old one.
-    m_overrides.clear();
-    m_pickedSurface = -1;
-    refreshSurfaceTreeBadges();
-    updateSurfacePanel();
-    refreshSweepAxes();
-    refreshDerivedQuantities();
-    rebuildGeometryView();
-    // The old scene's rays do not belong to this one.
-    m_view3d->setRays({});
-}
-
 void MainWindow::onGeometryChanged() {
     refreshDerivedQuantities();
     m_geometryTimer->start();
 }
 
 void MainWindow::rebuildGeometryView() {
-    const SimConfig cfg = m_controls->config();
-    // Any built-in scene change replaces the imported part: the view now shows
-    // the scene's own geometry, so picks must index that again -- and so must
-    // the trace, which is why the import is dropped rather than merely hidden.
-    const bool droppedImport = m_showingImported && m_imported;
-    m_showingImported = false;
-    m_imported.reset();
-    m_controls->setImportedGeometry(QString());
+    // The dimensions live in the panel while the document is a tutorial, so a
+    // parameter edit has to reach the document before the config is read back
+    // out of it -- otherwise the geometry would move and the objects listing it
+    // would not.
+    if (m_document.linkedToTutorial() && m_controls->params() != m_document.tutorialParams()) {
+        m_document.setTutorialParams(m_controls->params());
+        m_compiled = m_document.compile();
+        m_sceneTree->rebuild();
+        m_sceneTree->setSelectedId(m_selectedObject);
+        refreshInspector();
+    }
 
-    const SceneParams params = cfg.effectiveParams();
+    const SimConfig cfg       = currentConfig();
+    const bool      assembled = cfg.tracesImport();
+
     // A spin box that ends up back where it started, or a rebuild triggered by
     // something that does not touch the geometry, is not a rebuild at all --
     // whether the geometry it would ask for is already drawn or already
-    // building.
-    if (!droppedImport && m_haveRequested && cfg.scene == m_requestedScene &&
-        params == m_requestedParams && cfg.detectorBins == m_requestedDetBins)
+    // building. An assembled scene is compiled afresh on every edit, so its
+    // setup is a new pointer each time and there is nothing to compare.
+    const SceneParams params = cfg.effectiveParams();
+    if (!assembled && m_haveRequested && !m_requestedAssembled &&
+        cfg.scene == m_requestedScene && params == m_requestedParams &&
+        cfg.detectorBins == m_requestedDetBins)
         return;
 
-    m_requestedScene   = cfg.scene;
-    m_requestedParams  = params;
-    m_requestedDetBins = cfg.detectorBins;
-    m_haveRequested    = true;
-    m_geometryGen      = m_geometry->request(cfg);
-    if (droppedImport)
-        statusBar()->showMessage(
-            QStringLiteral("The imported part was replaced by %1; import it again to "
-                           "go back to it.")
-                .arg(GeometryProvider::info(cfg.scene).name), 10000);
+    m_requestedScene     = cfg.scene;
+    m_requestedParams    = params;
+    m_requestedDetBins   = cfg.detectorBins;
+    m_requestedAssembled = assembled;
+    m_haveRequested      = true;
+    m_geometryGen        = m_geometry->request(cfg);
 }
 
 void MainWindow::onGeometryReady(Simulation::SceneRef data, quint64 generation) {
@@ -1642,16 +1778,21 @@ void MainWindow::onGeometryReady(Simulation::SceneRef data, quint64 generation) 
     m_geometryGen = 0;
 
     m_sceneData = std::move(data);
-    m_view3d->setScene(m_requestedScene, m_sceneData->surfaces);
-    // The surface list belongs to this geometry; a tree describing the previous
-    // one would let a click land on a surface that is no longer there.
-    rebuildSurfaceTree();
+    // An assembled scene is not one of the registry's, so it is drawn under a
+    // key no scene owns: the camera then stays where the user put it across
+    // every edit, instead of reframing each time an object moves.
+    m_view3d->setScene(m_requestedAssembled ? GeometryProvider::Scene::Count
+                                            : m_requestedScene,
+                       m_sceneData->surfaces);
+    applySurfaceVisibility();
     refreshSourceGlyphs();
-    // A pick indexes the surface list, and this is a new one.
-    updateSurfacePanel();
+    // The highlight indexes the surface list, and this is a new one.
+    refreshInspector();
 
     statusBar()->showMessage(QStringLiteral("%1 — %2 triangles")
-                                 .arg(GeometryProvider::info(m_requestedScene).name)
+                                 .arg(m_requestedAssembled
+                                          ? QStringLiteral("Assembled scene")
+                                          : GeometryProvider::info(m_requestedScene).name)
                                  .arg(m_sceneData->scene.triangles().size()),
                              4000);
 }
@@ -1666,21 +1807,17 @@ void MainWindow::onGeometryReady(Simulation::SceneRef data, quint64 generation) 
 // here rather than repeated, because a viewer that placed sources its own way
 // would be a second answer to the same question.
 void MainWindow::refreshSourceGlyphs() {
-    const gp_Pnt* origin = nullptr;
-    const gp_Dir* axis   = nullptr;
-    if (m_showingImported && m_imported) {
-        origin = &m_imported->sourceOrigin;
-        axis   = &m_imported->sourceAxis;
-    } else if (m_sceneData) {
-        origin = &m_sceneData->sourceOrigin;
-        axis   = &m_sceneData->sourceAxis;
-    }
-    if (!origin || !axis) {
+    // The document places the emitters, so the markers are drawn from the same
+    // compile the trace is handed -- not from whatever the geometry cache last
+    // happened to build.
+    if (!m_compiled.havePrimary || !m_compiled.setup) {
         m_view3d->clearSourceGlyph();
         return;
     }
+    const gp_Pnt* origin = &m_compiled.setup->sourceOrigin;
+    const gp_Dir* axis   = &m_compiled.setup->sourceAxis;
 
-    const SimConfig cfg = m_controls->config();
+    const SimConfig cfg = currentConfig();
     std::vector<OcctViewWidget::SourceGlyph> glyphs;
     for (const SourceConfig& src : Simulation::sourcesFor(cfg, *origin, *axis)) {
         OcctViewWidget::SourceGlyph g;
@@ -2129,25 +2266,21 @@ QString MainWindow::formatMetrics() const {
 }
 
 void MainWindow::onSurfacePicked(int index) {
-    // A pick and a row selection are the same act; the tree is the one place
-    // the selection lives.
-    if (m_surfaceTree && index >= 0 && index < m_surfaceTree->topLevelItemCount()) {
-        m_loadingTree = true;
-        m_surfaceTree->setCurrentItem(m_surfaceTree->topLevelItem(index));
-        m_loadingTree = false;
-    }
     const auto& surfs = currentSurfaces();
     if (surfs.empty() || index < 0 || index >= int(surfs.size())) {
-        statusBar()->showMessage(QStringLiteral("No surface under the cursor"), 3000);
-        m_pickedSurface = -1;
-        updateSurfacePanel();
+        statusBar()->showMessage(QStringLiteral("No object under the cursor"), 3000);
+        m_selectedObject = 0;
+        m_sceneTree->setSelectedId(0);
+        refreshInspector();
         return;
     }
-    // Reporting what a surface is and stopping there was half the job. None of
-    // these properties are geometry, so editing one costs a trace and not a
-    // rebuild -- the tessellation and the hierarchy stay exactly as they are.
-    m_pickedSurface = index;
-    updateSurfacePanel();
+
+    // Clicking a body and clicking its row in the tree are the same act, and
+    // both mean "this object": a surface is what an object compiled into, not a
+    // thing with properties of its own.
+    m_selectedObject = objectForSurface(index);
+    m_sceneTree->setSelectedId(m_selectedObject);
+    refreshInspector();
     const OpticalSurface& s = surfs[std::size_t(index)];
 
     QStringList parts;
@@ -2276,7 +2409,10 @@ void MainWindow::onSaveConfig() {
         QStringLiteral("JSON (*.json)"));
     if (path.isEmpty()) return;
     QString err;
-    if (!configio::save(path, m_controls->config(), &err))
+    // The document travels with the configuration: a composed scene is not
+    // derivable from a SimConfig, which carries the compiled geometry with no
+    // memory of which object produced which body.
+    if (!configio::save(path, currentConfig(), &m_document, &err))
         QMessageBox::warning(this, windowTitle(), QStringLiteral("Could not save: %1").arg(err));
     else
         statusBar()->showMessage(QStringLiteral("Saved %1").arg(path), 4000);
@@ -2289,11 +2425,26 @@ void MainWindow::onLoadConfig() {
     SimConfig cfg;
     QString err;
     QStringList warnings;
-    if (!configio::load(path, cfg, &err, &warnings)) {
+    scenedoc::SceneDocument doc;
+    if (!configio::load(path, cfg, &doc, &err, &warnings)) {
         QMessageBox::warning(this, windowTitle(), QStringLiteral("Could not open: %1").arg(err));
         return;
     }
+
     m_controls->setConfig(cfg);
+    m_controls->setScene(cfg.scene);
+    m_controls->setParams(cfg.effectiveParams());
+
+    // A file written before there were documents carries none, and the scene it
+    // does name is a tutorial: loading that is what the file meant.
+    if (doc.empty()) m_document.loadTutorial(cfg.scene, cfg.effectiveParams());
+    else             m_document = std::move(doc);
+
+    m_selectedObject = 0;
+    m_haveRequested  = false;
+    m_view3d->setRays({});
+    syncDocument(true);
+    refreshSweepAxes();
     statusBar()->showMessage(QStringLiteral("Loaded %1").arg(path), 4000);
     // A ray file the config names and cannot reopen is the one failure a load
     // must never be quiet about: the source falls back to the analytic emitter,
@@ -2574,36 +2725,26 @@ void MainWindow::onImportCad() {
                                       : QStringLiteral("Every part is %1 with Fresnel "
                                                        "splitting.").arg(dlg.materialName()));
 
-    // Optical edits belonged to the surfaces of whatever was on screen before,
-    // and an override is an index into that list: carried over, they would land
-    // on unrelated faces of the imported part.
-    m_overrides.clear();
-    refreshSurfaceTreeBadges();
+    // The file's parts become objects like any others: selectable in the tree,
+    // hideable, re-specifiable, and something a lens can be dropped in front of.
+    // That is the whole reason the document exists -- an import used to be a
+    // third kind of thing the window had to remember it was showing.
+    m_document.loadImport(*setup);
+    m_selectedObject = 0;
 
-    m_imported        = std::move(setup);
-    m_showingImported = true;
-    m_pickedSurface   = -1;
-    // The viewport belongs to the import now. A geometry build that was queued
-    // or already in flight for the scene list would otherwise land on top of it
-    // and put the previous shape back on screen.
     m_geometryTimer->stop();
     m_geometryGen   = 0;
     m_haveRequested = false;
-    updateSurfacePanel();
-    m_controls->setImportedGeometry(m_imported->label);
-    refreshDerivedQuantities();
-    m_view3d->setScene(GeometryProvider::Scene::Count, m_imported->surfaces);
-    rebuildSurfaceTree();
-    refreshSourceGlyphs();
+
+    m_view3d->setRays({});   // traced through the previous geometry
+    syncDocument(true);
     m_view3d->resetView();
-    // The rays on screen were traced through the previous geometry.
-    m_view3d->setRays({});
+
     statusBar()->showMessage(
-        QStringLiteral("%1 — %2 part(s) spanning %3 mm. Run traces this, not %4.")
-            .arg(m_imported->label)
+        QStringLiteral("%1 — %2 part(s) spanning %3 mm, now in the scene tree.")
+            .arg(setup->label)
             .arg(result.shapes.size())
-            .arg(extent, 0, 'f', 1)
-            .arg(GeometryProvider::info(m_controls->scene()).name), 12000);
+            .arg(extent, 0, 'f', 1), 12000);
 }
 
 void MainWindow::onExportImage() {

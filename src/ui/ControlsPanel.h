@@ -15,12 +15,18 @@ class QListWidget;
 class QScrollArea;
 class QSpinBox;
 
-// Left-side controls: scene and its geometry parameters, source, physics model,
-// ray budget, run/cancel, progress.
+// Scene-wide controls: the dimensions of the loaded tutorial, the physics
+// model, the ray budget, run/cancel and progress.
+//
+// What is *in* the scene, and what each object in it does, is not here any
+// more: objects are chosen from the library, arranged in the scene tree and
+// edited in the object inspector, which is where a per-object property belongs.
+// What stays is everything that is a property of the run rather than of a part
+// -- the physics switches, the ray count, the receiver grid, the flux unit.
 //
 // The parameter rows are built from GeometryProvider::paramInfo rather than
-// hardcoded, so a scene that declares a new number gets an editor for it with
-// no edit here -- the same way the scene list itself is driven by the registry.
+// hardcoded, so a tutorial that declares a new number gets an editor for it
+// with no edit here.
 class ControlsPanel : public QWidget {
     Q_OBJECT
 public:
@@ -35,20 +41,29 @@ public:
     // to bring it back. Refusing the width is what stops the drift.
     QSize minimumSizeHint() const override;
 
+    // Everything the panel itself sets. The source fields are left at their
+    // defaults: emitters are objects now, and the window fills those in from
+    // the scene document after asking for this.
     SimConfig config() const;
     void      setConfig(const SimConfig& cfg);
 
-    GeometryProvider::Scene scene() const;
+    // Which tutorial the dimension rows describe. Set by the window when a
+    // tutorial is loaded; there is no scene picker here any more, because
+    // choosing one is a File menu action rather than a property of the run.
+    GeometryProvider::Scene scene() const { return m_scene; }
+    void                    setScene(GeometryProvider::Scene scene);
 
-    // Says that what will be traced came from a file rather than from the scene
-    // list; an empty label hands the scene list back the geometry.
+    SceneParams params() const;
+    void        setParams(const SceneParams& params);
+
+    // Says that the dimensions below no longer describe what will be traced --
+    // because a file was imported, or because the scene has been edited away
+    // from what the tutorial builds. An empty reason hands them back.
     //
-    // The parameter block below describes the selected scene, and while an
-    // import is loaded that scene is not what a run traces. Leaving those spin
-    // boxes live was half of why an imported part looked like it was being
-    // traced with the previous shape's dimensions, so they are named as
-    // inactive rather than silently ignored.
-    void setImportedGeometry(const QString& label);
+    // Leaving those spin boxes live was half of why an imported part looked
+    // like it was being traced with the previous shape's dimensions, so they
+    // are named as inactive rather than silently ignored.
+    void setGeometryDetached(const QString& reason);
 
     // Freezes the inputs for the duration of a run and swaps Run for Cancel.
     // The window itself stays responsive -- the trace runs on a worker thread.
@@ -59,8 +74,6 @@ public:
 signals:
     void runRequested();
     void cancelRequested();
-    // The scene selection changed: the whole parameter block has been rebuilt.
-    void sceneChanged();
     // Geometry parameters changed; the 3D view needs rebuilding. Coalesced by
     // the window, because dragging a spin box fires this per step.
     void geometryChanged();
@@ -70,48 +83,24 @@ signals:
 private:
     void rebuildParamRows();
     void syncEnabledState();
-    SceneParams currentParams() const;
-
-    // The measured ray set standing in for the primary source, and the extra
-    // sources beyond it. Held here rather than rebuilt from widgets because a
-    // ray set is tens of megabytes of measurement and a source spec is a
-    // structure, not a row of spin boxes.
-    void chooseRayFile();
-    void clearRayFile();
-    void refreshRayFileLabel();
-    void addSource();
-    void editSource();
-    void removeSource();
-    void refreshSourceList();
 
     QScrollArea*  m_scroll   = nullptr;
     QWidget*      m_body     = nullptr;
-    QComboBox*    m_scene    = nullptr;
+    GeometryProvider::Scene m_scene = GeometryProvider::Scene::Reflector;
     QLabel*       m_importNote = nullptr;
-    // Set while geometry from a file stands in for the selected scene, so a run
-    // finishing does not quietly re-enable the parameters it does not drive.
-    bool          m_importedGeometry = false;
+    // Set while something other than the tutorial decides the geometry, so a
+    // run finishing does not quietly re-enable parameters it does not drive.
+    bool          m_detached = false;
     QGroupBox*    m_paramBox = nullptr;
     QFormLayout*  m_paramForm = nullptr;
     std::vector<QDoubleSpinBox*> m_params;
     QPushButton*  m_resetParams = nullptr;
 
-    QComboBox*      m_source     = nullptr;
-    QComboBox*      m_shape      = nullptr;
-    QDoubleSpinBox* m_halfAngle  = nullptr;
-    QDoubleSpinBox* m_sizeA      = nullptr;
-    QDoubleSpinBox* m_sizeB      = nullptr;
-    QDoubleSpinBox* m_beamRadius = nullptr;
-    QComboBox*      m_spectrum   = nullptr;
-    QDoubleSpinBox* m_cct        = nullptr;
-    QDoubleSpinBox* m_power      = nullptr;
     QComboBox*      m_powerUnit  = nullptr;
     QComboBox*      m_detBins    = nullptr;
     QCheckBox*      m_coatings   = nullptr;
     QCheckBox*      m_volume     = nullptr;
     QCheckBox*      m_polarised  = nullptr;
-    QComboBox*      m_polState   = nullptr;
-    QDoubleSpinBox* m_wavelength = nullptr;
 
     QCheckBox*      m_fresnel    = nullptr;
     QCheckBox*      m_absorption = nullptr;
@@ -121,17 +110,6 @@ private:
     QDoubleSpinBox* m_roughOverride = nullptr;
     QDoubleSpinBox* m_scatterOverride = nullptr;
     QDoubleSpinBox* m_absorptionScale = nullptr;
-
-    QLabel*         m_rayFileNote   = nullptr;
-    QPushButton*    m_rayFileClear  = nullptr;
-    QDoubleSpinBox* m_rayFileScaleBox = nullptr;
-    QCheckBox*      m_rayFileLambda   = nullptr;
-    QListWidget*  m_sourceList  = nullptr;
-    QPushButton*  m_sourceEdit  = nullptr;
-    QPushButton*  m_sourceRemove = nullptr;
-
-    std::shared_ptr<const RayFileData> m_rayFile;
-    std::vector<SourceSpec> m_extraSources;
 
     QSpinBox*     m_rays     = nullptr;
     QSpinBox*     m_seed     = nullptr;

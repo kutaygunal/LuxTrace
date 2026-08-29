@@ -2,6 +2,7 @@
 #include <QMainWindow>
 #include <vector>
 #include "core/GeometryWorker.h"
+#include "core/SceneDocument.h"
 #include "core/Simulation.h"
 #include "core/SimulationResult.h"
 #include "core/Report.h"
@@ -9,8 +10,10 @@
 
 class ControlsPanel;
 class EnergyBarWidget;
+class ObjectInspector;
+class ObjectLibraryPanel;
 class RayDiagramWidget;
-class SurfaceInspector;
+class SceneTreePanel;
 class HeatmapWidget;
 class OcctViewWidget;
 class PlotWidget;
@@ -30,8 +33,6 @@ class QPushButton;
 class QTabWidget;
 class QTextBrowser;
 class QTimer;
-class QTreeWidget;
-class QTreeWidgetItem;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -42,7 +43,6 @@ protected:
     void closeEvent(QCloseEvent* event) override;
 
 private slots:
-    void onSceneChanged();
     void onGeometryChanged();
     void onGeometryReady(Simulation::SceneRef data, quint64 generation);
     void onGeometryFailed(const QString& message, quint64 generation);
@@ -57,6 +57,29 @@ private slots:
     void onSurfacePicked(int index);
     void onCutMoved(double x, double y);
 
+    // ---- the scene document ------------------------------------------------
+    //
+    // One object, one place it is edited. Each of these is a request from a
+    // panel; the document answers it and the views are rebuilt from what the
+    // document then says, so a tree row, a highlighted body and a property
+    // sheet can never be describing three different things.
+    void onObjectDropped(const QString& typeKey, const gp_Pnt& where);
+    void onCreateObject(scenedoc::ObjectType type, int parent);
+    void onObjectSelected(int id);
+    void onObjectVisibility(int id, bool visible);
+    void onObjectRenamed(int id, const QString& name);
+    void onObjectDelete(int id);
+    void onObjectDuplicate(int id);
+    void onObjectReparent(int id, int newParent);
+    void onAddGroup();
+    void onIsolateObject(int id);
+    void onShowAllObjects();
+    void onObjectPlacementEdited(int id);
+    void onObjectParametersEdited(int id);
+    void onObjectSourceEdited(int id);
+    void onObjectOpticsEdited(int id);
+    void onObjectOpticsReset(int id);
+
     void onRunConvergence();
     void onConvergenceReady(const std::vector<studies::ConvergencePoint>& points);
     void onFocusSweep();
@@ -70,15 +93,6 @@ private slots:
 
     void onPinResult();
     void onClearPin();
-    void onSurfaceEdited();
-    void onResetSurface();
-    // The scene tree: picking through the 3D view alone cannot reach an
-    // internal surface -- the far wall of a light guide, a lens's second face.
-    void onSurfaceRowChanged();
-    void onSurfaceVisibilityChanged(QTreeWidgetItem* item, int column);
-    void onIsolateSurface();
-    void onShowAllSurfaces();
-    void onResetAllSurfaces();
     // A single ray through the optic, with every interaction it had.
     void onInspectRay();
 
@@ -105,33 +119,56 @@ private:
     QWidget* buildStudiesTab();
     QWidget* buildDesignTab();
     QWidget* buildToleranceTab();
-    QWidget* buildSurfacesTab();
+    QWidget* buildProbeTab();
     void     buildMenus();
-    void     rebuildSurfaceTree();
-    void     refreshSurfaceTreeBadges();
-    // The optics this run would use for one surface: the scene's own, with any
-    // edit applied over it.
-    SurfaceOptics effectiveOptics(int surface) const;
-    bool          surfaceIsEdited(int surface) const;
+
+    // ---- the document, and everything that reads it ------------------------
+    //
+    // Loads one of the registry's scenes as a document of its own parts.
+    void loadTutorial(GeometryProvider::Scene scene);
+    // Recompiles the document and puts every view back in step with it.
+    // `rebuildGeometry` is false for an edit the tessellation does not care
+    // about -- renaming a part, hiding one, changing what its surface does to
+    // light -- which is the difference between a redraw and a rebuild.
+    void syncDocument(bool rebuildGeometry);
+    void refreshInspector();
+    // Applies each object's "show this" flag to the bodies it compiled into.
+    void applySurfaceVisibility();
+    // Why the tutorial's dimensions no longer describe what is traced, or an
+    // empty string while they still do.
+    QString detachReason() const;
+
+    // The two directions of the one selection: a body in the viewport and a row
+    // in the tree are the same object.
+    int              objectForSurface(int surfaceIndex) const;
+    std::vector<int> surfacesForObject(int id) const;
+
+    // The optical edits a linked tutorial carries, as trace-time overrides. In
+    // that mode the geometry still comes from the registry, so an edited
+    // reflectivity has to reach the trace as an override rather than baked into
+    // a surface -- which is also what keeps it costing a trace and not a
+    // rebuild.
+    std::vector<SurfaceOverride> overridesFromDocument() const;
 
     void rebuildGeometryView();
     void refreshDerivedViews();
     void refreshDerivedQuantities();
     void updateSummary();
-    void updateSurfacePanel();
-    // The surfaces the 3D viewport is showing right now: a built-in scene's own
-    // geometry, or (after an import) the CAD surfaces. Picking and surface
-    // editing go through here so the panel never disagrees with what is drawn.
+    // The surfaces the 3D viewport is showing right now.
     const std::vector<OpticalSurface>& currentSurfaces() const;
     void refreshSweepAxes();
     void refreshImageQuality();
     QString formatMetrics() const;
     // Every view, rendered at report size with the caption it goes under.
     std::vector<report::Figure> figuresForReport() const;
-    // The config the next run should use, including any per-surface edits.
+    // The config the next run should use: the panel's settings, the document's
+    // sources, and either the registry's geometry or the document's own.
     SimConfig currentConfig() const;
 
-    ControlsPanel*    m_controls = nullptr;
+    ControlsPanel*      m_controls = nullptr;
+    ObjectLibraryPanel* m_library  = nullptr;
+    SceneTreePanel*     m_sceneTree = nullptr;
+    ObjectInspector*    m_object   = nullptr;
     PythonPanel*      m_python   = nullptr;
     OcctViewWidget*   m_view3d   = nullptr;
     RayDiagramWidget* m_diagram  = nullptr;
@@ -190,19 +227,11 @@ private:
 
     QLabel*         m_derived     = nullptr;
 
-    // ---- surfaces tab: the tree and the inspector --------------------------
-    QTreeWidget*      m_surfaceTree = nullptr;
-    SurfaceInspector* m_inspector   = nullptr;
-    QPushButton*      m_isolate     = nullptr;
-    QPushButton*      m_showAll     = nullptr;
-    QPushButton*      m_resetAll    = nullptr;
-    QPushButton*      m_inspectRay  = nullptr;
-    QTextBrowser*     m_rayLog      = nullptr;
-    QDoubleSpinBox*   m_probeX      = nullptr;
-    QDoubleSpinBox*   m_probeY      = nullptr;
-    // Set while the tree is being rebuilt, so its selection and check signals
-    // do not read back as user actions.
-    bool              m_loadingTree = false;
+    // ---- the ray probe -----------------------------------------------------
+    QPushButton*    m_inspectRay  = nullptr;
+    QTextBrowser*   m_rayLog      = nullptr;
+    QDoubleSpinBox* m_probeX      = nullptr;
+    QDoubleSpinBox* m_probeY      = nullptr;
 
     // Where the light went, drawn rather than printed.
     EnergyBarWidget*  m_energyBar   = nullptr;
@@ -218,12 +247,11 @@ private:
     // nothing is awaited.
     quint64 m_geometryGen = 0;
     // The geometry that was last asked for -- in flight or already drawn. An
-    // edit that lands back on it costs nothing, and it is what the delivered
-    // build is recorded as, rather than whatever the spin boxes read by the
-    // time it arrives.
+    // edit that lands back on it costs nothing.
     GeometryProvider::Scene m_requestedScene   = GeometryProvider::Scene::Reflector;
     SceneParams             m_requestedParams;
     int                     m_requestedDetBins = -1;
+    bool                    m_requestedAssembled = false;
     bool                    m_haveRequested    = false;
 
     SimulationResult                      m_last;
@@ -245,25 +273,17 @@ private:
     std::vector<int>                 m_optimisedSlots;
     studies::Objective               m_objective;
 
-    // Per-surface optical edits, applied at trace time so changing one costs a
-    // trace rather than a rebuild.
-    std::vector<SurfaceOverride> m_overrides;
-    int                          m_pickedSurface = -1;
-    bool                         m_loadingSurface = false;
+    // What is in the scene, and what the last compile of it produced.
+    scenedoc::SceneDocument           m_document;
+    scenedoc::SceneDocument::Compiled m_compiled;
+    int                               m_selectedObject = 0;
+
     // The surfaces currently displayed, so a pick can be named without asking
     // the cache for geometry that may have been rebuilt since.
     Simulation::SceneRef m_sceneData;
 
-    // Geometry from an imported CAD file: the parts, the receiver placed around
-    // them and the source placement that aims at them. Held here so an imported
-    // part can be shown, picked and *traced* even though it has no slot in the
-    // built-in scene table -- a run reads it out of the config, which is what
-    // stops the trace falling back on whichever scene the controls still show.
-    std::shared_ptr<const GeometryProvider::SceneSetup> m_imported;
-    bool                                                m_showingImported = false;
-
-    // Whether a study that varies the scene's own dimensions can run at all.
-    // Imported geometry declares none, so it reports that rather than tracing
-    // the identical solid a dozen times and drawing the flat line.
+    // Whether a study that varies the scene's own dimensions can run at all. An
+    // assembled or imported scene declares none, so it reports that rather than
+    // tracing the identical solid a dozen times and drawing the flat line.
     bool requireParametricScene(const QString& what);
 };

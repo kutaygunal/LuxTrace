@@ -8,18 +8,13 @@
 #include <QGroupBox>
 #include <QLabel>
 #include <QProgressBar>
-#include <QFileDialog>
-#include <QListWidget>
-#include <QMessageBox>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSpinBox>
 #include <QStyle>
 #include <QVBoxLayout>
 
-#include "SourceDialog.h"
-#include "core/RayFile.h"
-
+#include <algorithm>
 #include <cmath>
 #include <initializer_list>
 
@@ -82,24 +77,6 @@ ControlsPanel::ControlsPanel(QWidget* parent) : QWidget(parent) {
     layout->addWidget(title);
     layout->addWidget(subtitle);
 
-    // ---- scene -------------------------------------------------------------
-    m_scene = new QComboBox(body);
-    // Driven by the scene registry, so a new scene appears here automatically.
-    for (int i = 0; i < GeometryProvider::count(); ++i) {
-        const auto& si = GeometryProvider::info(GeometryProvider::Scene(i));
-        m_scene->addItem(si.name);
-        m_scene->setItemData(i, si.description, Qt::ToolTipRole);
-    }
-    m_scene->setMaxVisibleItems(26);
-    // Some scene names are long ("Compound Parabolic Concentrator"). Without
-    // this the combo demands the full width of its longest entry and squeezes
-    // the form's label column until the labels are elided to "Scen:".
-    m_scene->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    m_scene->setMinimumContentsLength(16);
-
-    auto* sceneForm = new QFormLayout;
-    sceneForm->addRow(QStringLiteral("Scene:"), m_scene);
-    layout->addLayout(sceneForm);
 
     // Names the file when one stands in for the scene above, so the two are
     // never both silently in play.
@@ -118,173 +95,6 @@ ControlsPanel::ControlsPanel(QWidget* parent) : QWidget(parent) {
     paramLayout->addWidget(m_resetParams);
     layout->addWidget(m_paramBox);
 
-    // ---- source ------------------------------------------------------------
-    auto* srcBox = group(QStringLiteral("Source"), body);
-    auto* srcForm = new QFormLayout(srcBox);
-
-    m_source = new QComboBox(srcBox);
-    m_source->addItem(QStringLiteral("Point (uniform solid angle)"));
-    m_source->addItem(QStringLiteral("Lambertian (cosine weighted)"));
-    m_source->addItem(QStringLiteral("Collimated beam"));
-    m_source->setItemData(0, QStringLiteral(
-        "Uniform over solid angle inside the cone. At 180 degrees this is the full "
-        "sphere, so light sent away from the optic is simply lost."), Qt::ToolTipRole);
-    m_source->setItemData(1, QStringLiteral(
-        "Cosine-weighted emission, as an LED die radiates. At 90 degrees it fills "
-        "the hemisphere facing the optic."), Qt::ToolTipRole);
-    m_source->setItemData(2, QStringLiteral(
-        "A disc of parallel rays. This is what an imaging test wants, and it lets "
-        "an axicon or a diffuser be fed directly instead of through a collimator."),
-        Qt::ToolTipRole);
-    m_source->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    m_source->setMinimumContentsLength(14);
-    m_source->setCurrentIndex(1);
-
-    m_shape = new QComboBox(srcBox);
-    m_shape->addItem(QStringLiteral("Point (zero area)"));
-    m_shape->addItem(QStringLiteral("Disc"));
-    m_shape->addItem(QStringLiteral("Rectangle"));
-    m_shape->addItem(QStringLiteral("Sphere"));
-    m_shape->setToolTip(QStringLiteral(
-        "An emitter with real area has real etendue. A point source can be "
-        "concentrated without limit, which is exactly why a concentrator fed by "
-        "one reports a gain no real optic could reach."));
-    m_shape->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    m_shape->setMinimumContentsLength(14);
-
-    m_halfAngle  = dspin(srcBox, 0.5, 180.0, 5.0, 1, 180.0, QStringLiteral(" °"));
-    m_halfAngle->setToolTip(QStringLiteral(
-        "Emission cone half-angle. Clamped to 90 for a Lambertian source, where "
-        "90 is the full hemisphere; 180 is the full sphere for a point source."));
-    m_sizeA      = dspin(srcBox, 0.0, 200.0, 1.0, 2, 0.0, QStringLiteral(" mm"));
-    m_sizeB      = dspin(srcBox, 0.0, 200.0, 1.0, 2, 0.0, QStringLiteral(" mm"));
-    m_beamRadius = dspin(srcBox, 0.1, 300.0, 2.5, 2, 25.0, QStringLiteral(" mm"));
-
-    m_spectrum = new QComboBox(srcBox);
-    for (int i = 0; i < SpectrumConfig::kKindCount; ++i)
-        m_spectrum->addItem(SpectrumConfig::kindName(SpectrumConfig::Kind(i)));
-    m_spectrum->setItemData(int(SpectrumConfig::Kind::Rgb), QStringLiteral(
-        "Three fixed lines at 620 / 546 / 460 nm, one ray in three. Fast, and "
-        "enough to show a prism splitting a beam."), Qt::ToolTipRole);
-    m_spectrum->setItemData(int(SpectrumConfig::Kind::Blackbody), QStringLiteral(
-        "Planck's law at the colour temperature below. One wavelength is sampled "
-        "per ray from it, so the spectrum resolves to whatever the ray budget "
-        "supports -- at the price of a monochromatic trace."), Qt::ToolTipRole);
-    m_spectrum->setItemData(int(SpectrumConfig::Kind::LedPhosphor), QStringLiteral(
-        "A blue pump near 450 nm plus a phosphor hump, the shape every white LED "
-        "has. This is what makes colour-over-angle mean anything."), Qt::ToolTipRole);
-    m_spectrum->setItemData(int(SpectrumConfig::Kind::D65), QStringLiteral(
-        "CIE standard daylight, the reference illuminant most colour work is "
-        "specified against."), Qt::ToolTipRole);
-    m_spectrum->setItemData(int(SpectrumConfig::Kind::Table), QStringLiteral(
-        "A measured spectral power distribution loaded from a CSV of "
-        "wavelength,power rows."), Qt::ToolTipRole);
-    m_spectrum->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    m_spectrum->setMinimumContentsLength(14);
-
-    m_wavelength = dspin(srcBox, 300.0, 1600.0, 10.0, 1, 587.6, QStringLiteral(" nm"));
-    m_cct = dspin(srcBox, 1500.0, 12000.0, 250.0, 0, 5000.0, QStringLiteral(" K"));
-    m_cct->setToolTip(QStringLiteral(
-        "Colour temperature of the blackbody or the white LED. It sets the shape "
-        "of the spectrum, and therefore the luminous efficacy the lumen figures "
-        "are derived through."));
-
-    // Absolute flux. Without it every number the app reports is a fraction of an
-    // unnamed unit, which is not something an engineer can put in a spec.
-    m_power = dspin(srcBox, 0.0, 1000000.0, 1.0, 3, 1.0, QString());
-    m_power->setToolTip(QStringLiteral(
-        "Total emitted flux. Everything downstream is reported in this unit: the "
-        "receiver in W/m^2 or lux, the far field in W/sr or candela."));
-    m_powerUnit = new QComboBox(srcBox);
-    m_powerUnit->addItem(QStringLiteral("W (radiometric)"));
-    m_powerUnit->addItem(QStringLiteral("lm (photometric)"));
-    m_powerUnit->setItemData(1, QStringLiteral(
-        "Lumens are watts weighted by the CIE V(lambda) curve, so a photometric "
-        "run needs a real spectrum: each ray is emitted carrying how much of it "
-        "the eye sees."), Qt::ToolTipRole);
-    m_powerUnit->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    m_powerUnit->setMinimumContentsLength(14);
-
-    auto* powerRow = new QHBoxLayout;
-    powerRow->setContentsMargins(0, 0, 0, 0);
-    powerRow->addWidget(m_power, 1);
-    powerRow->addWidget(m_powerUnit, 1);
-
-    // ---- the measured ray set, and the sources beyond the first ----------
-    //
-    // A vendor ray file replaces the analytic emitter entirely; the extra
-    // sources are everything a luminaire has that one emitter cannot describe.
-    // Both sit under Source rather than in their own tab because they are the
-    // same question -- what is emitting -- asked twice.
-    m_rayFileNote = new QLabel(srcBox);
-    m_rayFileNote->setWordWrap(true);
-
-    auto* rayPick  = new QPushButton(QStringLiteral("Ray file..."), srcBox);
-    rayPick->setToolTip(QStringLiteral(
-        "Load a measured source ray file (Zemax or TracePro binary, ASAP .dis, "
-        "or a text ray file). It carries every ray's position on the emitting "
-        "surface, its direction and its flux, so the emitter description above "
-        "is not consulted at all."));
-    m_rayFileClear = new QPushButton(QStringLiteral("Clear"), srcBox);
-    auto* rayRow = new QHBoxLayout;
-    rayRow->setContentsMargins(0, 0, 0, 0);
-    rayRow->addWidget(rayPick, 1);
-    rayRow->addWidget(m_rayFileClear, 0);
-
-    m_rayFileScaleBox = dspin(srcBox, 0.001, 1000.0, 0.1, 4, 1.0, QString());
-    m_rayFileScaleBox->setToolTip(QStringLiteral(
-        "Extra scale on the ray positions, on top of whatever the file's own "
-        "dimension code already applied. 1 is the ordinary case; this is for a "
-        "set whose header does not say what unit it was written in."));
-    m_rayFileLambda = new QCheckBox(QStringLiteral("Use the file's wavelengths"), srcBox);
-    m_rayFileLambda->setChecked(true);
-    m_rayFileLambda->setToolTip(QStringLiteral(
-        "Off pins the whole set to the spectrum above, which is what comparing a "
-        "measured white LED against an idealised one needs."));
-
-    m_sourceList = new QListWidget(srcBox);
-    m_sourceList->setToolTip(QStringLiteral(
-        "Sources beyond the one the scene places. The ray budget is shared "
-        "between all of them in proportion to power, and the run reports what "
-        "each one delivered."));
-    m_sourceList->setMaximumHeight(90);
-
-    auto* addSrc    = new QPushButton(QStringLiteral("Add"), srcBox);
-    m_sourceEdit    = new QPushButton(QStringLiteral("Edit"), srcBox);
-    m_sourceRemove  = new QPushButton(QStringLiteral("Remove"), srcBox);
-    auto* srcBtnRow = new QHBoxLayout;
-    srcBtnRow->setContentsMargins(0, 0, 0, 0);
-    srcBtnRow->addWidget(addSrc, 1);
-    srcBtnRow->addWidget(m_sourceEdit, 1);
-    srcBtnRow->addWidget(m_sourceRemove, 1);
-
-    connect(rayPick, &QPushButton::clicked, this, &ControlsPanel::chooseRayFile);
-    connect(m_rayFileClear, &QPushButton::clicked, this, &ControlsPanel::clearRayFile);
-    connect(addSrc, &QPushButton::clicked, this, &ControlsPanel::addSource);
-    connect(m_sourceEdit, &QPushButton::clicked, this, &ControlsPanel::editSource);
-    connect(m_sourceRemove, &QPushButton::clicked, this, &ControlsPanel::removeSource);
-    connect(m_sourceList, &QListWidget::itemDoubleClicked, this,
-            [this](QListWidgetItem*) { editSource(); });
-    connect(m_sourceList, &QListWidget::currentRowChanged, this,
-            [this](int) { syncEnabledState(); });
-
-    srcForm->addRow(QStringLiteral("Type:"), m_source);
-    srcForm->addRow(QStringLiteral("Cone half-angle:"), m_halfAngle);
-    srcForm->addRow(QStringLiteral("Beam radius:"), m_beamRadius);
-    srcForm->addRow(QStringLiteral("Emitter:"), m_shape);
-    srcForm->addRow(QStringLiteral("Size A:"), m_sizeA);
-    srcForm->addRow(QStringLiteral("Size B:"), m_sizeB);
-    srcForm->addRow(QStringLiteral("Total flux:"), powerRow);
-    srcForm->addRow(QStringLiteral("Spectrum:"), m_spectrum);
-    srcForm->addRow(QStringLiteral("Wavelength:"), m_wavelength);
-    srcForm->addRow(QStringLiteral("Colour temp:"), m_cct);
-    srcForm->addRow(QStringLiteral("Measured rays:"), rayRow);
-    srcForm->addRow(m_rayFileNote);
-    srcForm->addRow(QStringLiteral("Ray position scale:"), m_rayFileScaleBox);
-    srcForm->addRow(m_rayFileLambda);
-    srcForm->addRow(QStringLiteral("More sources:"), m_sourceList);
-    srcForm->addRow(srcBtnRow);
-    layout->addWidget(srcBox);
 
     // ---- physics -----------------------------------------------------------
     auto* physBox = group(QStringLiteral("Physics"), body);
@@ -361,18 +171,7 @@ ControlsPanel::ControlsPanel(QWidget* parent) : QWidget(parent) {
     m_absorptionScale->setToolTip(QStringLiteral(
         "Multiplies every medium's attenuation coefficient. 1 is ordinary optical "
         "glass; 20 is roughly a cheap plastic light pipe."));
-    m_polState = new QComboBox(physBox);
-    m_polState->addItem(QStringLiteral("Unpolarised"));
-    m_polState->addItem(QStringLiteral("Linear, s"));
-    m_polState->addItem(QStringLiteral("Linear, p"));
-    m_polState->addItem(QStringLiteral("Circular"));
-    m_polState->setEnabled(false);
-    m_polState->setToolTip(QStringLiteral(
-        "What the source emits. s and p are measured against the plane of "
-        "incidence of the first surface the ray meets."));
-    m_polState->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
 
-    physForm->addRow(QStringLiteral("Source state:"), m_polState);
     physForm->addRow(QStringLiteral("Roughness:"), m_roughOverride);
     physForm->addRow(QStringLiteral("Scatter:"), m_scatterOverride);
     physForm->addRow(QStringLiteral("Absorption:"), m_absorptionScale);
@@ -418,7 +217,20 @@ ControlsPanel::ControlsPanel(QWidget* parent) : QWidget(parent) {
         "it. Changing it rebuilds the scene."));
     m_detBins->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
 
+    // The unit every result is quoted in. Flux itself belongs to each emitter,
+    // but what it is measured in is a property of the run: a scene cannot report
+    // half its light in watts and half in lumens.
+    m_powerUnit = new QComboBox(runBox);
+    m_powerUnit->addItem(QStringLiteral("W (radiometric)"));
+    m_powerUnit->addItem(QStringLiteral("lm (photometric)"));
+    m_powerUnit->setItemData(1, QStringLiteral(
+        "Lumens are watts weighted by the CIE V(lambda) curve, so a photometric "
+        "run needs a real spectrum: each ray is emitted carrying how much of it "
+        "the eye sees."), Qt::ToolTipRole);
+    m_powerUnit->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+
     runForm->addRow(QStringLiteral("Rays:"), m_rays);
+    runForm->addRow(QStringLiteral("Flux unit:"), m_powerUnit);
     runForm->addRow(QStringLiteral("Receiver grid:"), m_detBins);
     runForm->addRow(QStringLiteral("Seed:"), m_seed);
     runForm->addRow(QStringLiteral("Threads:"), m_threads);
@@ -448,34 +260,20 @@ ControlsPanel::ControlsPanel(QWidget* parent) : QWidget(parent) {
     connect(m_run, &QPushButton::clicked, this, &ControlsPanel::runRequested);
     connect(m_cancel, &QPushButton::clicked, this, &ControlsPanel::cancelRequested);
 
-    connect(m_scene, &QComboBox::currentIndexChanged, this, [this] {
-        if (m_loading) return;
-        rebuildParamRows();
-        emit sceneChanged();
-    });
     connect(m_resetParams, &QPushButton::clicked, this, [this] {
         rebuildParamRows();
         emit geometryChanged();
     });
 
     auto settings = [this] { if (!m_loading) { syncEnabledState(); emit settingsChanged(); } };
-    connect(m_source,   &QComboBox::currentIndexChanged, this, settings);
-    connect(m_shape,    &QComboBox::currentIndexChanged, this, settings);
-    connect(m_spectrum, &QComboBox::currentIndexChanged, this, settings);
-    connect(m_coatings, &QCheckBox::toggled, this, settings);
-    connect(m_volume, &QCheckBox::toggled, this, settings);
-    connect(m_polarised, &QCheckBox::toggled, this, settings);
-    connect(m_polState, &QComboBox::currentIndexChanged, this, settings);
-    connect(m_powerUnit, &QComboBox::currentIndexChanged, this, settings);
-    connect(m_detBins, &QComboBox::currentIndexChanged, this, settings);
-    connect(m_cct, &QDoubleSpinBox::valueChanged, this, settings);
-    connect(m_power, &QDoubleSpinBox::valueChanged, this, settings);
-    for (QDoubleSpinBox* s : {m_halfAngle, m_sizeA, m_sizeB, m_beamRadius, m_wavelength,
-                              m_roughOverride, m_scatterOverride, m_absorptionScale,
-                              m_rayFileScaleBox})
+    connect(m_coatings,   &QCheckBox::toggled, this, settings);
+    connect(m_volume,     &QCheckBox::toggled, this, settings);
+    connect(m_polarised,  &QCheckBox::toggled, this, settings);
+    connect(m_powerUnit,  &QComboBox::currentIndexChanged, this, settings);
+    connect(m_detBins,    &QComboBox::currentIndexChanged, this, settings);
+    for (QDoubleSpinBox* s : {m_roughOverride, m_scatterOverride, m_absorptionScale})
         connect(s, &QDoubleSpinBox::valueChanged, this, settings);
-    for (QCheckBox* c : {m_fresnel, m_absorption, m_scattering, m_roughness, m_dispersion,
-                         m_rayFileLambda})
+    for (QCheckBox* c : {m_fresnel, m_absorption, m_scattering, m_roughness, m_dispersion})
         connect(c, &QCheckBox::toggled, this, settings);
     for (QSpinBox* s : {m_rays, m_seed, m_threads})
         connect(s, &QSpinBox::valueChanged, this, settings);
@@ -536,223 +334,50 @@ void ControlsPanel::rebuildParamRows() {
 }
 
 void ControlsPanel::syncEnabledState() {
-    const auto type  = SourceConfig::Type(m_source->currentIndex());
-    const auto shape = SourceConfig::Shape(m_shape->currentIndex());
-    const bool collimated = (type == SourceConfig::Type::Collimated);
-    // A measured ray set carries every ray's origin, direction and flux, so the
-    // analytic description of the emitter is not consulted at all. Greying it
-    // out states that, rather than leaving live boxes that change nothing --
-    // which is how somebody ends up believing they set a cone angle.
-    const bool measured = (m_rayFile != nullptr);
-
-    m_source->setEnabled(!measured);
-    m_shape->setEnabled(!measured);
-    m_halfAngle->setEnabled(!measured && !collimated);
-    m_beamRadius->setEnabled(!measured && collimated);
-    m_sizeA->setEnabled(!measured && shape != SourceConfig::Shape::PointLike);
-    m_sizeB->setEnabled(!measured && shape == SourceConfig::Shape::Rect);
-    if (m_rayFileClear)     m_rayFileClear->setEnabled(measured);
-    if (m_rayFileScaleBox)  m_rayFileScaleBox->setEnabled(measured);
-    if (m_rayFileLambda)    m_rayFileLambda->setEnabled(measured);
-
-    if (m_sourceList) {
-        const bool picked = m_sourceList->currentRow() >= 0 &&
-                            m_sourceList->currentRow() < int(m_extraSources.size());
-        if (m_sourceEdit)   m_sourceEdit->setEnabled(picked);
-        if (m_sourceRemove) m_sourceRemove->setEnabled(picked);
-    }
-    const auto kind = SpectrumConfig::Kind(m_spectrum->currentIndex());
-    m_wavelength->setEnabled(kind == SpectrumConfig::Kind::Monochromatic);
-    m_cct->setEnabled(kind == SpectrumConfig::Kind::Blackbody ||
-                      kind == SpectrumConfig::Kind::LedPhosphor);
-    // Lumens are watts through V(lambda); with a single line that is still a
-    // well-defined conversion, so the unit is never disabled -- but a line
-    // outside the visible band converts to nothing, and the readouts say so.
-    m_power->setSuffix(m_powerUnit->currentIndex() == 1 ? QStringLiteral(" lm")
-                                                        : QStringLiteral(" W"));
-    // The emitted state means nothing unless the state is being carried.
-    m_polState->setEnabled(m_polarised->isChecked());
-
-    // The cone means different things to the two angular laws, and 180 on a
-    // Lambertian source is silently the same as 90 -- showing that in the box
-    // is less confusing than letting the user set a number that does nothing.
-    if (type == SourceConfig::Type::Lambertian) m_halfAngle->setMaximum(90.0);
-    else                                        m_halfAngle->setMaximum(180.0);
+    // The emitted polarisation state means nothing unless the state is being
+    // carried; it is set per source, in the object inspector.
+    m_polarised->setToolTip(
+        m_polarised->isChecked()
+            ? QStringLiteral("Each source's emitted state is set on the source itself.")
+            : m_polarised->toolTip());
 }
 
-SceneParams ControlsPanel::currentParams() const {
+SceneParams ControlsPanel::params() const {
     SceneParams p;
+    p.n = int(std::min(m_params.size(), std::size_t(SceneParams::kMax)));
     for (std::size_t i = 0; i < m_params.size() && i < SceneParams::kMax; ++i)
         p.v[i] = m_params[i]->value();
     return p;
 }
 
-GeometryProvider::Scene ControlsPanel::scene() const {
-    return GeometryProvider::Scene(m_scene->currentIndex());
+void ControlsPanel::setParams(const SceneParams& params) {
+    const bool was = m_loading;
+    m_loading = true;
+    const SceneParams sane = GeometryProvider::sanitise(m_scene, params);
+    for (std::size_t i = 0; i < m_params.size() && i < SceneParams::kMax; ++i)
+        m_params[i]->setValue(sane.v[i]);
+    m_loading = was;
 }
 
-
-// ---- sources ---------------------------------------------------------------
-//
-// A measured ray set and the sources beyond the first are structures rather
-// than rows of spin boxes, so they live on the panel and the widgets only
-// display them. A ray set is also tens of megabytes of somebody's measurement,
-// which is a thing to hold once and share, not to rebuild from a form.
-
-void ControlsPanel::chooseRayFile() {
-    const QString path = QFileDialog::getOpenFileName(
-        this, QStringLiteral("Open a measured source ray file"), QString(),
-        rayfile::fileFilter());
-    if (path.isEmpty()) return;
-
-    const auto res = rayfile::load(path);
-    if (!res.ok) {
-        QMessageBox::warning(this, QStringLiteral("Ray file"), res.error);
-        return;
-    }
-    m_rayFile = res.data;
-    refreshRayFileLabel();
-    syncEnabledState();
-    if (!m_loading) emit settingsChanged();
+void ControlsPanel::setScene(GeometryProvider::Scene scene) {
+    if (m_scene == scene && !m_params.empty()) return;
+    m_scene = scene;
+    rebuildParamRows();
 }
 
-void ControlsPanel::clearRayFile() {
-    if (!m_rayFile) return;
-    m_rayFile.reset();
-    refreshRayFileLabel();
-    syncEnabledState();
-    if (!m_loading) emit settingsChanged();
-}
-
-void ControlsPanel::refreshRayFileLabel() {
-    if (!m_rayFileNote) return;
-    if (!m_rayFile) {
-        m_rayFileNote->clear();
-        m_rayFileNote->setVisible(false);
-        return;
-    }
-    m_rayFileNote->setVisible(true);
-    m_rayFileNote->setText(QStringLiteral("%1 - %2")
-                               .arg(m_rayFile->label, m_rayFile->summary()));
-    m_rayFileNote->setToolTip(QStringLiteral("%1\n%2")
-                                  .arg(m_rayFile->format, m_rayFile->path));
-}
-
-void ControlsPanel::addSource() {
-    SourceDialog dlg(this);
-    SourceSpec seed;
-    // A new source starts as a copy of the emitter the scene already has, aimed
-    // the way it aims -- because "another one of these" is what adding a source
-    // almost always means, and moving it is one number.
-    //
-    // Only the flux was copied, and everything else came from the struct's
-    // defaults: adding a second source to a collimated 25 mm beam produced a
-    // Lambertian point, and the dialog opened showing that rather than the
-    // source it was supposedly duplicating.
-    seed.type                  = SourceConfig::Type(m_source->currentIndex());
-    seed.shape                 = SourceConfig::Shape(m_shape->currentIndex());
-    seed.spectrum.kind         = SpectrumConfig::Kind(m_spectrum->currentIndex());
-    seed.spectrum.wavelengthNm = m_wavelength->value();
-    seed.spectrum.cct          = m_cct->value();
-    seed.halfAngleDeg          = m_halfAngle->value();
-    seed.sizeA                 = m_sizeA->value();
-    seed.sizeB                 = m_sizeB->value();
-    seed.beamRadius            = m_beamRadius->value();
-    seed.power                 = m_power->value();
-    seed.polarisationState     = m_polState->currentIndex();
-    seed.label = QStringLiteral("Source %1").arg(m_extraSources.size() + 2);
-
-    // A scene built around a row of emitters says where the next one goes, so
-    // filling a four-cup array is three clicks rather than nine coordinates
-    // read off the parameter block. An imported part has no lattice to offer,
-    // and neither does any scene with one emitter on one axis.
-    if (!m_importedGeometry) {
-        const std::vector<gp_Pnt> lattice =
-            GeometryProvider::sourceOffsets(scene(), currentParams());
-        if (m_extraSources.size() < lattice.size())
-            seed.offset = lattice[m_extraSources.size()];
-    }
-
-    dlg.setSpec(seed);
-    if (dlg.exec() != QDialog::Accepted) return;
-
-    m_extraSources.push_back(dlg.spec());
-    refreshSourceList();
-    m_sourceList->setCurrentRow(int(m_extraSources.size()) - 1);
-    syncEnabledState();
-    if (!m_loading) emit settingsChanged();
-}
-
-void ControlsPanel::editSource() {
-    const int row = m_sourceList ? m_sourceList->currentRow() : -1;
-    if (row < 0 || row >= int(m_extraSources.size())) return;
-
-    SourceDialog dlg(this);
-    dlg.setSpec(m_extraSources[std::size_t(row)]);
-    if (dlg.exec() != QDialog::Accepted) return;
-
-    m_extraSources[std::size_t(row)] = dlg.spec();
-    refreshSourceList();
-    m_sourceList->setCurrentRow(row);
-    if (!m_loading) emit settingsChanged();
-}
-
-void ControlsPanel::removeSource() {
-    const int row = m_sourceList ? m_sourceList->currentRow() : -1;
-    if (row < 0 || row >= int(m_extraSources.size())) return;
-    m_extraSources.erase(m_extraSources.begin() + row);
-    refreshSourceList();
-    syncEnabledState();
-    if (!m_loading) emit settingsChanged();
-}
-
-void ControlsPanel::refreshSourceList() {
-    if (!m_sourceList) return;
-    const int keep = m_sourceList->currentRow();
-    m_sourceList->clear();
-    int n = 2;
-    for (const SourceSpec& s : m_extraSources) {
-        QString text = s.label.isEmpty() ? QStringLiteral("Source %1").arg(n) : s.label;
-        text += QStringLiteral("  %1").arg(s.power, 0, 'g', 4);
-        text += (m_powerUnit->currentIndex() == 1) ? QStringLiteral(" lm")
-                                                   : QStringLiteral(" W");
-        if (s.tracesRayFile()) text += QStringLiteral("  [ray file]");
-        if (!s.absolute && (s.offset.X() != 0.0 || s.offset.Y() != 0.0 ||
-                            s.offset.Z() != 0.0))
-            text += QStringLiteral("  offset %1, %2, %3 mm")
-                        .arg(s.offset.X(), 0, 'g', 3)
-                        .arg(s.offset.Y(), 0, 'g', 3)
-                        .arg(s.offset.Z(), 0, 'g', 3);
-        m_sourceList->addItem(text);
-        ++n;
-    }
-    m_sourceList->setCurrentRow(std::min(keep, int(m_extraSources.size()) - 1));
-    m_sourceList->setVisible(!m_extraSources.empty());
-}
 
 SimConfig ControlsPanel::config() const {
     SimConfig cfg;
-    cfg.scene            = scene();
-    cfg.params           = currentParams();
+    cfg.scene            = m_scene;
+    cfg.params           = params();
     cfg.useSceneDefaults = false;   // the boxes always hold a full parameter set
 
-    cfg.source       = SourceConfig::Type(m_source->currentIndex());
-    cfg.shape        = SourceConfig::Shape(m_shape->currentIndex());
-    cfg.spectrum.kind         = SpectrumConfig::Kind(m_spectrum->currentIndex());
-    cfg.spectrum.wavelengthNm = m_wavelength->value();
-    cfg.spectrum.cct          = m_cct->value();
-    cfg.halfAngleDeg = m_halfAngle->value();
-    cfg.sizeA        = m_sizeA->value();
-    cfg.sizeB        = m_sizeB->value();
-    cfg.beamRadius   = m_beamRadius->value();
-    cfg.power        = m_power->value();
+    // Everything about the emitters is left at its default here. They are
+    // objects in the scene document now, and the window writes them in over
+    // this: a source's angular law and flux are properties of that source, not
+    // of the run, and there is exactly one place they are edited.
     cfg.fluxUnit     = FluxUnit(m_powerUnit->currentIndex());
     cfg.detectorBins = m_detBins->currentData().toInt();
-
-    cfg.rayFile            = m_rayFile;
-    cfg.rayFileScale       = m_rayFileScaleBox->value();
-    cfg.rayFileWavelengths = m_rayFileLambda->isChecked();
-    cfg.extraSources       = m_extraSources;
 
     cfg.physics.fresnel    = m_fresnel->isChecked();
     cfg.physics.absorption = m_absorption->isChecked();
@@ -762,7 +387,6 @@ SimConfig ControlsPanel::config() const {
     cfg.physics.coatings        = m_coatings->isChecked();
     cfg.physics.volumeScattering = m_volume->isChecked();
     cfg.physics.polarised       = m_polarised->isChecked();
-    cfg.polarisationState       = m_polState->currentIndex();
     // The spin boxes park at their minimum to mean "leave each surface alone",
     // which is what the negative sentinel in PhysicsOptions expects.
     cfg.physics.roughnessOverride = m_roughOverride->value() < 0.0 ? -1.0 : m_roughOverride->value();
@@ -778,29 +402,17 @@ SimConfig ControlsPanel::config() const {
 void ControlsPanel::setConfig(const SimConfig& cfg) {
     m_loading = true;
 
-    m_scene->setCurrentIndex(int(cfg.scene));
+    m_scene = cfg.scene;
     rebuildParamRows();
     const SceneParams p = cfg.effectiveParams();
     for (std::size_t i = 0; i < m_params.size(); ++i) m_params[i]->setValue(p.v[i]);
 
-    m_source->setCurrentIndex(int(cfg.source));
-    m_shape->setCurrentIndex(int(cfg.shape));
-    m_spectrum->setCurrentIndex(int(cfg.spectrum.kind));
     m_powerUnit->setCurrentIndex(int(cfg.fluxUnit));
     {
         const int idx = m_detBins->findData(cfg.detectorBins > 0 ? cfg.detectorBins : 64);
         m_detBins->setCurrentIndex(idx >= 0 ? idx : 1);
     }
-    // Set the maximum before the value, or a 180-degree cone loaded onto a
-    // Lambertian source would be clipped to the old limit instead of to 90.
     syncEnabledState();
-    m_halfAngle->setValue(cfg.halfAngleDeg);
-    m_sizeA->setValue(cfg.sizeA);
-    m_sizeB->setValue(cfg.sizeB);
-    m_beamRadius->setValue(cfg.beamRadius);
-    m_wavelength->setValue(cfg.spectrum.wavelengthNm);
-    m_cct->setValue(cfg.spectrum.cct);
-    m_power->setValue(cfg.power);
 
     m_fresnel->setChecked(cfg.physics.fresnel);
     m_absorption->setChecked(cfg.physics.absorption);
@@ -810,19 +422,11 @@ void ControlsPanel::setConfig(const SimConfig& cfg) {
     m_coatings->setChecked(cfg.physics.coatings);
     m_volume->setChecked(cfg.physics.volumeScattering);
     m_polarised->setChecked(cfg.physics.polarised);
-    m_polState->setCurrentIndex(std::clamp(cfg.polarisationState, 0, 3));
     m_roughOverride->setValue(cfg.physics.roughnessOverride < 0.0
                                   ? m_roughOverride->minimum() : cfg.physics.roughnessOverride);
     m_scatterOverride->setValue(cfg.physics.scatterOverride < 0.0
                                     ? m_scatterOverride->minimum() : cfg.physics.scatterOverride);
     m_absorptionScale->setValue(cfg.physics.absorptionScale);
-
-    m_rayFile      = cfg.rayFile;
-    m_extraSources = cfg.extraSources;
-    m_rayFileScaleBox->setValue(cfg.rayFileScale);
-    m_rayFileLambda->setChecked(cfg.rayFileWavelengths);
-    refreshRayFileLabel();
-    refreshSourceList();
 
     m_rays->setValue(cfg.rays);
     m_seed->setValue(int(cfg.seed & 0x7FFFFFFFull));
@@ -830,36 +434,29 @@ void ControlsPanel::setConfig(const SimConfig& cfg) {
 
     m_loading = false;
     syncEnabledState();
-    emit sceneChanged();
 }
 
-void ControlsPanel::setImportedGeometry(const QString& label) {
-    m_importedGeometry = !label.isEmpty();
-    m_importNote->setVisible(m_importedGeometry);
-    if (m_importedGeometry) {
-        m_importNote->setText(
-            QStringLiteral("Tracing imported geometry: %1.\n"
-                           "The scene above and the dimensions below are not in use — "
-                           "picking a scene replaces the imported part.").arg(label));
+void ControlsPanel::setGeometryDetached(const QString& reason) {
+    m_detached = !reason.isEmpty();
+    m_importNote->setVisible(m_detached);
+    if (m_detached) {
+        m_importNote->setText(reason);
         m_importNote->setToolTip(
-            QStringLiteral("A run traces the file, not the selected scene. Surface "
-                           "optics, the source, the physics and the ray budget all "
-                           "still apply to it."));
+            QStringLiteral("A run traces what the scene tree lists, not the tutorial "
+                           "these dimensions describe. The physics, the ray budget and "
+                           "every object's own properties all still apply."));
     }
-    // The parameters describe the scene, and the scene is not what will be
-    // traced.
-    m_paramBox->setEnabled(!m_importedGeometry);
+    // The dimensions describe the tutorial, and the tutorial is not what will
+    // be traced.
+    m_paramBox->setEnabled(!m_detached);
 }
 
 void ControlsPanel::setRunning(bool running) {
-    m_scene->setEnabled(!running);
-    m_paramBox->setEnabled(!running && !m_importedGeometry);
+    m_paramBox->setEnabled(!running && !m_detached);
     m_run->setEnabled(!running);
     m_cancel->setEnabled(running);
     for (QWidget* w : std::initializer_list<QWidget*>{m_coatings, m_volume, m_polarised,
-                                                     m_polState,
-                                                     m_cct, m_power, m_powerUnit, m_detBins,
-                                                     m_source, m_shape, m_spectrum,
+                                                      m_powerUnit, m_detBins,
                                                       m_rays, m_seed, m_threads})
         w->setEnabled(!running);
 

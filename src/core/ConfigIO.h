@@ -1,7 +1,11 @@
 #pragma once
+#include <QJsonObject>
 #include <QString>
 #include <QStringList>
 #include "Simulation.h"
+#include "SurfaceOptics.h"
+
+namespace scenedoc { class SceneDocument; }
 
 // Saving and restoring a SimConfig as JSON.
 //
@@ -27,5 +31,31 @@ bool fromJson(const QString& json, SimConfig& out, QString* errorOut = nullptr,
 bool save(const QString& path, const SimConfig& cfg, QString* errorOut = nullptr);
 bool load(const QString& path, SimConfig& out, QString* errorOut = nullptr,
           QStringList* warnings = nullptr);
+
+// ---- with the assembled scene alongside the configuration ------------------
+//
+// A composed scene is not derivable from a SimConfig: the config carries the
+// *compiled* geometry, which is a pile of B-Rep solids with no memory of which
+// object produced which. So the document travels beside it in the same file,
+// and a config written before there were documents -- or by a run that had no
+// objects -- simply carries no "document" key and loads as it always did.
+QString toJson(const SimConfig& cfg, const scenedoc::SceneDocument* doc);
+bool    fromJson(const QString& json, SimConfig& out, scenedoc::SceneDocument* doc,
+                 QString* errorOut = nullptr, QStringList* warnings = nullptr);
+bool    save(const QString& path, const SimConfig& cfg, const scenedoc::SceneDocument* doc,
+             QString* errorOut = nullptr);
+bool    load(const QString& path, SimConfig& out, scenedoc::SceneDocument* doc,
+             QString* errorOut = nullptr, QStringList* warnings = nullptr);
+
+// ---- the pieces a scene document shares with a configuration ---------------
+//
+// One surface's optical behaviour, and one emitter, as JSON. Exposed rather
+// than duplicated: a document describes its objects with the same two structs a
+// config already writes, and a second encoding of either would be a second
+// thing to keep in step with the engine.
+QJsonObject   opticsToJson(const SurfaceOptics& optics);
+SurfaceOptics opticsFromJson(const QJsonObject& o, SurfaceOptics fallback = SurfaceOptics{});
+QJsonObject   sourceToJson(const SourceSpec& spec);
+SourceSpec    sourceFromJson(const QJsonObject& o, QStringList* warnings = nullptr);
 
 } // namespace configio

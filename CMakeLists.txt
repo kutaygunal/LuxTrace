@@ -75,6 +75,7 @@ add_library(optics_core STATIC
     src/core/Spectrum.h src/core/Spectrum.cpp
     src/core/Mesh.h src/core/Mesh.cpp
     src/core/GeometryProvider.h src/core/GeometryProvider.cpp
+    src/core/SceneDocument.h src/core/SceneDocument.cpp
     src/core/CadImport.h src/core/CadImport.cpp
     src/core/MeshBuilder.h src/core/MeshBuilder.cpp
     src/core/TraceScene.h src/core/TraceScene.cpp
@@ -131,6 +132,9 @@ qt_add_executable(LuxTrace
     src/ui/ControlsPanel.h src/ui/ControlsPanel.cpp
     src/ui/ImportDialog.h src/ui/ImportDialog.cpp
     src/ui/SurfaceInspector.h src/ui/SurfaceInspector.cpp
+    src/ui/ObjectLibraryPanel.h src/ui/ObjectLibraryPanel.cpp
+    src/ui/SceneTreePanel.h src/ui/SceneTreePanel.cpp
+    src/ui/ObjectInspector.h src/ui/ObjectInspector.cpp
     src/ui/PythonPanel.h src/ui/PythonPanel.cpp
     src/ui/EnergyBarWidget.h src/ui/EnergyBarWidget.cpp
     src/ui/SourceDialog.h src/ui/SourceDialog.cpp

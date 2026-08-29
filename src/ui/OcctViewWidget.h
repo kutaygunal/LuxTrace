@@ -92,6 +92,9 @@ public:
     void setSurfaceVisible(int index, bool visible);
     // Which surface the scene tree has selected, drawn so the two agree.
     void setHighlightedSurface(int index);
+    // The same, for a selection that covers more than one surface -- a group,
+    // or an object the compiler split into several bodies.
+    void setHighlightedSurfaces(const std::vector<int>& indices);
 
     void fitAll();
     void resetView();
@@ -134,10 +137,17 @@ signals:
     // A surface was clicked. `index` indexes the vector passed to setScene, or
     // -1 when the click landed on nothing.
     void surfacePicked(int index);
+    // Something was dragged in from the object library and dropped at `where`.
+    // The viewport does not know what an object is; it knows where the cursor
+    // was in three dimensions, which is the part only it can answer.
+    void objectDropped(const QString& typeKey, const gp_Pnt& where);
 
 protected:
     void paintEvent(QPaintEvent*) override;
     void resizeEvent(QResizeEvent*) override;
+    void dragEnterEvent(QDragEnterEvent*) override;
+    void dragMoveEvent(QDragMoveEvent*) override;
+    void dropEvent(QDropEvent*) override;
     void mousePressEvent(QMouseEvent*) override;
     void mouseMoveEvent(QMouseEvent*) override;
     void mouseReleaseEvent(QMouseEvent*) override;
@@ -166,6 +176,11 @@ private:
     void startViewCubeAnimation(const Handle(AIS_ViewCubeOwner)& owner);
     void applyClip();
     void pickAt(const QPoint& pos);
+    // Where a screen point lands in the scene: on the geometry under the cursor
+    // if there is any, and otherwise on the plane through the scene centre
+    // facing the camera. Without the fallback a drop onto empty space has no
+    // depth at all, and "at the origin" is not where the user pointed.
+    bool worldPointAt(const QPoint& pos, gp_Pnt& out);
     double sceneScale() const;
 
     Handle(V3d_Viewer)             m_viewer;
@@ -201,7 +216,19 @@ private:
     bool            m_initFailed  = false;
     RayColor        m_rayColor    = RayColor::Energy;
     bool            m_detectorOnly = false;
-    int             m_highlighted = -1;
+    // Which surfaces read as selected. A vector rather than one index: a
+    // group in the scene tree covers several bodies at once.
+    std::vector<int> m_highlight;
+    // What each shape looks like when it is *not* selected. Highlighting
+    // overwrites a presentation's colour, and AIS keeps it -- so without
+    // somewhere to put the original back, every surface that had ever been
+    // selected stayed amber and the viewport slowly filled up with a selection
+    // that was no longer there.
+    struct Appearance {
+        Quantity_Color colour{0.78, 0.78, 0.82, Quantity_TOC_RGB};
+        float          transparency = 0.15f;
+    };
+    std::vector<Appearance> m_baseLook;
     bool            m_overlaysOn  = true;
     bool            m_cubeVisible = true;
     // Whether the last hover landed on the cube. A press there must not start
