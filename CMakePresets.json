@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 22, "patch": 0 },
+
+  "configurePresets": [
+    {
+      "name": "windows-msvc",
+      "displayName": "Windows / MSVC 2022 / x64",
+      "description": "Locations come from the environment: VCPKG_ROOT for the vcpkg checkout, QT_ROOT_DIR for the Qt MSVC kit. Pin your own paths in CMakeUserPresets.json rather than editing this file.",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build"
+    }
+  ],
+
+  "buildPresets": [
+    { "name": "release", "configurePreset": "windows-msvc", "configuration": "Release" },
+    { "name": "debug",   "configurePreset": "windows-msvc", "configuration": "Debug"   }
+  ],
+
+  "testPresets": [
+    {
+      "name": "release",
+      "configurePreset": "windows-msvc",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

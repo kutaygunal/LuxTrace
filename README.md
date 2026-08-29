@@ -13,6 +13,8 @@ the answer.
 
 Language/stack: **C++20**, **Qt 6.8.2 (MSVC 2022)**, **OCCT 7.8.1 (vcpkg)**.
 
+[![CI](https://github.com/kutaygunal/LuxTrace/actions/workflows/ci.yml/badge.svg)](https://github.com/kutaygunal/LuxTrace/actions/workflows/ci.yml)
+
 *The name is `lux`, the SI unit of illuminance the app computes, and `trace`,
 for the ray tracing that gets there.*
 
@@ -290,25 +292,53 @@ removed — the measurements are in the comment on `TraceScene::BvhNode`.
 ## Build
 
 Prerequisites:
-- CMake >= 3.21
-- Qt 6 (set `CMAKE_PREFIX_PATH` to your Qt MSVC kit)
+- CMake >= 3.22
+- Qt 6, MSVC kit
 - OpenCASCADE via vcpkg: `vcpkg install opencascade --triplet x64-windows`
 
+Say where those two live, once. No path to either is written into any file in
+this repository, and a new terminal picks these up:
+
 ```bash
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE=C:/src/vcpkg/scripts/buildsystems/vcpkg.cmake -DCMAKE_PREFIX_PATH=C:/Qt/6.8.2/msvc2022_64
+setx VCPKG_ROOT C:/src/vcpkg
 ```
 
 ```bash
-cmake --build build --config Release
+setx QT_ROOT_DIR C:/Qt/6.8.2/msvc2022_64
 ```
 
-Runtime DLLs: copy the OCCT `bin/*.dll` (from the vcpkg triplet) next to the
-exe, and run `windeployqt` for the Qt DLLs/plugins.
+Then configure and build through the presets:
+
+```bash
+cmake --preset windows-msvc
+```
+
+```bash
+cmake --build --preset release
+```
+
+Nothing has to be copied next to the executable. The vcpkg toolchain brings OCCT
+and everything under it into the build tree on every build, and `ctest` puts the
+Qt kit on `PATH` for the duration of a test, so a fresh clone runs the whole
+suite with no deployment step at all.
+
+To pin the two locations without environment variables, write a
+`CMakeUserPresets.json` inheriting from `windows-msvc`; it is git-ignored, so
+personal paths stay out of the repository. Passing `-DCMAKE_TOOLCHAIN_FILE` and
+`-DCMAKE_PREFIX_PATH` directly still works, and still wins over both.
+
+### CI
+Every push to `main` and every pull request builds this same kit on GitHub
+Actions (`.github/workflows/ci.yml`) and runs the three checks as three separate
+steps -- `ctest`, the `--validate` closed forms and the `--bench` determinism
+assertion -- so a unit regression, a physics regression and a determinism
+regression each report as their own failure. The vcpkg commit is pinned, so the
+OCCT under test is the one the developer box has.
 
 ## Test
 
 ```bash
-cd build && ctest -C Release
+ctest --preset release
 ```
 
 216 tests in 35 suites, no external framework. Beyond the original coverage
@@ -379,6 +409,27 @@ are pinned against arithmetic rather than against another simulation:
 - **params / config** — every scene's parameter block, clamping and NaN
   rejection, geometry staying alive while a run holds it, and a JSON round trip
   that identifies scenes by name rather than by registry index.
+
+## Install and package
+
+An install writes a self-contained directory: the executable, the Qt and OCCT
+runtimes, the OCCT dependency chain underneath them, and the plugin tree, all
+flat so `LuxTrace.exe --validate` works in the folder it lands in.
+
+```bash
+cmake --install build --config Release --prefix dist
+```
+
+```bash
+cpack --config build/CPackConfig.cmake -C Release
+```
+
+The second writes `LuxTrace-1.0.0-win64.zip`, which is the whole application:
+unpacking it is installing it, since nothing is read from outside the directory
+and nothing is written to the registry. The tree carries the offscreen platform
+plugin as well as the desktop one, because every headless diagnostic runs under
+`QT_QPA_PLATFORM=offscreen` and `windeployqt` on its own ships only the plugin
+the window needs.
 
 ## Run
 
@@ -646,3 +697,55 @@ python resources/make_icon.py
   the measurements and the reasoning are in the comment on `TraceScene::BvhNode`.
   A performance claim that does not survive its own benchmark is not an
   optimisation.
+
+## Licence
+
+LuxTrace is **Copyright 2026 Kutay Gunal**, released under the
+[PolyForm Noncommercial License 1.0.0](LICENSE)
+(SPDX: `PolyForm-Noncommercial-1.0.0`).
+
+Fork it, change it, publish your changes, use it for study, teaching or
+research: all of that is granted, provided a copy you pass on carries this
+licence and the `Required Notice:` line naming the author. What is *not*
+granted is commercial use — that includes selling the software or a product
+built on it, and internal use inside a for-profit company. This is a
+source-available licence, not an OSI-approved open-source one, so tooling that
+expects one of the standard open licences will not recognise it. For a
+commercial licence, contact the copyright holder.
+
+### Third-party components
+
+Neither dependency is covered by the licence above; each is licensed by its own
+authors, and neither is redistributed in this repository — the build resolves
+both from vcpkg and from a Qt kit you install yourself.
+
+| Component | Licence | Linking |
+|---|---|---|
+| OpenCASCADE Technology 7.8.1 | LGPL-2.1, with OCCT's additional exception | Dynamic, against the vcpkg `bin/*.dll` |
+| Qt 6.8.2 | LGPL-3.0 | Dynamic, via `windeployqt` |
+
+Both are used as a *work that uses the library*: LuxTrace links them
+dynamically, ships no part of their source, and derives nothing from them
+beyond their published headers. That is what lets a differently-licensed
+application sit on top of them at all.
+
+**If you distribute a built LuxTrace**, the LGPL obligations travel with the
+binary and are yours to meet, not this repository's:
+
+- Ship the two libraries as their own DLLs — never statically linked, never
+  merged into `LuxTrace.exe`. The shared-library mechanism is what satisfies
+  LGPL-3.0 §4(d)(0) without your having to publish anything of your own.
+- State prominently that the work uses Qt and OpenCASCADE Technology, and
+  include a copy of each library's licence with what you ship.
+- Offer the corresponding source of the libraries — the unmodified upstream
+  release is enough if you did not modify them, and the vcpkg port pins the
+  exact version to point at. If you *did* modify either, that modified source
+  is what you must offer, under the same LGPL.
+- Leave the recipient able to relink: they may swap in their own build of Qt or
+  OCCT and run your binary against it. The [LICENSE](LICENSE) file grants the
+  reverse-engineering-for-debugging permission this requires, so the
+  noncommercial terms above do not stand in its way.
+
+Under the LGPL the recipient's rights are in the libraries, not in LuxTrace: a
+recipient may rebuild Qt and relink, and still holds no commercial licence to
+LuxTrace itself.

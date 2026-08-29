@@ -89,7 +89,9 @@ Results are **bit-identical regardless of thread count**. Two things guarantee i
   scheduling.
 - Scalar totals accumulate **per chunk** and reduce in chunk order. Reducing per
   thread would make the totals depend on which thread grabbed which chunk, in
-  the last few ULPs. `--bench` asserts this and prints `[deterministic]`.
+  the last few ULPs. `--bench` asserts this, prints `[deterministic]` per row
+  and exits non-zero if any row is not, which is what makes it a CI check
+  rather than a remark.
 
 The one exception, deliberately: the irradiance **bins** accumulate per thread
 (a per-chunk 64x64 grid would cost 32 KB per chunk), so individual bins can
@@ -497,6 +499,23 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64 \
 cmake --build build --config Release
 cd build && ctest -C Release
 ```
+
+### CI
+`.github/workflows/ci.yml` runs exactly that on every push to `main` and every
+pull request, on `windows-latest` with the same kit: MSVC 2022 x64 (pinned by
+the generator, not by the image), Qt 6.8.2 and
+OCCT 7.8.1 from a vcpkg pinned to commit `0b63bdd3` -- the commit this box is
+on, so a green run is evidence about the build that ships rather than about
+some other OCCT.
+
+The three checks are separate steps, because they fail for three different
+reasons: `ctest` (a unit regression), `--validate` (a physics regression; the
+run uploads its HTML table as an artefact) and `--bench` (a determinism
+regression). Qt and the vcpkg binary packages are cached: a cold cache builds
+OCCT from source and takes the better part of an hour, a warm one is minutes.
+`--bench` runs at 50 000 rays rather than the documented 100 000 -- determinism
+does not depend on the ray count, and timings from a shared runner are not
+worth waiting for.
 
 Diagnostics (all headless, `QT_QPA_PLATFORM=offscreen`):
 - `LuxTrace.exe --smoke 50000 [threads]` — every scene with efficiency and

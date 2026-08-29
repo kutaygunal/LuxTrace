@@ -141,11 +141,14 @@ int smokeTest(int rays, unsigned threads) {
 }
 
 // Traces every scene x source combination, single-threaded and then with the
-// full thread pool, so a change in either can be compared at a glance.
+// full thread pool, so a change in either can be compared at a glance. Exits
+// non-zero if any combination turns out to be thread-dependent: the timings are
+// a report, but determinism is a claim, and this is the check that guards it.
 int bench(int rays) {
     QTextStream out(stdout);
     const char* srcNames[] = {"Point     ", "Lambertian"};
     const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
+    bool deterministic = true;
 
     out << "scene / source                    rays      1-thread    " << hw
         << "-thread   speedup   efficiency" << Qt::endl;
@@ -163,6 +166,9 @@ int bench(int rays) {
             cfg.threads = 0;
             const SimulationResult all = Simulation::run(cfg);
 
+            const bool same = std::fabs(one.efficiency - all.efficiency) < 1e-12;
+            deterministic = deterministic && same;
+
             out << sceneName(s).leftJustified(32) << " " << srcNames[t] << " "
                 << QString::number(rays).rightJustified(8) << "  "
                 << QString::number(one.traceSeconds, 'f', 3).rightJustified(8) << "s  "
@@ -170,14 +176,19 @@ int bench(int rays) {
                 << QString::number(all.traceSeconds > 0 ? one.traceSeconds / all.traceSeconds : 0.0,
                                    'f', 1).rightJustified(6) << "x  "
                 << QString::number(100.0 * all.efficiency, 'f', 2).rightJustified(7) << "%"
-                << (std::fabs(one.efficiency - all.efficiency) < 1e-12
-                        ? QStringLiteral("  [deterministic]")
-                        : QStringLiteral("  [THREAD-DEPENDENT!]"))
+                << (same ? QStringLiteral("  [deterministic]")
+                         : QStringLiteral("  [THREAD-DEPENDENT!]"))
                 << Qt::endl;
             out.flush();
         }
     }
-    return 0;
+
+    if (!deterministic)
+        out << Qt::endl
+            << "FAILED: at least one scene x source is thread-dependent."
+            << Qt::endl;
+    out.flush();
+    return deterministic ? 0 : 1;
 }
 
 // Exercises the analysis and the parameter studies headlessly, so every number

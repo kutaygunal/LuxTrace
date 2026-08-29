@@ -1,0 +1,130 @@
+# The one machine that builds LuxTrace without being asked to.
+#
+# The suite already runs headless, needs no external test framework and reports
+# through an exit code, so the only thing standing between it and CI was a file.
+# This is that file. It reproduces the developer kit exactly -- MSVC 2022 x64,
+# Qt 6.8.2, OCCT 7.8.1 from a pinned vcpkg -- because a green build against some
+# other OCCT would not be evidence about the build people actually ship.
+#
+# The three checks are separate steps on purpose: ctest failing, --validate
+# failing and --bench failing mean three different things (a unit regression, a
+# physics regression, a determinism regression), and a single red step that
+# lumps them together would throw that away.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch makes the older run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # microsoft/vcpkg pinned to the commit the developer box is on: opencascade
+  # 7.8.1#1. Unpinned, vcpkg would silently move OCCT versions under the tests
+  # and a red build would be ambiguous between "we broke it" and "OCCT changed".
+  VCPKG_COMMIT: 0b63bdd30d6716affc6fc0caef3886ca3022dc7b
+  QT_VERSION: 6.8.2
+  QT_ARCH: win64_msvc2022_64
+  QT_PREFIX: C:\Qt\6.8.2\msvc2022_64
+  # Every subcommand below constructs a QApplication. No window system here.
+  QT_QPA_PLATFORM: offscreen
+
+jobs:
+  windows:
+    # windows-latest moves between images; the generator below is what pins
+    # the toolchain to MSVC 2022, which every current image still carries.
+    runs-on: windows-latest
+    # A cold cache builds OCCT from source, which is the long pole by a wide
+    # margin. Warm, the whole job is a few minutes.
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---- Dependencies ------------------------------------------------
+      - name: Cache Qt
+        id: qt-cache
+        uses: actions/cache@v4
+        with:
+          path: C:\Qt
+          key: qt-${{ env.QT_VERSION }}-${{ env.QT_ARCH }}
+
+      - name: Install Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: |
+          pip install "aqtinstall>=3.1,<4"
+          aqt install-qt windows desktop $env:QT_VERSION $env:QT_ARCH --outputdir C:\Qt
+
+      - name: Check out vcpkg
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+
+      # The binary cache is what turns a 45-minute OCCT build into a download.
+      # The key covers the vcpkg commit and the triplet, which together decide
+      # the contents, so an exact hit is always the right artefact.
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}\vcpkg-binary-cache
+          key: vcpkg-${{ env.VCPKG_COMMIT }}-x64-windows-opencascade
+
+      - name: Build OpenCASCADE
+        env:
+          VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-binary-cache
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          .\vcpkg\bootstrap-vcpkg.bat
+          .\vcpkg\vcpkg.exe install opencascade:x64-windows --clean-after-build
+
+      # The test binary and the app resolve OCCT and Qt DLLs from PATH. Qt's own
+      # prefix is intact, so the offscreen platform plugin is found from there --
+      # no windeployqt needed for a build that never leaves the runner.
+      - name: Put Qt and OCCT on PATH
+        run: |
+          "$env:QT_PREFIX\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          "${{ github.workspace }}\vcpkg\installed\x64-windows\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      # ---- Build -------------------------------------------------------
+      - name: Configure
+        run: >
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+          -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+          -DCMAKE_PREFIX_PATH=$env:QT_PREFIX
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      # ---- The three checks --------------------------------------------
+      - name: Unit tests
+        run: ctest --test-dir build -C Release --output-on-failure --no-tests=error
+
+      # Closed-form optics: the tracer against the textbook answer. Exits
+      # non-zero if any case leaves its tolerance.
+      - name: Physics validation
+        run: .\build\Release\LuxTrace.exe --validate 400000 validation.html
+
+      # Bit-identical results whatever the thread count. Exits non-zero the
+      # moment one scene disagrees between one thread and the pool. The ray
+      # count is well below the documented 100000: determinism does not depend
+      # on it, and timings from a shared runner are not worth waiting for.
+      - name: Determinism and benchmark
+        run: .\build\Release\LuxTrace.exe --bench 50000
+
+      - name: Upload validation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-report
+          path: validation.html
+          if-no-files-found: ignore
