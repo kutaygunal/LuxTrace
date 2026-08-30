@@ -205,6 +205,11 @@ signals:
     // The viewport does not know what an object is; it knows where the cursor
     // was in three dimensions, which is the part only it can answer.
     void objectDropped(const QString& typeKey, const gp_Pnt& where);
+    // The Delete key was pressed while an object was selected. `objectId` is
+    // the selected object's id, as the document knows it -- the viewport does
+    // not remove anything itself, because it does not own the document. The
+    // owner decides whether to confirm and what to remove.
+    void deleteRequested(int objectId);
 
 protected:
     void paintEvent(QPaintEvent*) override;

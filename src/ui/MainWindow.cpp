@@ -211,12 +211,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(m_view3d, &OcctViewWidget::surfacePicked, this, &MainWindow::onSurfacePicked);
     connect(m_view3d, &OcctViewWidget::objectDropped, this, &MainWindow::onObjectDropped);
     connect(m_view3d, &OcctViewWidget::sourcePicked,  this, &MainWindow::onSourcePicked);
+    connect(m_view3d, &OcctViewWidget::deleteRequested, this, &MainWindow::onViewportDelete);
 
     // ---- the scene document -------------------------------------------------
     connect(m_library, &ObjectLibraryPanel::createRequested, this,
             [this](scenedoc::ObjectType type) { onCreateObject(type, 0); });
 
     connect(m_sceneTree, &SceneTreePanel::selectionChanged,    this, &MainWindow::onObjectSelected);
+    connect(m_sceneTree, &SceneTreePanel::selectionSetChanged, this, &MainWindow::onSelectionSetChanged);
     connect(m_sceneTree, &SceneTreePanel::visibilityChanged,   this, &MainWindow::onObjectVisibility);
     connect(m_sceneTree, &SceneTreePanel::renamed,             this, &MainWindow::onObjectRenamed);
     connect(m_sceneTree, &SceneTreePanel::deleteRequested,     this, &MainWindow::onObjectDelete);
@@ -1187,18 +1189,28 @@ void MainWindow::refreshInspector() {
 }
 
 void MainWindow::refreshSelectionHighlight() {
+    // The gizmo sits on the primary (current) selection only -- it is a tool
+    // for moving one object, and a gizmo on every row of a multi-selection
+    // would be a tangle of handles.
     const scenedoc::SceneObject* o = m_document.find(m_selectedObject);
-    if (!o) {
-        m_view3d->setHighlightedSurfaces({});
-        m_view3d->setHighlightedSource(-1);
-        return;
+    if (o)
+        m_view3d->setSelectionFrame(o->id, m_document.worldPlacement(o->id));
+
+    // The highlight covers the whole multi-selection, so Ctrl/Shift-picking
+    // several rows lights up every one of them in the 3D view.
+    std::vector<int> surfaces;
+    int              primarySource = -1;
+    for (int id : m_selectedSet) {
+        const scenedoc::SceneObject* s = m_document.find(id);
+        if (!s) continue;
+        for (int idx : surfacesForObject(id)) surfaces.push_back(idx);
+        if (s->isSource()) {
+            const int si = sourceIndexForObject(id);
+            if (si >= 0) primarySource = si;
+        }
     }
-    // Before the highlight, because setting the highlight is what puts the
-    // gizmo on the object, and the gizmo has to know where the object is and
-    // which way it faces in order to sit on it.
-    m_view3d->setSelectionFrame(o->id, m_document.worldPlacement(o->id));
-    m_view3d->setHighlightedSurfaces(surfacesForObject(o->id));
-    m_view3d->setHighlightedSource(sourceIndexForObject(o->id));
+    m_view3d->setHighlightedSurfaces(surfaces);
+    m_view3d->setHighlightedSource(primarySource);
 }
 
 void MainWindow::applySurfaceVisibility() {
@@ -1319,6 +1331,11 @@ void MainWindow::onObjectSelected(int id) {
     refreshInspector();
 }
 
+void MainWindow::onSelectionSetChanged(const QList<int>& ids) {
+    m_selectedSet = ids;
+    refreshSelectionHighlight();
+}
+
 void MainWindow::onObjectVisibility(int id, bool visible) {
     // Erased first, off the surface list the viewport is currently showing: the
     // recompile below drops the object's geometry altogether, but that reaches
@@ -1348,22 +1365,74 @@ void MainWindow::onObjectRenamed(int id, const QString& name) {
     m_sceneTree->setSelectedId(m_selectedObject);
 }
 
-void MainWindow::onObjectDelete(int id) {
-    const scenedoc::SceneObject* o = m_document.find(id);
-    if (!o) return;
-    const QString name = o->name;
-    if (m_document.remove(id) == 0) return;
-    if (!m_document.find(m_selectedObject)) m_selectedObject = 0;
-    syncDocument(true);
-    statusBar()->showMessage(QStringLiteral("%1 removed").arg(name), 4000);
+void MainWindow::onObjectDelete(const QList<int>& ids) {
+    confirmAndRemove(ids);
 }
 
-void MainWindow::onObjectDuplicate(int id) {
-    const int copy = m_document.duplicate(id);
-    if (copy == 0) return;
-    m_selectedObject = copy;
+void MainWindow::onViewportDelete(int id) {
+    confirmAndRemove({id});
+}
+
+void MainWindow::confirmAndRemove(const QList<int>& ids) {
+    // Only the objects that still exist, and only the topmost of a parent and
+    // its child: removing the parent already removes the child, so a selection
+    // that contains both must not count the child twice.
+    QList<int> valid;
+    for (int id : ids)
+        if (m_document.find(id)) valid.append(id);
+    if (valid.isEmpty()) return;
+
+    QStringList names;
+    int totalChildren = 0;
+    for (int id : valid) {
+        const scenedoc::SceneObject* o = m_document.find(id);
+        names << o->name;
+        totalChildren += int(m_document.childrenOf(id).size());
+    }
+
+    // A Delete is easy to hit by accident and the removal is not undoable, so
+    // the user is asked to confirm before anything is taken out of the scene.
+    QString detail;
+    if (valid.size() == 1) {
+        detail = QStringLiteral("Remove \"%1\" from the scene?").arg(names.first());
+        if (totalChildren > 0)
+            detail += QStringLiteral("\n\nIt contains %1 child object%2, which will be removed with it.")
+                          .arg(totalChildren).arg(totalChildren == 1 ? QString() : QStringLiteral("s"));
+    } else {
+        detail = QStringLiteral("Remove %1 objects from the scene?\n\n%2")
+                     .arg(valid.size()).arg(names.join(QStringLiteral("\n")));
+        if (totalChildren > 0)
+            detail += QStringLiteral("\n\n%1 child object%2 will be removed with them.")
+                          .arg(totalChildren).arg(totalChildren == 1 ? QString() : QStringLiteral("s"));
+    }
+
+    const QMessageBox::StandardButton choice = QMessageBox::question(
+        this, QStringLiteral("Remove objects"), detail,
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (choice != QMessageBox::Yes) {
+        statusBar()->showMessage(QStringLiteral("Nothing was removed"), 3000);
+        return;
+    }
+
+    int removed = 0;
+    for (int id : valid)
+        if (m_document.remove(id) > 0) ++removed;
+    if (!m_document.find(m_selectedObject)) m_selectedObject = 0;
     syncDocument(true);
-    m_sceneTree->setSelectedId(copy);
+    statusBar()->showMessage(QStringLiteral("%1 object%2 removed")
+                                 .arg(removed).arg(removed == 1 ? QString() : QStringLiteral("s")), 4000);
+}
+
+void MainWindow::onObjectDuplicate(const QList<int>& ids) {
+    int lastCopy = 0;
+    for (int id : ids) {
+        const int copy = m_document.duplicate(id);
+        if (copy != 0) lastCopy = copy;
+    }
+    if (lastCopy == 0) return;
+    m_selectedObject = lastCopy;
+    syncDocument(true);
+    m_sceneTree->setSelectedId(lastCopy);
 }
 
 void MainWindow::onObjectReparent(int id, int newParent) {
@@ -1372,12 +1441,19 @@ void MainWindow::onObjectReparent(int id, int newParent) {
     m_sceneTree->setSelectedId(m_selectedObject);
 }
 
-void MainWindow::onIsolateObject(int id) {
-    for (const scenedoc::SceneObject& o : m_document.objects())
-        // The object and everything under it, and the groups above it: hiding
-        // an isolated object's own parent would switch the object off with it.
-        m_document.setVisible(o.id, m_document.isAncestorOf(id, o.id) ||
-                                        m_document.isAncestorOf(o.id, id));
+void MainWindow::onIsolateObject(const QList<int>& ids) {
+    for (const scenedoc::SceneObject& o : m_document.objects()) {
+        // The objects and everything under them, and the groups above them:
+        // hiding an isolated object's own parent would switch the object off
+        // with it.
+        bool keep = false;
+        for (int id : ids)
+            if (m_document.isAncestorOf(id, o.id) || m_document.isAncestorOf(o.id, id)) {
+                keep = true;
+                break;
+            }
+        m_document.setVisible(o.id, keep);
+    }
     syncDocument(true);
     refreshSourceGlyphs();
     m_sceneTree->setSelectedId(m_selectedObject);

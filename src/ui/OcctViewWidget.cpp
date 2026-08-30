@@ -57,6 +57,11 @@
 #include <cstdio>
 #include <cmath>
 
+// The colour a selected surface or source reads as. Kept apart from the amber
+// of the light source and the rays, which are the same family and would make a
+// selected object and an emitter indistinguishable.
+static const Quantity_Color kSelectionColour(0.0, 0.8, 0.9, Quantity_TOC_RGB);
+
 // ---------------------------------------------------------------------------
 // Ray paths as a single AIS object.
 //
@@ -371,7 +376,7 @@ void OcctViewWidget::setScene(GeometryProvider::Scene scene,
         Appearance want = look;
         if (std::find(m_highlight.begin(), m_highlight.end(), int(i)) !=
             m_highlight.end())
-            want = {Quantity_Color(1.0, 0.72, 0.25, Quantity_TOC_RGB), 0.25f};
+            want = {kSelectionColour, 0.25f};
 
         if (m_applied.size() <= i) m_applied.resize(i + 1);
         const bool lookChanged = fresh || m_applied[i] != want;
@@ -552,7 +557,7 @@ void OcctViewWidget::setHighlightedSurfaces(const std::vector<int>& indices) {
         Appearance want = i < m_baseLook.size() ? m_baseLook[i] : Appearance{};
         if (std::find(m_highlight.begin(), m_highlight.end(), int(i)) !=
             m_highlight.end())
-            want = {Quantity_Color(1.0, 0.72, 0.25, Quantity_TOC_RGB), 0.25f};
+            want = {kSelectionColour, 0.25f};
 
         if (m_applied.size() <= i) m_applied.resize(i + 1);
         if (m_applied[i] == want) continue;
@@ -978,7 +983,7 @@ void OcctViewWidget::applySourceHighlight() {
         if (m_sourceMarkers[i].IsNull()) continue;
         const bool on = int(i) == m_highlightSource;
         m_sourceMarkers[i]->SetColor(
-            on ? Quantity_Color(1.0, 0.72, 0.25, Quantity_TOC_RGB)
+            on ? kSelectionColour
                : Quantity_Color(1.0, 0.52, 0.12, Quantity_TOC_RGB));
         m_sourceMarkers[i]->SetTransparency(on ? 0.35f : 0.80f);
         m_context->Redisplay(m_sourceMarkers[i], Standard_False, Standard_False);
@@ -1609,6 +1614,12 @@ void OcctViewWidget::keyPressEvent(QKeyEvent* e) {
     case Qt::Key_2: setTransformMode(TransformMode::Translate); return;
     case Qt::Key_3: setTransformMode(TransformMode::Rotate);    return;
     case Qt::Key_4: setTransformMode(TransformMode::Scale);     return;
+    // Delete removes the selected object. The viewport does not own the
+    // document, so it only reports which object is selected and lets the owner
+    // confirm and remove it.
+    case Qt::Key_Delete:
+        if (m_selectionId != 0) emit deleteRequested(m_selectionId);
+        return;
     default: break;
     }
     if (!e->isAutoRepeat()) m_keysDown.insert(e->key());

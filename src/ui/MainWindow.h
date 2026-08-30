@@ -71,13 +71,23 @@ private slots:
     void onObjectDropped(const QString& typeKey, const gp_Pnt& where);
     void onCreateObject(scenedoc::ObjectType type, int parent);
     void onObjectSelected(int id);
+    // The whole tree selection changed. The primary (current) row drives the
+    // inspector via onObjectSelected; this carries the full set so the 3D view
+    // can highlight every object the user picked.
+    void onSelectionSetChanged(const QList<int>& ids);
     void onObjectVisibility(int id, bool visible);
     void onObjectRenamed(int id, const QString& name);
-    void onObjectDelete(int id);
-    void onObjectDuplicate(int id);
+    // Bulk operations: `ids` is the whole tree selection, so a Delete or
+    // Duplicate acts on every row the user picked with Ctrl/Shift.
+    void onObjectDelete(const QList<int>& ids);
+    // The Delete key was pressed in the 3D viewport. Confirms with the user
+    // before removing, because a Delete in the view is easy to hit by accident
+    // and the removal is not undoable.
+    void onViewportDelete(int id);
+    void onObjectDuplicate(const QList<int>& ids);
     void onObjectReparent(int id, int newParent);
     void onAddGroup();
-    void onIsolateObject(int id);
+    void onIsolateObject(const QList<int>& ids);
     void onShowAllObjects();
     // The selected object was dragged by the viewport's gizmo. `delta` is the
     // whole drag, in world coordinates.
@@ -169,6 +179,11 @@ private:
     // selected and which emitter does. Safe to call while the panel is being
     // edited, because it does not touch the panel.
     void refreshSelectionHighlight();
+    // Asks the user to confirm removing `ids` and everything under them, then
+    // removes them if they agree. Shared by the tree's Delete and the
+    // viewport's Delete key, so both ask the same question and do the same
+    // thing.
+    void confirmAndRemove(const QList<int>& ids);
     // Applies each object's "show this" flag to the bodies it compiled into.
     void applySurfaceVisibility();
     // Why the tutorial's dimensions no longer describe what is traced, or an
@@ -371,6 +386,9 @@ private:
     scenedoc::SceneDocument           m_document;
     scenedoc::SceneDocument::Compiled m_compiled;
     int                               m_selectedObject = 0;
+    // The whole tree selection, not just the primary. What the 3D view
+    // highlights when the user has picked several objects with Ctrl/Shift.
+    QList<int>                        m_selectedSet;
 
     // The surfaces currently displayed, so a pick can be named without asking
     // the cache for geometry that may have been rebuilt since.

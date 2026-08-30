@@ -90,7 +90,7 @@ SceneTreePanel::SceneTreePanel(QWidget* parent) : QWidget(parent) {
     m_tree->setHeaderLabels({QStringLiteral("Scene"), QStringLiteral("Type")});
     m_tree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_tree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    m_tree->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_tree->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_tree->setContextMenuPolicy(Qt::CustomContextMenu);
     m_tree->setDragEnabled(true);
     m_tree->setAcceptDrops(true);
@@ -132,12 +132,18 @@ SceneTreePanel::SceneTreePanel(QWidget* parent) : QWidget(parent) {
     connect(m_tree, &QWidget::customContextMenuRequested, this, &SceneTreePanel::onContextMenu);
 
     connect(m_group,     &QPushButton::clicked, this, [this] { emit groupRequested(); });
-    connect(m_duplicate, &QPushButton::clicked, this,
-            [this] { if (m_selected) emit duplicateRequested(m_selected); });
-    connect(m_delete,    &QPushButton::clicked, this,
-            [this] { if (m_selected) emit deleteRequested(m_selected); });
-    connect(m_isolate,   &QPushButton::clicked, this,
-            [this] { if (m_selected) emit isolateRequested(m_selected); });
+    connect(m_duplicate, &QPushButton::clicked, this, [this] {
+        const QList<int> ids = selectedIds();
+        if (!ids.isEmpty()) emit duplicateRequested(ids);
+    });
+    connect(m_delete,    &QPushButton::clicked, this, [this] {
+        const QList<int> ids = selectedIds();
+        if (!ids.isEmpty()) emit deleteRequested(ids);
+    });
+    connect(m_isolate,   &QPushButton::clicked, this, [this] {
+        const QList<int> ids = selectedIds();
+        if (!ids.isEmpty()) emit isolateRequested(ids);
+    });
     connect(m_showAll,   &QPushButton::clicked, this, [this] { emit showAllRequested(); });
 
     syncButtons();
@@ -192,56 +198,62 @@ void SceneTreePanel::rebuild() {
     addRows(0, nullptr);
     m_tree->expandAll();
 
-    // Put the selection back where it was, if what it pointed at survived.
-    if (m_doc && m_doc->find(m_selected)) {
-        std::function<QTreeWidgetItem*(QTreeWidgetItem*)> walk =
-            [&](QTreeWidgetItem* item) -> QTreeWidgetItem* {
-            if (idOf(item) == m_selected) return item;
-            for (int i = 0; i < item->childCount(); ++i)
-                if (QTreeWidgetItem* hit = walk(item->child(i))) return hit;
-            return nullptr;
-        };
-        for (int i = 0; i < m_tree->topLevelItemCount(); ++i)
-            if (QTreeWidgetItem* hit = walk(m_tree->topLevelItem(i))) {
-                m_tree->setCurrentItem(hit);
-                break;
-            }
-    } else {
-        m_selected = 0;
+    // Put the selection back where it was, if what it pointed at survived. The
+    // whole set is restored, not just the current row, so a multi-selection
+    // survives a visibility toggle or a rename that rebuilds the tree.
+    QList<int> toSelect;
+    for (int id : m_selectedSet)
+        if (m_doc && m_doc->find(id)) toSelect.append(id);
+    if (toSelect.isEmpty() && m_doc && m_doc->find(m_selected))
+        toSelect.append(m_selected);
+
+    m_tree->clearSelection();
+    QTreeWidgetItem* current = nullptr;
+    for (int id : toSelect) {
+        QTreeWidgetItem* it = findItem(id);
+        if (!it) continue;
+        it->setSelected(true);
+        if (id == m_selected) current = it;
     }
+    if (!current && !toSelect.isEmpty())
+        current = findItem(toSelect.first());
+    if (current) {
+        m_tree->setCurrentItem(current);
+        m_tree->scrollToItem(current);
+    }
+    m_selectedSet = QSet<int>(toSelect.begin(), toSelect.end());
     m_loading = false;
     syncButtons();
+    emit selectionSetChanged(selectedIds());
 }
 
 void SceneTreePanel::setSelectedId(int id) {
-    if (m_selected == id) return;
     m_selected = id;
+    m_selectedSet.clear();
+    if (id != 0) m_selectedSet.insert(id);
     m_loading  = true;
     m_tree->clearSelection();
-    std::function<QTreeWidgetItem*(QTreeWidgetItem*)> walk =
-        [&](QTreeWidgetItem* item) -> QTreeWidgetItem* {
-        if (idOf(item) == id) return item;
-        for (int i = 0; i < item->childCount(); ++i)
-            if (QTreeWidgetItem* hit = walk(item->child(i))) return hit;
-        return nullptr;
-    };
-    for (int i = 0; i < m_tree->topLevelItemCount(); ++i)
-        if (QTreeWidgetItem* hit = walk(m_tree->topLevelItem(i))) {
-            m_tree->setCurrentItem(hit);
-            m_tree->scrollToItem(hit);
-            break;
-        }
+    if (QTreeWidgetItem* hit = findItem(id)) {
+        hit->setSelected(true);
+        m_tree->setCurrentItem(hit);
+        m_tree->scrollToItem(hit);
+    }
     m_loading = false;
     syncButtons();
+    emit selectionSetChanged(selectedIds());
 }
 
 void SceneTreePanel::onCurrentChanged() {
     if (m_loading) return;
     const int id = idOf(m_tree->currentItem());
-    if (id == m_selected) return;
-    m_selected = id;
-    syncButtons();
-    emit selectionChanged(id);
+    m_selectedSet.clear();
+    for (int i : selectedIds()) m_selectedSet.insert(i);
+    if (id != m_selected) {
+        m_selected = id;
+        syncButtons();
+        emit selectionChanged(id);
+    }
+    emit selectionSetChanged(selectedIds());
 }
 
 // A row changed: it was ticked, unticked, or renamed in place.
@@ -277,17 +289,25 @@ void SceneTreePanel::onContextMenu(const QPoint& pos) {
     QTreeWidgetItem* item = m_tree->itemAt(pos);
     const int        id   = idOf(item);
 
+    // Right-clicking a row that is part of a multi-selection acts on the whole
+    // selection; right-clicking an unselected row acts on just that row.
+    QList<int> target;
+    if (item && item->isSelected())
+        target = selectedIds();
+    else if (id != 0)
+        target = {id};
+
     QMenu menu(this);
-    if (id != 0) {
+    if (!target.isEmpty()) {
         menu.addAction(QStringLiteral("Rename"), this,
                        [this, item] { m_tree->editItem(item, 0); });
         menu.addAction(QStringLiteral("Duplicate"), this,
-                       [this, id] { emit duplicateRequested(id); });
+                       [this, target] { emit duplicateRequested(target); });
         menu.addAction(QStringLiteral("Delete"), this,
-                       [this, id] { emit deleteRequested(id); });
+                       [this, target] { emit deleteRequested(target); });
         menu.addSeparator();
         menu.addAction(QStringLiteral("Isolate"), this,
-                       [this, id] { emit isolateRequested(id); });
+                       [this, target] { emit isolateRequested(target); });
         menu.addAction(QStringLiteral("Move to top level"), this,
                        [this, id] { emit reparentRequested(id, 0); });
     }
@@ -297,8 +317,32 @@ void SceneTreePanel::onContextMenu(const QPoint& pos) {
 }
 
 void SceneTreePanel::syncButtons() {
-    const bool have = m_selected != 0 && m_doc && m_doc->find(m_selected) != nullptr;
+    bool have = false;
+    for (int id : m_selectedSet)
+        if (m_doc && m_doc->find(id)) { have = true; break; }
     m_duplicate->setEnabled(have);
     m_delete->setEnabled(have);
     m_isolate->setEnabled(have);
+}
+
+QList<int> SceneTreePanel::selectedIds() const {
+    QList<int> ids;
+    for (const QTreeWidgetItem* it : m_tree->selectedItems()) {
+        const int i = idOf(it);
+        if (i != 0) ids.append(i);
+    }
+    return ids;
+}
+
+QTreeWidgetItem* SceneTreePanel::findItem(int id) const {
+    std::function<QTreeWidgetItem*(QTreeWidgetItem*)> walk =
+        [&](QTreeWidgetItem* item) -> QTreeWidgetItem* {
+        if (idOf(item) == id) return item;
+        for (int i = 0; i < item->childCount(); ++i)
+            if (QTreeWidgetItem* hit = walk(item->child(i))) return hit;
+        return nullptr;
+    };
+    for (int i = 0; i < m_tree->topLevelItemCount(); ++i)
+        if (QTreeWidgetItem* hit = walk(m_tree->topLevelItem(i))) return hit;
+    return nullptr;
 }
