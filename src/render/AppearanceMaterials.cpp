@@ -187,9 +187,41 @@ Material materialFor(const SurfaceOptics& o) {
 
         out.colour       = Quantity_Color(0.62, 0.78, 0.92, Quantity_TOC_RGB);
         out.transparency = 0.65f;
+
+        // An opal diffuser is transmissive *and* diffusing, and the diffusing
+        // half reached the render as nothing at all.
+        //
+        // `scatter` is a Lambertian lobe, so `glossRoughness` above -- which
+        // only understands a microfacet alpha -- returns zero for it and the
+        // glass came out perfectly clear. Every diffusing part in the library
+        // was drawn as a window: the diffuser plate, and the opal cover of a
+        // luminaire, whose entire visual character is that it glows evenly
+        // instead of showing the die behind it.
+        //
+        // So the Lambertian fraction is spent out of the transmitted lobe and
+        // into a white diffuse one. Kd + Kt stays where CreateGlass left it, so
+        // the surface neither gains nor loses energy; what changes is how much
+        // of what passes through is spread. At f = 1 it is a white translucent
+        // sheet, at f = 0 it is untouched glass, and the coat is roughened
+        // alongside it so the highlight softens as the sheet clouds over --
+        // which is what separates an opal cover from a clear one at a glance.
+        const float diffuse = float(diffuseFraction(o));
+        if (diffuse > 0.0f) {
+            out.bsdf.Kt = Graphic3d_Vec3(1.0f - diffuse);
+            out.bsdf.Kd = Graphic3d_Vec3(diffuse);
+            out.bsdf.Kc.a() = std::max(out.bsdf.Kc.a(), 0.35f * diffuse);
+            // Less see-through as it clouds, which is the same statement the
+            // rasterized preview needs in its own currency.
+            out.transparency = 0.65f * (1.0f - diffuse);
+            out.colour = Quantity_Color(0.90 - 0.28 * double(diffuse),
+                                        0.93 - 0.15 * double(diffuse),
+                                        0.96 - 0.04 * double(diffuse),
+                                        Quantity_TOC_RGB);
+        }
+
         out.pbr.SetColor(out.colour);
         out.pbr.SetMetallic(0.0f);
-        out.pbr.SetRoughness(std::max(rough, 0.03f));
+        out.pbr.SetRoughness(std::max({rough, 0.03f, diffuse}));
         out.pbr.SetIOR(std::clamp(n, 1.0f, 3.0f));
         out.pbr.SetAlpha(1.0f - out.transparency);
     }
@@ -230,6 +262,41 @@ Material materialFor(const SurfaceOptics& o) {
         } else {
             out.bsdf.FresnelBase = Graphic3d_Fresnel::CreateConstant(clamp01(residual));
         }
+    }
+
+    // ---- the paint -----------------------------------------------------------
+    //
+    // Applied last, over whatever the physics above decided, and only where
+    // somebody actually asked for a colour. This is the one place
+    // `appearanceRgb` is read in the whole application.
+    //
+    // What it multiplies is chosen per lobe rather than applied flat, because
+    // "red plastic" and "red glass" are different objects: paint tints what a
+    // surface *scatters* and leaves its specular highlight white, which is why
+    // a red car looks red with white reflections rather than like red chrome.
+    // So the diffuse and transmitted lobes take the tint and the coat does not.
+    if (o.hasAppearanceColour()) {
+        const Graphic3d_Vec3 tint(float(o.appearanceRgb[0]),
+                                  float(o.appearanceRgb[1]),
+                                  float(o.appearanceRgb[2]));
+
+        // An opaque surface with no diffuse lobe at all is a mirror, and a
+        // painted mirror is a painted mirror: the tint goes on the specular
+        // weight, which is how a coloured metal is described anyway.
+        const bool anyDiffuse = out.bsdf.Kd.r() > 0.0f || out.bsdf.Kd.g() > 0.0f ||
+                                out.bsdf.Kd.b() > 0.0f;
+        const bool anyTransmit = out.bsdf.Kt.r() > 0.0f || out.bsdf.Kt.g() > 0.0f ||
+                                 out.bsdf.Kt.b() > 0.0f;
+
+        if (anyDiffuse)  out.bsdf.Kd = out.bsdf.Kd * tint;
+        if (anyTransmit) out.bsdf.Kt = out.bsdf.Kt * tint;
+        if (!anyDiffuse && !anyTransmit) {
+            out.bsdf.Ks.SetValues(out.bsdf.Ks.r() * tint.r(), out.bsdf.Ks.g() * tint.g(),
+                                  out.bsdf.Ks.b() * tint.b(), out.bsdf.Ks.a());
+        }
+
+        out.colour = toColour(tint);
+        out.pbr.SetColor(out.colour);
     }
 
     return out;

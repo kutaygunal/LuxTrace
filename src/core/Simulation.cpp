@@ -399,6 +399,34 @@ SourceConfig Simulation::sourceFor(GeometryProvider::Scene scene,
     return sourceFor(cfg, *dataFor(cfg));
 }
 
+Simulation::SceneEmitter Simulation::emitterFor(GeometryProvider::Scene scene,
+                                                const SceneParams& raw) {
+    SceneEmitter out;
+    if (scene != GeometryProvider::Scene::ShowcaseLuminaire) return out;
+
+    const SceneParams P = GeometryProvider::sanitise(scene, raw);
+
+    out.declared          = true;
+    out.spec.label        = QStringLiteral("LED die");
+    // Lambertian over a square, which is what a die is. The size matters twice:
+    // it is the etendue that limits how tightly the cup can collimate, and it
+    // is the emitting *area* that makes the Appearance preview draw a glowing
+    // face rather than fall back to a point light.
+    out.spec.type         = SourceConfig::Type::Lambertian;
+    out.spec.shape        = SourceConfig::Shape::Rect;
+    out.spec.halfAngleDeg = 90.0;
+    out.spec.sizeA        = P.v[2];
+    out.spec.sizeB        = P.v[2];
+    // A phosphor-converted white LED at a neutral 4000 K. The render integrates
+    // this through the colour matching functions, so the cup is lit the colour
+    // the source actually is rather than a default white.
+    SpectrumConfig spectrum(SpectrumConfig::Kind::LedPhosphor);
+    spectrum.cct          = 4000.0;
+    out.spec.spectrum     = spectrum;
+    out.spec.power        = 1.0;
+    return out;
+}
+
 const TraceScene& Simulation::sceneFor(GeometryProvider::Scene scene,
                                        double* buildSecondsOut) {
     // Default-parameter entries are pinned, so this reference outlives the call.

@@ -120,6 +120,14 @@ OpticalSurface diffuseWhite(TopoDS_Shape s, const QString& label, double refl) {
     return o;
 }
 
+// A matte body: the same Lambertian mechanism as the white cavity above, at
+// whatever reflectance the part is actually finished to. A housing is not white
+// and a deck is not paint, but both scatter everything they return, and that is
+// what the mechanism says.
+OpticalSurface matte(TopoDS_Shape s, const QString& label, double refl) {
+    return diffuseWhite(std::move(s), label, refl);
+}
+
 // ---- profile helpers -------------------------------------------------------
 // Profiles are given in the plane x = 0 as (0, r, z) and revolved about +Z.
 
@@ -175,6 +183,35 @@ TopoDS_Shape makeDetectorAt(double size, double cx, double cy, double cz) {
 OpticalSurface detector(double size, double z, double cx = 0.0, double cy = 0.0) {
     return surf(makeDetectorAt(size, cx, cy, z), QStringLiteral("Detector"),
                 0.0, 0.0, 0.0, true);
+}
+
+// The floor a fixture stands on: a square normal to the axis, behind everything,
+// facing the way the optic points.
+//
+// Behind rather than beside, which is not a composition choice but the only
+// place it can go. The optical axis is +z and so is the viewer's up, so a
+// luminaire on this axis is an uplighter: it stands on the floor and throws its
+// beam at the receiver overhead. A plane below it is therefore *behind* it, and
+// a beam that only ever travels +z cannot reach it -- the measurement is the
+// measurement it would have been without a floor at all. What the floor is for
+// is the picture, where an object standing on something reads as a photograph
+// and the same object in a void reads as CAD.
+//
+// Built on an explicit plane rather than on the winding of its own wire, so the
+// normal faces the fixture because it was asked to. A wire wound the other way
+// gives a face pointing away into nothing, which the tracer copes with and a
+// renderer draws as a black slab: the geometry right and the picture wrong,
+// which is the hardest kind of wrong to find by reading.
+TopoDS_Shape floorPlate(double halfSide, double z) {
+    BRepBuilderAPI_MakePolygon poly;
+    poly.Add(gp_Pnt(-halfSide, -halfSide, z));
+    poly.Add(gp_Pnt(halfSide, -halfSide, z));
+    poly.Add(gp_Pnt(halfSide, halfSide, z));
+    poly.Add(gp_Pnt(-halfSide, halfSide, z));
+    poly.Close();
+    Handle(Geom_Plane) plane =
+        new Geom_Plane(gp_Ax2(gp_Pnt(0.0, 0.0, z), gp_Dir(0, 0, 1)));
+    return BRepBuilderAPI_MakeFace(plane, poly.Wire(), true).Shape();
 }
 
 // ---- individual optics -----------------------------------------------------
@@ -264,6 +301,56 @@ TopoDS_Shape cornerCube(double side) {
     builder.Add(compound, plate(gp_Pnt(0, 0, 0), gp_Pnt(0, s, 0), gp_Pnt(0, s, s), gp_Pnt(0, 0, s)));
     builder.Add(compound, plate(gp_Pnt(0, 0, 0), gp_Pnt(s, 0, 0), gp_Pnt(s, 0, s), gp_Pnt(0, 0, s)));
     return compound;
+}
+
+// The showcase fixture's dimensions, derived once from its three parameters so
+// the builder and the derived-quantity strip cannot disagree about where the rim
+// is. Every length below is cut from the cup radius, which is what makes the
+// fixture scale as one object rather than as four parts that happen to fit.
+struct Fixture {
+    double cupRadius = 60.0;
+    double focal     = 24.0;
+    double die       = 5.0;
+    double diffusion = 0.55;
+
+    // Rim height of the paraboloid z = r^2 / 4f. With f below half the rim
+    // radius this is above the focus, so the die sits down inside the cup.
+    double rimZ() const { return cupRadius * cupRadius / (4.0 * focal); }
+    // A hole at the vertex, where the die's own mount would pass through.
+    double vertexHole() const { return std::max(1.5, 0.75 * die); }
+
+    double bezelRadius() const { return cupRadius + 5.0; }
+    double backZ() const { return -8.0; }
+
+    // The cover lens: a shallow spherical cap on a cylindrical edge band,
+    // sitting on the rim. Gentle enough to be a cover rather than a second
+    // optic -- it is here because acrylic in front of a lit cup is what the
+    // part actually looks like.
+    double lensSag() const { return 0.30 * cupRadius; }
+    double lensRadius() const { return 2.2 * cupRadius; }
+
+    // Wide enough for the beam the die's own size forces open: the spread
+    // below is the half-angle at the rim, and the aperture is added to it.
+    double receiverSize() const {
+        const double spread = 0.5 * die / std::max(1.0, focal);
+        return std::max(220.0, 2.2 * (cupRadius + spread * 400.0));
+    }
+
+    // The base the fixture stands on -- a short coaxial plinth under the
+    // housing, the heat sink of any real fixture -- and the floor under that.
+    double baseHeight() const { return 0.22 * cupRadius; }
+    double baseRadius() const { return 1.12 * bezelRadius(); }
+    double baseZ() const { return backZ() - baseHeight(); }
+    double floorHalfSide() const { return 2.6 * cupRadius; }
+};
+
+Fixture fixture(const SceneParams& P) {
+    Fixture x;
+    x.cupRadius = P.v[0];
+    x.focal     = P.v[1];
+    x.die       = P.v[2];
+    x.diffusion = P.v[3];
+    return x;
 }
 
 // Where the lenslets of an nx x ny array sit, as translations about the origin.
@@ -416,6 +503,22 @@ const std::array<SceneInfo, std::size_t(Scene::Count)>& registry() {
                         "around a single emitter on an axis; this one cannot be described "
                         "by one at all."),
          gp_Pnt(-135.0, 0, 32.0), gp_Dir(0, 0, -1)},
+
+        // --- showcase ---
+        {QStringLiteral("Showcase Luminaire (appearance)"),
+         QStringLiteral("A whole fixture rather than a bare optic: an LED die in an "
+                        "aluminium reflector cup, behind an acrylic cover lens, in a "
+                        "housing, over a matte deck. Every other scene in this library "
+                        "is one optic floating in nothing, which is the right way to "
+                        "teach one optic and the wrong way to see what a part looks "
+                        "like -- a render of an object against no background reads as "
+                        "CAD, and a render of the same object standing on something "
+                        "reads as a photograph. So this one carries the surfaces a "
+                        "picture needs: metal to reflect, glass to refract, a deck for "
+                        "the light to land on. It ships with a real emitting area, so "
+                        "the die glows as a face in the Appearance tab instead of being "
+                        "a point light -- and it is traced exactly as it is drawn."),
+         gp_Pnt(0, 0, 24.0), gp_Dir(0, 0, -1)},
     }};
     return table;
 }
@@ -569,6 +672,28 @@ const std::array<std::vector<SceneParamInfo>, std::size_t(Scene::Count)>& paramT
             "Rim radius of one cup. Clamped below half the pitch, because "
             "neighbouring cups that overlap are not a luminaire."),
          detZ(200, 1200, 500)},
+        // ShowcaseLuminaire
+        {mk("Cup radius", "mm", 25, 120, 60, 2.5, 1,
+            "Rim radius of the reflector, and the size of the whole fixture: the "
+            "housing, the cover lens and the deck are all cut from it."),
+         mk("Cup focal length", "mm", 10, 70, 24, 1, 1,
+            "The die sits at the focus, so this moves both. Below half the rim "
+            "radius the cup is deeper than it is wide and the die disappears "
+            "inside it -- which is what a real fixture does, and what makes the "
+            "render show a lit cavity rather than a bare emitter."),
+         mk("Die size", "mm", 1, 16, 5, 0.5, 1,
+            "Edge of the square emitting area. This is the one number that is "
+            "both an optical parameter and a visual one: it sets the etendue "
+            "that limits how tightly the cup can collimate, and it is the size "
+            "of the glowing face the Appearance tab draws."),
+         mk("Cover diffusion", "", 0.0, 1.0, 0.55, 0.05, 2,
+            "How opal the cover is. At zero it is clear acrylic: the beam "
+            "leaves as the cup formed it and the render shows the reflector "
+            "through the glass. Turned up it is an opal cover -- the beam "
+            "widens and softens, and the whole aperture glows, which is what a "
+            "luminaire looks like switched on and what a bare optic never "
+            "does."),
+         detZ(150, 1200, 320)},
     }};
     return table;
 }
@@ -1031,6 +1156,52 @@ std::vector<DerivedQuantity> GeometryProvider::derived(Scene scene, const SceneP
                                         "the spill the receiver sees around the beams.")));
         break;
     }
+    case Scene::ShowcaseLuminaire: {
+        const Fixture x = fixture(P);
+        addFNumberAndNa(out, x.focal, x.cupRadius);
+
+        out.push_back(dq(QStringLiteral("Rim angle"),
+                         2.0 * std::atan2(x.cupRadius, x.focal - x.rimZ()) / kPi * 180.0,
+                         1, QStringLiteral("deg"),
+                         QStringLiteral("Full angle the rim subtends from the die. What "
+                                        "the cup fails to catch of the die's hemisphere "
+                                        "leaves as spill, which is the light that lands "
+                                        "on the deck rather than on the receiver.")));
+
+        out.push_back(dq(QStringLiteral("Cup depth"), x.rimZ(), 1, QStringLiteral("mm"),
+                         QStringLiteral("Rim height above the vertex. Deeper than the "
+                                        "focus means the die sits inside the cup, which "
+                                        "is what makes the render show a lit cavity "
+                                        "rather than a bare emitter.")));
+
+        // The etendue limit, stated as the divergence it forces. A point source
+        // at the focus of a paraboloid collimates exactly; a real die of finite
+        // size cannot, and this is the angle it cannot beat.
+        out.push_back(dq(QStringLiteral("Source-limited spread"),
+                         2.0 * std::atan2(0.5 * x.die, x.focal) / kPi * 180.0, 2,
+                         QStringLiteral("deg"),
+                         QStringLiteral("Full beam angle the die's own size forces on a "
+                                        "perfect cup: it is the angle the die subtends "
+                                        "from the vertex, and no reflector shape removes "
+                                        "it. Shrink the die or lengthen the focus to "
+                                        "beat it; the far-field plot is the measurement.")));
+
+        out.push_back(dq(QStringLiteral("Cover diffusion"), x.diffusion, 2, QString(),
+                         QStringLiteral("Fraction of what leaves the cover that is "
+                                        "scattered rather than refracted straight on. "
+                                        "It buys the glow and the soft edge, and it "
+                                        "costs beam intensity -- the far-field plot is "
+                                        "where the trade is read.")));
+
+        out.push_back(dq(QStringLiteral("Die etendue"),
+                         kPi * x.die * x.die, 1, QStringLiteral("mm^2 sr"),
+                         QStringLiteral("Area times projected solid angle for a "
+                                        "Lambertian square over a hemisphere, pi A. No "
+                                        "passive optic reduces it, which is the same "
+                                        "statement as the spread above.")));
+        break;
+    }
+
     case Scene::CornerCube:
     case Scene::Count:
         break;
@@ -1388,6 +1559,82 @@ GeometryProvider::SceneSetup GeometryProvider::build(Scene scene, const ScenePar
         // The scene's own emitter belongs to the first cup. Every other cup is
         // a source the user adds -- see sourceOffsets, which says where.
         out.sourceOrigin = gp_Pnt(a.x0, 0.0, a.focal);
+        out.sourceAxis   = gp_Dir(0, 0, -1);
+        break;
+    }
+
+    // ------------------------------------------------------------ showcase --
+    case Scene::ShowcaseLuminaire: {
+        const Fixture x = fixture(P);
+
+        // Aluminium, which is the part of this scene that pays for the
+        // per-channel complex index: a mirror with nothing around it to reflect
+        // shows none of it, and a mirror inside a housing on a floor shows all
+        // of it.
+        //
+        // Lightly peened rather than optically polished, which is how a
+        // luminaire reflector is actually finished: a mirror finish images the
+        // die onto the wall, and the texture is there to stop it. A few percent
+        // of scatter, so the beam is softened and not spoiled.
+        OpticalSurface cup = mirror(paraboloid(x.focal, x.vertexHole(), x.cupRadius),
+                                    QStringLiteral("Reflector Cup"));
+        cup.scatter = 0.06;
+        s.push_back(cup);
+
+        // The body: a back plate and a wall, in one shell of revolution. Dark
+        // anodised rather than black, because a housing that returns nothing at
+        // all is a silhouette and not a part.
+        s.push_back(matte(revolvePolyline({gp_Pnt(0, 0, x.backZ()),
+                                           gp_Pnt(0, x.bezelRadius(), x.backZ()),
+                                           gp_Pnt(0, x.bezelRadius(), x.rimZ() + 2.0)}),
+                          QStringLiteral("Housing"), 0.14));
+
+        // The cover, as a sphere cut to a disc: a shallow cap with a short
+        // cylindrical edge, which is how a moulded cover actually leaves its
+        // tool. Uncoated acrylic, because a luminaire cover is not a coated
+        // lens and pretending otherwise would flatter the efficiency.
+        //
+        // This is the part that makes the fixture read as switched on. A clear
+        // cover over a specular cup sends the whole beam up the axis and shows
+        // a camera off to one side nothing at all -- correct, and a black
+        // photograph. An opal cover scatters some of that beam in every
+        // direction, which is what makes an aperture glow, and it is also what
+        // the diffusion knob is for optically: the beam widens because the
+        // cover is doing something, not because the picture wanted it to.
+        const double zLens = x.rimZ();
+        const TopoDS_Shape dome =
+            BRepPrimAPI_MakeSphere(gp_Pnt(0, 0, zLens + x.lensSag() - x.lensRadius()),
+                                   x.lensRadius()).Shape();
+        const TopoDS_Shape band =
+            BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, zLens), gp_Dir(0, 0, 1)),
+                                     x.cupRadius, x.lensSag() + 2.0).Shape();
+        OpticalSurface cover = glass(BRepAlgoAPI_Common(dome, band).Shape(),
+                                     QStringLiteral("Opal Cover"), false, kPolymer,
+                                     nullptr);
+        cover.scatter = std::clamp(x.diffusion, 0.0, 1.0);
+        // A filled acrylic diffuses through its thickness as well as at its
+        // faces, exactly as the diffuser plate scene models it.
+        cover.volume.coefficient = 0.015 * std::clamp(x.diffusion, 0.0, 1.0);
+        cover.volume.anisotropy  = 0.6;
+        s.push_back(cover);
+
+        // The base: a plinth the housing sits on, which is where a real fixture
+        // puts its heat sink and its cable gland.
+        s.push_back(matte(BRepPrimAPI_MakeCylinder(
+                              gp_Ax2(gp_Pnt(0, 0, x.baseZ()), gp_Dir(0, 0, 1)),
+                              x.baseRadius(), x.baseHeight()).Shape(),
+                          QStringLiteral("Base"), 0.18));
+
+        // The floor -- see floorPlate for why it is behind the optic and why it
+        // is not in the measurement. Light grey rather than white: a bench top,
+        // and something for the cup's spill to land on.
+        s.push_back(matte(floorPlate(x.floorHalfSide(), x.baseZ()),
+                          QStringLiteral("Floor"), 0.45));
+
+        s.push_back(detector(x.receiverSize(), dz));
+
+        // The die, at the focus, facing into the cup.
+        out.sourceOrigin = gp_Pnt(0, 0, x.focal);
         out.sourceAxis   = gp_Dir(0, 0, -1);
         break;
     }

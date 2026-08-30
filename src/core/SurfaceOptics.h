@@ -38,6 +38,42 @@ struct SurfaceOptics {
     // Only consulted while a ray is travelling inside the solid.
     double absorption = 0.0;
 
+    // What this surface *looks* like, and nothing else.
+    //
+    // The one field in this struct the tracer never reads. Everything else here
+    // is a physical quantity that changes an answer; this changes a picture.
+    // It exists because reflectivity is a single scalar -- grey -- so a red
+    // brick, a yellow hub and a black tyre are the same surface to this model
+    // and come out of the Appearance preview as three identical greys. A CAD
+    // assembly is *mostly* made of parts like that, and a render in which the
+    // whole assembly is one colour is not a render of it.
+    //
+    // Held apart from the physics rather than folded into it, deliberately.
+    // Doing this properly means a spectral reflectance curve per surface, which
+    // is a real feature with real consequences -- it would change every number
+    // the tracer reports, and colour-over-angle would become a measurable
+    // output rather than a limit. This is not that, and must not be mistaken
+    // for it: it is sRGB paint on the preview, it moves no flux, and a run
+    // gives bit-identical answers with it set or unset.
+    //
+    // Negative means "unset": the render derives the colour from the physics
+    // the way it always has, which is what every built-in scene wants -- an
+    // aluminium reflector's colour is its complex index and not a swatch
+    // somebody picked.
+    double appearanceRgb[3] = {-1.0, -1.0, -1.0};
+
+    bool hasAppearanceColour() const {
+        return appearanceRgb[0] >= 0.0 && appearanceRgb[1] >= 0.0 && appearanceRgb[2] >= 0.0;
+    }
+    void setAppearanceColour(double r, double g, double b) {
+        appearanceRgb[0] = r;
+        appearanceRgb[1] = g;
+        appearanceRgb[2] = b;
+    }
+    void clearAppearanceColour() {
+        appearanceRgb[0] = appearanceRgb[1] = appearanceRgb[2] = -1.0;
+    }
+
     // Fraction of the reflected (and of the transmitted) energy that leaves
     // cosine-weighted about the surface normal instead of specularly.
     // 0 is a polished surface, 1 a perfect Lambertian diffuser.

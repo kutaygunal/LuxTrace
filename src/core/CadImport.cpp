@@ -117,13 +117,25 @@ int countZeroAreaFaces(const TopoDS_Shape& shape) {
     return n;
 }
 
-void applyMaterial(OpticalSurface& o, const QString& materialName, bool reflective) {
+void applyMaterial(OpticalSurface& o, const QString& materialName, Finish finish) {
     const OpticalMaterial m = materials::byName(materialName);
-    if (reflective) {
+    if (finish == Finish::Mirror) {
         o.reflectivity = 0.95;
         o.transmissivity = 0.0;
         o.index = 0.0;
         if (m.valid() && m.isMetal()) o.material = m;
+        return;
+    }
+    if (finish == Finish::Opaque) {
+        // A moulded or painted part: it returns some light, all of it
+        // diffusely, and passes none. The reflectance is a mid grey because
+        // that is what an unpainted part is; the *colour* is a separate
+        // appearance property the user sets per part, and deliberately not
+        // something an importer invents.
+        o.reflectivity   = 0.55;
+        o.transmissivity = 0.0;
+        o.index          = 0.0;
+        o.scatter        = 1.0;
         return;
     }
     o.fresnel        = true;
@@ -466,7 +478,7 @@ ImportResult read(const QString& path, const ImportOptions& options) {
 }
 
 std::vector<OpticalSurface> toSurfaces(const ImportResult& result,
-                                       const QString& materialName, bool reflective) {
+                                       const QString& materialName, Finish finish) {
     std::vector<OpticalSurface> out;
     if (!result.ok) return out;
     out.reserve(result.shapes.size());
@@ -474,21 +486,21 @@ std::vector<OpticalSurface> toSurfaces(const ImportResult& result,
         OpticalSurface o;
         o.shape = s.shape;
         o.label = s.label;
-        applyMaterial(o, materialName, reflective);
+        applyMaterial(o, materialName, finish);
         out.push_back(std::move(o));
     }
     return out;
 }
 
 std::vector<OpticalSurface> facesOf(const ImportedShape& shape,
-                                    const QString& materialName, bool reflective) {
+                                    const QString& materialName, Finish finish) {
     std::vector<OpticalSurface> out;
     int i = 0;
     for (TopExp_Explorer ex(shape.shape, TopAbs_FACE); ex.More(); ex.Next()) {
         OpticalSurface o;
         o.shape = ex.Current();
         o.label = QStringLiteral("%1 face %2").arg(shape.label).arg(++i);
-        applyMaterial(o, materialName, reflective);
+        applyMaterial(o, materialName, finish);
         out.push_back(std::move(o));
     }
     return out;
@@ -532,13 +544,13 @@ OpticalSurface makeReceiver(double size, const gp_Pnt& center, const gp_Dir& nor
 }
 
 GeometryProvider::SceneSetup makeScene(const ImportResult& result,
-                                       const QString& materialName, bool reflective,
+                                       const QString& materialName, Finish finish,
                                        int detectorBins, const gp_Dir& axis,
                                        double standoff) {
     GeometryProvider::SceneSetup setup;
     if (!result.ok) return setup;
 
-    setup.surfaces = toSurfaces(result, materialName, reflective);
+    setup.surfaces = toSurfaces(result, materialName, finish);
 
     double extent = 0.0;
     for (int a = 0; a < 3; ++a)

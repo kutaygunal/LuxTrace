@@ -2486,7 +2486,7 @@ TEST(cad, a_step_file_round_trips_into_traceable_geometry) {
 
     // And it meshes and traces like any other optic.
     std::vector<OpticalSurface> surfaces =
-        cadimport::toSurfaces(r, QStringLiteral("N-BK7"), /*reflective=*/false);
+        cadimport::toSurfaces(r, QStringLiteral("N-BK7"), cadimport::Finish::Refractive);
     CHECK(!surfaces.empty());
     CHECK(surfaces[0].index > 1.4);
     surfaces.push_back(cadimport::makeReceiver(400.0, 200.0, 32));
@@ -2531,7 +2531,7 @@ TEST(cad, an_assembly_arrives_as_one_surface_per_part) {
 
     // And a single part splits further, one surface per face.
     const auto faces = cadimport::facesOf(r.shapes[0], QStringLiteral("Aluminium"),
-                                          /*reflective=*/true);
+                                          cadimport::Finish::Mirror);
     CHECK(faces.size() == 6);
     for (const auto& f : faces) {
         CHECK(f.reflectivity > 0.5);
@@ -2589,7 +2589,7 @@ TEST(cad, an_import_is_traced_instead_of_the_selected_scene) {
     const cadimport::ImportResult r = cadimport::read(path);
     CHECK(r.ok);
     auto setup = std::make_shared<GeometryProvider::SceneSetup>(
-        cadimport::makeScene(r, QStringLiteral("N-BK7"), /*reflective=*/false, 16));
+        cadimport::makeScene(r, QStringLiteral("N-BK7"), cadimport::Finish::Refractive, 16));
     setup->label = QStringLiteral("offset box");
     CHECK(setup->surfaces.size() == 2);       // the part, and the receiver for it
 
@@ -2638,7 +2638,7 @@ TEST(cad, an_imported_scene_places_its_receiver_and_source_around_the_part) {
     CHECK(r.ok);
 
     const GeometryProvider::SceneSetup setup =
-        cadimport::makeScene(r, QStringLiteral("N-BK7"), false);
+        cadimport::makeScene(r, QStringLiteral("N-BK7"), cadimport::Finish::Refractive);
     CHECK(setup.surfaces.size() == 2);
     CHECK(setup.surfaces.back().isDetector);
     CHECK(!setup.surfaces.front().isDetector);
@@ -2671,7 +2671,7 @@ TEST(cad, imported_geometry_is_tessellated_once_and_reused) {
     const cadimport::ImportResult r = cadimport::read(path);
     CHECK(r.ok);
     auto setup = std::make_shared<GeometryProvider::SceneSetup>(
-        cadimport::makeScene(r, QStringLiteral("N-BK7"), false));
+        cadimport::makeScene(r, QStringLiteral("N-BK7"), cadimport::Finish::Refractive));
 
     double first = -1.0, second = -1.0;
     const Simulation::SceneRef a = Simulation::dataFor(setup, 0, &first);
@@ -2701,7 +2701,7 @@ TEST(cad, a_study_over_dimensions_declines_on_imported_geometry) {
     cfg.scene    = GeometryProvider::Scene::Lens;
     cfg.rays     = 200;
     cfg.imported = std::make_shared<GeometryProvider::SceneSetup>(
-        cadimport::makeScene(r, QStringLiteral("N-BK7"), false));
+        cadimport::makeScene(r, QStringLiteral("N-BK7"), cadimport::Finish::Refractive));
 
     CHECK(studies::parameterSweep(cfg, 0, 1.0, 5.0, 3, studies::Metric::Efficiency, 1).empty());
     CHECK(!studies::optimise(cfg, {0}, studies::Objective{}, studies::Optimiser::NelderMead,
@@ -2731,9 +2731,9 @@ TEST(cad, a_part_can_be_lit_from_any_side) {
     CHECK(r.ok);
 
     const GeometryProvider::SceneSetup along =
-        cadimport::makeScene(r, QStringLiteral("N-BK7"), false, 32, gp_Dir(0, 0, 1));
+        cadimport::makeScene(r, QStringLiteral("N-BK7"), cadimport::Finish::Refractive, 32, gp_Dir(0, 0, 1));
     const GeometryProvider::SceneSetup across =
-        cadimport::makeScene(r, QStringLiteral("N-BK7"), false, 32, gp_Dir(1, 0, 0));
+        cadimport::makeScene(r, QStringLiteral("N-BK7"), cadimport::Finish::Refractive, 32, gp_Dir(1, 0, 0));
 
     // Down the long axis: clear the 100 mm depth, then stand off 75 mm.
     CHECK_NEAR(along.sourceOrigin.Z(), -125.0, 1e-6);

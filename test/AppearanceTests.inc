@@ -903,3 +903,261 @@ TEST(appearanceoutput, a_lumen_run_is_captioned_in_lumens) {
     CHECK(lumens.contains(QStringLiteral(" lm ")));
     CHECK(!lumens.contains(QStringLiteral(" W ")));
 }
+
+// ---- the showcase scene ----------------------------------------------------
+//
+// A scene that exists to be looked at still has to be a scene: it is traced by
+// the same tracer, closes the same energy budget, and its props have to be
+// props rather than obstacles. These are the properties that make it honest,
+// as opposed to the ones that make it handsome, which are reviewed by eye.
+
+TEST(appearanceshowcase, the_fixture_carries_the_surfaces_a_picture_needs) {
+    // Metal to reflect, glass to refract, something matte to land on. The
+    // scene is a demonstration of the material bridge, so it has to exercise
+    // more than one branch of it.
+    const auto scene = GeometryProvider::Scene::ShowcaseLuminaire;
+    const std::vector<OpticalSurface> parts = GeometryProvider::buildScene(scene);
+
+    bool metal = false, transmissive = false, matte = false, receiver = false;
+    for (const OpticalSurface& s : parts) {
+        if (s.isDetector) { receiver = true; continue; }
+        const appearance::Material m = appearance::materialFor(s);
+        // A metal by what makes it one -- its own complex index, which is
+        // what the render reads -- rather than by being perfectly polished.
+        // The cup is lightly peened, as a real reflector is.
+        if (s.material.isMetal()) metal = true;
+        if (s.index > 1.0) transmissive = true;
+        if (s.scatter >= 0.99 && s.index <= 0.0) matte = true;
+        // Whatever it is, it has to reach OCCT as something drawable.
+        CHECK(std::isfinite(m.transparency));
+    }
+    CHECK(metal);
+    CHECK(transmissive);
+    CHECK(matte);
+    CHECK(receiver);
+}
+
+TEST(appearanceshowcase, the_props_stay_out_of_the_measurement) {
+    // The floor and the base are there for the picture. A prop that intercepts
+    // light on its way to the receiver is not a prop, it is a part of the
+    // optic that nobody declared -- so the geometry has to keep them behind
+    // the emitter, where a beam travelling forward cannot reach them.
+    const auto scene = GeometryProvider::Scene::ShowcaseLuminaire;
+    const SceneParams params = GeometryProvider::defaultParams(scene);
+    const GeometryProvider::SceneSetup setup = GeometryProvider::build(scene, params);
+
+    double propMaxZ = -1e30;
+    double receiverZ = 0.0;
+    for (const OpticalSurface& s : setup.surfaces) {
+        Bnd_Box box;
+        BRepBndLib::Add(s.shape, box);
+        if (box.IsVoid()) continue;
+        double lo[3], hi[3];
+        box.Get(lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+
+        if (s.isDetector) { receiverZ = 0.5 * (lo[2] + hi[2]); continue; }
+        if (s.label == QStringLiteral("Floor") || s.label == QStringLiteral("Base"))
+            propMaxZ = std::max(propMaxZ, hi[2]);
+    }
+
+    CHECK(propMaxZ > -1e29);
+    // Behind the emitter, which is itself far behind the receiver.
+    CHECK(propMaxZ <= setup.sourceOrigin.Z());
+    CHECK(receiverZ > propMaxZ);
+}
+
+TEST(appearanceshowcase, the_scene_declares_the_emitter_it_is_built_around) {
+    // Most of the library declines to choose a source, and should: a ball lens
+    // teaches the same lesson under any of them. A luminaire does not -- an LED
+    // fixture with a mathematical point in it is not a fixture -- so this one
+    // says what belongs at its focus, and the size it says is the size the
+    // parameter block was edited to.
+    const auto scene = GeometryProvider::Scene::ShowcaseLuminaire;
+    SceneParams params = GeometryProvider::defaultParams(scene);
+
+    const Simulation::SceneEmitter declared = Simulation::emitterFor(scene, params);
+    CHECK(declared.declared);
+    CHECK(declared.spec.shape == SourceConfig::Shape::Rect);
+    CHECK(declared.spec.type == SourceConfig::Type::Lambertian);
+    CHECK(declared.spec.sizeA > 0.0);
+    CHECK_NEAR(declared.spec.sizeA, params.v[2], 1e-12);
+    CHECK_NEAR(declared.spec.sizeB, params.v[2], 1e-12);
+
+    // It follows the dimension rather than being frozen at the default.
+    params.v[2] = 12.0;
+    CHECK_NEAR(Simulation::emitterFor(scene, params).spec.sizeA, 12.0, 1e-12);
+
+    // And a scene that is not built around one says so by declining.
+    for (int s = 0; s < GeometryProvider::count(); ++s) {
+        const auto other = GeometryProvider::Scene(s);
+        if (other == scene) continue;
+        CHECK(!Simulation::emitterFor(other, GeometryProvider::defaultParams(other)).declared);
+    }
+}
+
+TEST(appearanceshowcase, a_declared_emitter_has_a_real_area_so_it_renders_as_a_face) {
+    // The reason the declaration exists at all. A point-like source has no face
+    // to put `Le` on, so the Appearance tab can only draw it as a light and the
+    // fixture shows nothing glowing -- which is the one thing a luminaire has
+    // to show. With an area, the die becomes geometry that emits.
+    const auto scene = GeometryProvider::Scene::ShowcaseLuminaire;
+    const SceneParams params = GeometryProvider::defaultParams(scene);
+    const GeometryProvider::SceneSetup setup = GeometryProvider::build(scene, params);
+    const Simulation::SceneEmitter declared = Simulation::emitterFor(scene, params);
+
+    SourceConfig die;
+    die.type   = declared.spec.type;
+    die.shape  = declared.spec.shape;
+    die.sizeA  = declared.spec.sizeA;
+    die.sizeB  = declared.spec.sizeB;
+    die.power  = declared.spec.power;
+    die.origin = setup.sourceOrigin;
+    die.axis   = setup.sourceAxis;
+
+    CHECK(appearance::sourceRadiance(die) > 0.0);
+
+    const appearance::EmitterBuild built = appearance::buildEmitters({die}, 250.0);
+    CHECK(built.emitters.size() == 1);
+    CHECK(!built.emitters[0].pointLike);
+    CHECK(!built.emitters[0].shape.IsNull());
+    CHECK(built.pointSources == 0);
+}
+
+TEST(appearanceemitters, an_area_emitter_is_also_a_light_and_at_the_scene_s_scale) {
+    // OCCT's path tracer finds emissive geometry only by a path landing on it,
+    // so a small emitting face lights nothing at all. Every emitter therefore
+    // also becomes a positional light -- and that light's intensity has to
+    // scale with the scene, because OCCT's positional light falls off as 1/d^2
+    // and a fixed intensity renders a large scene black at every exposure.
+    SourceConfig die;
+    die.type   = SourceConfig::Type::Lambertian;
+    die.shape  = SourceConfig::Shape::Rect;
+    die.sizeA  = 5.0;
+    die.sizeB  = 5.0;
+    die.power  = 1.0;
+    die.origin = gp_Pnt(0, 0, 0);
+    die.axis   = gp_Dir(0, 0, 1);
+
+    const appearance::EmitterBuild small = appearance::buildEmitters({die}, 50.0);
+    const appearance::EmitterBuild large = appearance::buildEmitters({die}, 500.0);
+    CHECK(small.emitters.size() == 1 && large.emitters.size() == 1);
+
+    // An area emitter carries a light as well as a face.
+    CHECK(!small.emitters[0].pointLike);
+    CHECK(small.emitters[0].intensity > 0.0);
+    // Ten times the scene is a hundred times the intensity, which is what
+    // cancelling an inverse square means.
+    CHECK_NEAR(large.emitters[0].intensity / small.emitters[0].intensity, 100.0, 1e-6);
+
+    // The soft radius comes from the emitter's own size, because that is what
+    // sets a real penumbra -- not from the scene, which is all a point source
+    // has to go on.
+    CHECK(small.emitters[0].smoothRadius > 1.0);
+    CHECK_NEAR(small.emitters[0].smoothRadius, large.emitters[0].smoothRadius, 1e-12);
+}
+
+TEST(appearancematerials, a_diffusing_transmitter_renders_as_opal_and_not_as_a_window) {
+    // `scatter` is a Lambertian lobe, and the glass branch only understood a
+    // microfacet alpha -- so every diffusing part in the library reached the
+    // renderer as clear glass. A diffuser plate drawn as a window is not a
+    // subtle inaccuracy: its entire visual character is that it glows evenly
+    // instead of showing what is behind it.
+    SurfaceOptics clear;
+    clear.index          = 1.49;
+    clear.transmissivity = 0.96;
+    clear.reflectivity   = 0.04;
+    clear.fresnel        = true;
+
+    SurfaceOptics opal = clear;
+    opal.scatter       = 0.7;
+
+    const appearance::Material c = appearance::materialFor(clear);
+    const appearance::Material o = appearance::materialFor(opal);
+
+    // The clear one is untouched: everything it transmits goes straight on.
+    CHECK(c.bsdf.Kd.r() == 0.0f);
+    CHECK(c.bsdf.Kt.r() > 0.9f);
+
+    // The opal one spends most of that on a diffuse lobe instead.
+    CHECK(o.bsdf.Kd.r() > 0.5f);
+    CHECK(o.bsdf.Kt.r() < 0.5f);
+    // And no energy is invented doing it.
+    CHECK(o.bsdf.Kd.r() + o.bsdf.Kt.r() <= 1.0f + 1e-6f);
+    // It also stops looking like a window in the rasterized preview.
+    CHECK(o.transparency < c.transparency);
+}
+
+TEST(appearancecolour, a_painted_surface_keeps_its_colour_through_the_document) {
+    // The regression this exists for: the colour was set on the object, stored
+    // by the document, and never seen, because the panel handed the renderer
+    // the *traced* surface list -- which an optics edit deliberately does not
+    // rebuild, a reflectance being a ray-time property no tessellation cares
+    // about. So the render kept drawing the material the mesh was built with.
+    //
+    // The invariant that makes the fix sound is this one: what compile()
+    // produces carries what setOptics stored. Everything downstream reads that.
+    scenedoc::SceneDocument doc;
+    doc.loadTutorial(GeometryProvider::Scene::Reflector,
+                     GeometryProvider::defaultParams(GeometryProvider::Scene::Reflector));
+
+    int partId = -1;
+    for (const scenedoc::SceneObject& o : doc.objects())
+        if (!o.isSource() && !o.optics.isDetector) { partId = o.id; break; }
+    CHECK(partId >= 0);
+
+    const scenedoc::SceneObject* before = doc.find(partId);
+    CHECK(before != nullptr);
+    SurfaceOptics painted = before->optics;
+    CHECK(!painted.hasAppearanceColour());
+    painted.setAppearanceColour(0.70, 0.12, 0.12);
+    CHECK(doc.setOptics(partId, painted));
+
+    const scenedoc::SceneDocument::Compiled c = doc.compile();
+    CHECK(c.setup != nullptr);
+
+    // The compiled surface the edit belongs to carries the colour.
+    bool found = false;
+    for (std::size_t i = 0; i < c.setup->surfaces.size(); ++i) {
+        if (i >= c.surfaceObject.size() || c.surfaceObject[i] != partId) continue;
+        found = true;
+        const OpticalSurface& s = c.setup->surfaces[i];
+        CHECK(s.hasAppearanceColour());
+        CHECK_NEAR(s.appearanceRgb[0], 0.70, 1e-9);
+        CHECK_NEAR(s.appearanceRgb[1], 0.12, 1e-9);
+        CHECK_NEAR(s.appearanceRgb[2], 0.12, 1e-9);
+
+        // And it reaches the renderer as a tint rather than being carried and
+        // ignored: a red surface has more red weight than green.
+        const appearance::Material m = appearance::materialFor(s);
+        const Graphic3d_Vec3 rgb(m.bsdf.Kd + m.bsdf.Kt + Graphic3d_Vec3(m.bsdf.Ks.r(),
+                                                                        m.bsdf.Ks.g(),
+                                                                        m.bsdf.Ks.b()));
+        CHECK(rgb.r() > rgb.g());
+        CHECK(rgb.b() < rgb.r());
+    }
+    CHECK(found);
+}
+
+TEST(appearancecolour, an_unpainted_surface_is_left_to_the_physics) {
+    // The default has to stay "derive it", or every built-in scene would start
+    // wearing a colour nobody chose -- an aluminium reflector's colour is its
+    // own complex index, and a swatch would be a downgrade.
+    SurfaceOptics bare;
+    bare.reflectivity = 0.92;
+    CHECK(!bare.hasAppearanceColour());
+
+    SurfaceOptics painted = bare;
+    painted.setAppearanceColour(0.1, 0.8, 0.2);
+    CHECK(painted.hasAppearanceColour());
+    painted.clearAppearanceColour();
+    CHECK(!painted.hasAppearanceColour());
+
+    // Setting a colour never disturbs a single number the tracer reads.
+    SurfaceOptics a = bare, b = bare;
+    b.setAppearanceColour(0.9, 0.1, 0.1);
+    CHECK(a.reflectivity == b.reflectivity);
+    CHECK(a.transmissivity == b.transmissivity);
+    CHECK(a.index == b.index);
+    CHECK(a.scatter == b.scatter);
+    CHECK(a.absorption == b.absorption);
+}

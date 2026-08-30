@@ -242,7 +242,8 @@ int cad(const QString& path, double scale, int rays, const gp_Dir& axis) {
         << QString::number(r.bboxMax[2], 'f', 2) << "]" << Qt::endl;
 
     auto setup = std::make_shared<GeometryProvider::SceneSetup>(
-        cadimport::makeScene(r, QStringLiteral("N-BK7"), /*reflective=*/false, 64, axis));
+        cadimport::makeScene(r, QStringLiteral("N-BK7"),
+                             cadimport::Finish::Refractive, 64, axis));
     if (setup->surfaces.empty()) {
         out << "nothing in the file could be turned into traceable geometry" << Qt::endl;
         return 1;

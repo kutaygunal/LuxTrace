@@ -158,6 +158,9 @@ public:
         // --- multi-source ---
         LedArrayLuminaire,      // a row of reflector cups, one emitter each
 
+        // --- showcase ---
+        ShowcaseLuminaire,      // a whole fixture, built to be looked at
+
         Count
     };
 

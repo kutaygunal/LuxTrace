@@ -146,18 +146,31 @@ GeometryAudit auditShape(const TopoDS_Shape& shape);
 // re-auditing it. Returns the original where nothing could be improved.
 TopoDS_Shape healShape(const TopoDS_Shape& shape, GeometryAudit& audit);
 
+// What an imported part is made of, before anybody edits it.
+//
+// It used to be one bool -- refractive, or a mirror -- and both of those are
+// optical components. Most of what arrives in a STEP file is neither: a
+// housing, a bracket, a tyre, a painted brick. Importing those as glass is why
+// an assembly came into the Appearance preview transparent, and why the first
+// thing anybody did after an import was edit every part.
+enum class Finish {
+    Refractive,   //!< a solid of the chosen catalogue material: a lens, a prism
+    Mirror,       //!< a front-surface reflector
+    Opaque        //!< a painted or moulded part: diffuse, no transmission
+};
+
 // Turns imported shapes into optical surfaces, all sharing one material.
 // The caller then edits individual surfaces -- which is what the pick panel is
 // for -- rather than having to describe every face up front.
 std::vector<OpticalSurface> toSurfaces(const ImportResult& result,
                                        const QString& materialName,
-                                       bool reflective);
+                                       Finish finish);
 
 // Splits one imported shape into a surface per face, so a lens body and its
 // mount can carry different optics without going back to the CAD tool.
 std::vector<OpticalSurface> facesOf(const ImportedShape& shape,
                                     const QString& materialName,
-                                    bool reflective);
+                                    Finish finish);
 
 // A planar receiver sized and placed to catch what an imported assembly emits:
 // square, `size` across, facing +Z at `z`, centred on (cx, cy). Imported
@@ -193,7 +206,7 @@ OpticalSurface makeReceiver(double size, const gp_Pnt& center, const gp_Dir& nor
 // the part exists for only appears when the beam meets a slanted face.
 GeometryProvider::SceneSetup makeScene(const ImportResult& result,
                                        const QString& materialName,
-                                       bool reflective,
+                                       Finish finish,
                                        int detectorBins = 0,
                                        const gp_Dir& axis = gp_Dir(0, 0, 1),
                                        double standoff = 0.75);

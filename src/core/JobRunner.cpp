@@ -603,8 +603,19 @@ bool opCad(const QJsonObject& params, QJsonObject& data, QString* errCode, QStri
     const gp_Dir axis(axisArr.size() == 3 ? axisArr.at(0).toDouble(0.0) : 0.0,
                       axisArr.size() == 3 ? axisArr.at(1).toDouble(0.0) : 0.0,
                       axisArr.size() == 3 ? axisArr.at(2).toDouble(1.0) : 1.0);
+    // "finish" names what the parts are made of; the older boolean
+    // "reflective" still works, because a script written against it is not
+    // wrong, only narrower.
+    const QString finishName = str(params, "finish", QString()).toLower();
+    cadimport::Finish finish = params.value("reflective").toBool(false)
+                                   ? cadimport::Finish::Mirror
+                                   : cadimport::Finish::Refractive;
+    if (finishName == QLatin1String("mirror"))      finish = cadimport::Finish::Mirror;
+    else if (finishName == QLatin1String("opaque")) finish = cadimport::Finish::Opaque;
+    else if (finishName == QLatin1String("refractive")) finish = cadimport::Finish::Refractive;
+
     auto setup = std::make_shared<GeometryProvider::SceneSetup>(cadimport::makeScene(
-        r, str(params, "material", "N-BK7"), params.value("reflective").toBool(false),
+        r, str(params, "material", "N-BK7"), finish,
         int(num(params, "quality", 64.0)), axis));
     if (setup->surfaces.empty()) {
         *errCode = "not_traceable";

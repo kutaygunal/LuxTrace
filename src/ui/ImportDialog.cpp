@@ -116,11 +116,26 @@ ImportDialog::ImportDialog(const QString& path, QWidget* parent)
         if (bk7 >= 0) m_material->setCurrentIndex(bk7);
     }
 
-    m_reflective = new QCheckBox(QStringLiteral("Treat every part as a mirror"), this);
-    m_reflective->setToolTip(QStringLiteral(
-        "Off, the parts are refractive solids of the material above. On, they are "
-        "front-surface reflectors. Either way, click a surface afterwards to give "
-        "it something else."));
+    // What the parts are made of, before anybody edits one.
+    //
+    // This was a "treat every part as a mirror" checkbox, which offered a
+    // choice between two kinds of optical component -- and most of what arrives
+    // in a STEP file is neither. A housing, a bracket, a tyre and a painted
+    // brick all used to import as glass, which is why an assembly arrived in
+    // the Appearance preview transparent and why the first thing anyone did
+    // after an import was edit every part.
+    m_finish = new QComboBox(this);
+    m_finish->addItem(QStringLiteral("Opaque part (housing, bracket, moulding)"));
+    m_finish->addItem(QStringLiteral("Refractive solid (lens, prism, light guide)"));
+    m_finish->addItem(QStringLiteral("Mirror (front-surface reflector)"));
+    m_finish->setToolTip(QStringLiteral(
+        "An opaque part returns light diffusely and passes none, which is what "
+        "most of an assembly is. A refractive solid is made of the material "
+        "chosen above. A mirror is a front-surface reflector.\n\n"
+        "Whichever you pick, click any part afterwards to give it something "
+        "else -- including a preview colour, which is worth doing because a "
+        "STEP file's own colours are usually either missing or one default "
+        "grey repeated across every solid."));
 
     m_heal = new QCheckBox(QStringLiteral("Heal parts that fail the check"), this);
     m_heal->setToolTip(QStringLiteral(
@@ -131,8 +146,8 @@ ImportDialog::ImportDialog(const QString& path, QWidget* parent)
 
     form->addRow(QStringLiteral("Units:"), unitRow);
     form->addRow(QStringLiteral("Illuminate along:"), m_axis);
+    form->addRow(QStringLiteral("Parts are:"), m_finish);
     form->addRow(QStringLiteral("Material:"), m_material);
-    form->addRow(m_reflective);
     form->addRow(m_heal);
     outer->addLayout(form);
 
@@ -297,4 +312,10 @@ QString ImportDialog::axisName() const {
 
 QString ImportDialog::materialName() const { return m_material->currentText(); }
 
-bool ImportDialog::reflective() const { return m_reflective->isChecked(); }
+cadimport::Finish ImportDialog::finish() const {
+    switch (m_finish->currentIndex()) {
+        case 1:  return cadimport::Finish::Refractive;
+        case 2:  return cadimport::Finish::Mirror;
+        default: return cadimport::Finish::Opaque;
+    }
+}

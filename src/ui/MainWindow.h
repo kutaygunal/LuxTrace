@@ -234,6 +234,7 @@ private:
     QImage appearanceFigure(appearance::ExportRequest& shot) const;
     // The receivers the last run measured, offered as exit surfaces the render
     // can glow with, and the line under the render that says what it is.
+    void refreshAppearanceSurfaces();
     void refreshAppearanceReceivers();
     void refreshAppearanceCaption();
     void refreshSweepAxes();

@@ -27,7 +27,7 @@ TracePro, OpticStudio) is expected to do:
 
 | Capability | LuxTrace |
 |---|---|
-| Geometry | 26 parametric OCCT scenes, plus STEP/IGES import of a customer's own CAD; instanced parts share one mesh and one hierarchy |
+| Geometry | 27 parametric OCCT scenes, plus STEP/IGES import of a customer's own CAD; instanced parts share one mesh and one hierarchy |
 | Surface normals | Read off the exact B-Rep at each tessellation node and interpolated across the facet, so the mesh is no longer what limits how sharply a scene focuses |
 | Materials | A catalogue by name — N-BK7, N-SF11, fused silica, PMMA, polycarbonate, water, cement, Al/Ag/Au — with Sellmeier dispersion, Abbe numbers and complex-index Fresnel for the metals |
 | Glass catalogue | Import a real catalogue — a Zemax `.agf` from Schott, Ohara, CDGM, Hoya or Sumita, or a refractiveindex.info `.yml` entry — and the ten built-in names become a catalogue a lens designer can actually type into |
@@ -123,7 +123,7 @@ would be absurd.
 
 ## The scene library
 
-26 scenes, all built from OCCT B-Rep and enumerated from one registry
+27 scenes, all built from OCCT B-Rep and enumerated from one registry
 (`GeometryProvider::Scene`), so the UI, the diagnostics and the tests pick them
 up automatically. Each declares 2-4 editable dimensions (`paramInfo`), the last
 of which is always the receiver position; the emitter follows the geometry, so
@@ -182,6 +182,12 @@ Efficiencies are for a Lambertian source at 50 000 rays, with the full physics o
 |---|---|---|
 | LED Array Luminaire | 74.2 % | A row of reflector cups, one LED to a cup. The scene places a single emitter at the focus of the leftmost cup, so a run out of the box lights one cup and leaves the rest dark — which is the point. Add a source per remaining cup, each offset along x by a whole multiple of the pitch, and the receiver fills in one beam at a time. Every other scene in this library is built around a single emitter on an axis; this one cannot be described by one at all |
 
+**Showcase**
+
+| Scene | Eff. | What it shows |
+|---|---|---|
+| Showcase Luminaire | 25.8 % | A whole fixture rather than a bare optic: an LED die in an aluminium cup, behind an opal acrylic cover, in a housing, on a floor. It exists to be *looked at* — the Appearance tab renders it as a product photograph, which no other scene in this library can be because no other scene has anything to stand on or anything to glow. The efficiency is low on purpose: the cover diffusion that makes the aperture glow evenly is the same diffusion that spreads the beam off the receiver, and the knob runs from clear (a 89 % collimator that renders dark from every angle but one) to opal. It is the one scene where the optical trade and the visual one are the same number |
+
 The round light guide used to read 89 %. It now reads 74 % because its entrance
 and exit faces pay a Fresnel reflection and its glass absorbs 4.4 % of the light
 over the zig-zag path — both of which a real rod does and the old model did not.
@@ -193,7 +199,7 @@ differently for good reasons — the elliptical reflector does *better* with a
 point source, because its Lambertian hemisphere aims straight at the hole in the
 bottom of the cup.
 
-The whole 26-scene library at 50 000 rays each traces in **0.51 s**. Energy is
+The whole 27-scene library at 50 000 rays each traces in **0.85 s**. Energy is
 accounted for exactly in every scene: `detected + absorbed + escaped + truncated
 == emitted` to 1e-9.
 
@@ -412,7 +418,7 @@ OCCT under test is the one the developer box has.
 ctest --preset release
 ```
 
-384 tests in 69 suites, no external framework. The scene and test counts are
+390 tests in 70 suites, no external framework. The scene and test counts are
 derived, not retyped: `python tools/regenerate_counts.py` regenerates them from
 `--smoke` and the test binary's own totals. Beyond the original coverage
 (Moller-Trumbore branches, BVH vs brute force, energy conservation, TIR critical
@@ -726,7 +732,7 @@ src/
     Polarisation        Stokes vectors and Mueller matrices
     Spectrum            SPDs, CIE colour matching, V(lambda), sampling
     Sampling            Owen-scrambled Sobol
-    GeometryProvider    scene registry: 26 parametric OCCT scenes + their sources
+    GeometryProvider    scene registry: 27 parametric OCCT scenes + their sources
     CadImport           STEP / IGES reading, and optics assigned per part or face
     MeshBuilder         BRepMesh tessellation -> triangle meshes + exact normals
     Mesh                the flat triangle mesh the tracer walks
@@ -854,6 +860,20 @@ python resources/make_icon.py
   rather than on pixels.
 - Ray legs do not appear in the render. OCCT path-traces triangles; line
   primitives are not in its BVH. Rays belong to the diagnostic view.
+- An emitter in the render is drawn twice over: as a face carrying its radiance,
+  which is what the camera sees glowing, and as a light at the same place, which
+  is what actually illuminates. OCCT's path tracer finds emissive geometry only
+  by a path happening to land on it — there is no next-event estimation to an
+  emissive triangle — so a 5 mm LED die in a 250 mm luminaire is never found and
+  the picture comes back black at every exposure. The overlap between the two is
+  however often the face is hit directly, which is the small quantity that made
+  it useless as a light in the first place. The picture is not photometric
+  either way; what this buys is that it is a picture.
+- The Sky mode's dome is a backdrop, not an environment light. OCCT bakes it
+  into an irradiance probe for the rasterized PBR model and the path tracer does
+  not consult it, so the mode carries a sun and a sky fill aimed from the dome's
+  own sun direction. The light agrees with the drawn sky because both are read
+  from the same constant, not because the renderer gathered from it.
 - No collision in the walkthrough — the camera passes straight through geometry.
 - No logging or diagnostics capture, and the config format string has no
   versioned migration path.

@@ -32,7 +32,7 @@ set(LUXTRACE_TEST_SUITES
     configkeys scattermodel importaudit simd preview rayinspector pythonenv
     fidelity sceneparams thetabin meshadaptive scenedoc
     appearancematerials appearancescene appearanceemitters appearanceradiance
-    appearanceoutput)
+    appearanceoutput appearanceshowcase appearancecolour)
 
 foreach(suite IN LISTS LUXTRACE_TEST_SUITES)
     add_test(NAME ${suite} COMMAND optics_tests ${suite})

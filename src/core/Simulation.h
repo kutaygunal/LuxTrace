@@ -208,6 +208,28 @@ public:
     static SourceConfig sourceFor(GeometryProvider::Scene scene,
                                   SourceConfig::Type type, int rays);
 
+    // The emitter a scene is designed around, where it is designed around a
+    // particular one rather than around "a source, on the axis".
+    //
+    // Most of the library is the second kind: a ball lens teaches the same
+    // lesson under a point source, a laser or an LED, so the scene declines to
+    // choose and the user's own emitter is traced unchanged. A fixture is the
+    // first kind -- an LED luminaire with a point source in it is not a
+    // luminaire, it is a thought experiment -- so the scene says what belongs
+    // at its focus and the document builds that.
+    //
+    // Advice, not enforcement, and it reaches exactly one place: the emitter
+    // object a freshly loaded scene starts with. Nothing downstream consults
+    // it, so a source the user has edited, moved or replaced stays theirs, and
+    // `sourceFor` still traces precisely what the configuration says -- the
+    // scene never substitutes one source for another behind a run.
+    struct SceneEmitter {
+        bool       declared = false;
+        SourceSpec spec;
+    };
+    static SceneEmitter emitterFor(GeometryProvider::Scene scene,
+                                   const SceneParams& params);
+
     // The scene at its default parameters. These entries are pinned for the
     // lifetime of the process, so the returned reference stays valid.
     static const TraceScene& sceneFor(GeometryProvider::Scene scene,

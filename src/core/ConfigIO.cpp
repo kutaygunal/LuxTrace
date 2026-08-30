@@ -154,6 +154,13 @@ QJsonObject opticsJson(const SurfaceOptics& s) {
     o[QStringLiteral("dispersionB")]    = s.dispersionB;
     o[QStringLiteral("absorption")]     = s.absorption;
     o[QStringLiteral("scatter")]        = s.scatter;
+    // Written only when set, so a config for a scene nobody has painted looks
+    // exactly as it always did.
+    if (s.hasAppearanceColour()) {
+        QJsonArray rgb;
+        for (double c : s.appearanceRgb) rgb.append(c);
+        o[QStringLiteral("appearanceRgb")] = rgb;
+    }
     o[QStringLiteral("roughness")]      = s.roughness;
     o[QStringLiteral("fresnel")]        = s.fresnel;
     o[QStringLiteral("mediumPriority")] = s.mediumPriority;
@@ -210,6 +217,11 @@ SurfaceOptics opticsFrom(const QJsonObject& o, SurfaceOptics s) {
     s.dispersionB    = num(o, "dispersionB", s.dispersionB);
     s.absorption     = std::max(0.0, num(o, "absorption", s.absorption));
     s.scatter        = std::clamp(num(o, "scatter",   s.scatter),   0.0, 1.0);
+    if (const QJsonArray rgb = o.value(QStringLiteral("appearanceRgb")).toArray();
+        rgb.size() == 3)
+        s.setAppearanceColour(std::clamp(rgb[0].toDouble(-1.0), 0.0, 1.0),
+                              std::clamp(rgb[1].toDouble(-1.0), 0.0, 1.0),
+                              std::clamp(rgb[2].toDouble(-1.0), 0.0, 1.0));
     s.roughness      = std::clamp(num(o, "roughness", s.roughness), 0.0, 1.0);
     s.fresnel        = flag(o, "fresnel", s.fresnel);
     s.mediumPriority = int(num(o, "mediumPriority", 0.0));

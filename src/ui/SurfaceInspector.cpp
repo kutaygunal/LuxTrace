@@ -10,6 +10,7 @@
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QGroupBox>
+#include <QColorDialog>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
@@ -56,13 +57,14 @@ SurfaceInspector::SurfaceInspector(QWidget* parent) : QWidget(parent) {
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
 
-    auto* scroll = new QScrollArea(this);
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    auto* body = new QWidget(scroll);
-    scroll->setWidget(body);
-    outer->addWidget(scroll, 1);
+    // No scroll area of its own, deliberately. This panel is only ever
+    // embedded in the object inspector, which already scrolls -- and a scroll
+    // area inside a scroll area gives a short window onto a long form: the two
+    // 130px plots below fill it, and everything after the coating section
+    // (scattering, volume, appearance) sits off the bottom of an inner
+    // viewport most people never realise is there. One scroll, one form.
+    auto* body = new QWidget(this);
+    outer->addWidget(body);
 
     auto* layout = new QVBoxLayout(body);
     layout->setContentsMargins(6, 6, 6, 6);
@@ -289,6 +291,57 @@ SurfaceInspector::SurfaceInspector(QWidget* parent) : QWidget(parent) {
     volForm->addRow(QStringLiteral("Anisotropy g:"), m_volumeAnisotropy);
     layout->addWidget(volBox);
 
+    // ---- appearance ---------------------------------------------------------
+    //
+    // Its own box, below the physics and visibly not part of it. Everything
+    // above changes what a run reports; this changes only what the Appearance
+    // tab draws, and a panel that mixed the two would be inviting somebody to
+    // paint a surface and then wonder why the efficiency did not move.
+    auto* lookBox  = group(QStringLiteral("Appearance (preview only)"), body);
+    auto* lookForm = new QFormLayout(lookBox);
+
+    m_appearance = new QPushButton(lookBox);
+    m_appearance->setToolTip(QStringLiteral(
+        "The colour the Appearance preview paints this surface. It moves no "
+        "flux: reflectivity stays a single number, a run gives bit-identical "
+        "answers with a colour set or unset, and nothing but the render reads "
+        "it. It is here because an imported assembly is mostly painted parts, "
+        "and a render in which all of them are the same grey is not a render "
+        "of the assembly."));
+
+    m_appearanceClear = new QPushButton(QStringLiteral("Use the physics"), lookBox);
+    m_appearanceClear->setToolTip(QStringLiteral(
+        "Drop the colour and let the render derive one the way it does for "
+        "every built-in scene -- an aluminium reflector's colour is its own "
+        "complex index, not a swatch somebody picked."));
+
+    auto* lookRow = new QHBoxLayout;
+    lookRow->setContentsMargins(0, 0, 0, 0);
+    lookRow->addWidget(m_appearance, 1);
+    lookRow->addWidget(m_appearanceClear);
+    lookForm->addRow(QStringLiteral("Colour:"), lookRow);
+    layout->addWidget(lookBox);
+
+    connect(m_appearance, &QPushButton::clicked, this, [this] {
+        QColor start = QColor::fromRgbF(0.8, 0.8, 0.8);
+        if (m_appearanceRgb[0] >= 0.0)
+            start = QColor::fromRgbF(m_appearanceRgb[0], m_appearanceRgb[1],
+                                     m_appearanceRgb[2]);
+        const QColor picked = QColorDialog::getColor(
+            start, this, QStringLiteral("Preview colour for this surface"));
+        if (!picked.isValid()) return;
+        m_appearanceRgb[0] = picked.redF();
+        m_appearanceRgb[1] = picked.greenF();
+        m_appearanceRgb[2] = picked.blueF();
+        refreshAppearanceSwatch();
+        onEdit();
+    });
+    connect(m_appearanceClear, &QPushButton::clicked, this, [this] {
+        m_appearanceRgb[0] = m_appearanceRgb[1] = m_appearanceRgb[2] = -1.0;
+        refreshAppearanceSwatch();
+        onEdit();
+    });
+
     // ---- receiver -----------------------------------------------------------
     m_detectorBox = group(QStringLiteral("Receiver"), body);
     auto* detForm = new QFormLayout(m_detectorBox);
@@ -418,6 +471,8 @@ void SurfaceInspector::setSurface(const QString& label, const SurfaceOptics& o,
     m_abgB->setValue(o.bsdf.abgB);
     m_abgG->setValue(o.bsdf.abgG);
     m_scatter->setValue(o.scatter);
+    for (int i = 0; i < 3; ++i) m_appearanceRgb[i] = o.appearanceRgb[i];
+    refreshAppearanceSwatch();
     m_roughness->setValue(o.roughness);
 
     m_volumeCoefficient->setValue(o.volume.coefficient);
@@ -461,6 +516,10 @@ SurfaceOptics SurfaceInspector::optics() const {
     o.bsdf.abgB     = m_abgB->value();
     o.bsdf.abgG     = m_abgG->value();
     o.scatter       = m_scatter->value();
+    if (m_appearanceRgb[0] >= 0.0)
+        o.setAppearanceColour(m_appearanceRgb[0], m_appearanceRgb[1], m_appearanceRgb[2]);
+    else
+        o.clearAppearanceColour();
     o.roughness     = m_roughness->value();
 
     o.volume.coefficient = m_volumeCoefficient->value();
@@ -473,6 +532,31 @@ SurfaceOptics SurfaceInspector::optics() const {
         o.detRejectMode    = SurfaceOptics::RejectMode(m_detReject->currentIndex());
     }
     return o;
+}
+
+// The button *is* the swatch: a colour chip that says what it is beats a chip
+// beside a label repeating it.
+void SurfaceInspector::refreshAppearanceSwatch() {
+    if (!m_appearance) return;
+
+    if (m_appearanceRgb[0] < 0.0) {
+        m_appearance->setStyleSheet(QString());
+        m_appearance->setText(QStringLiteral("From the physics"));
+        if (m_appearanceClear) m_appearanceClear->setEnabled(false);
+        return;
+    }
+
+    const QColor c = QColor::fromRgbF(m_appearanceRgb[0], m_appearanceRgb[1],
+                                      m_appearanceRgb[2]);
+    // Legible text on whatever was picked, by the same luminance rule a print
+    // designer would use rather than by guessing.
+    const double luma = 0.2126 * m_appearanceRgb[0] + 0.7152 * m_appearanceRgb[1] +
+                        0.0722 * m_appearanceRgb[2];
+    m_appearance->setStyleSheet(
+        QStringLiteral("background:%1; color:%2; padding:4px;")
+            .arg(c.name(), luma > 0.5 ? QStringLiteral("#000") : QStringLiteral("#fff")));
+    m_appearance->setText(c.name().toUpper());
+    if (m_appearanceClear) m_appearanceClear->setEnabled(true);
 }
 
 void SurfaceInspector::refreshAll() {

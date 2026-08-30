@@ -946,6 +946,18 @@ void SceneDocument::rebuildTutorialParts() {
         src.name              = QStringLiteral("Light source");
         src.source.type       = SourceConfig::Type::Point;
         src.source.power      = 1.0;
+
+        // A scene built around a particular emitter says so, and this is the
+        // only place that is consulted -- a fresh load. A source the user has
+        // since edited is kept above and never overwritten, because the moment
+        // somebody types a number into an emitter it stops being the scene's
+        // suggestion and starts being their design.
+        const Simulation::SceneEmitter declared =
+            Simulation::emitterFor(m_scene, m_params);
+        if (declared.declared) {
+            src.source = declared.spec;
+            if (!declared.spec.label.isEmpty()) src.name = declared.spec.label;
+        }
     }
     src.type     = ObjectType::Source;
     src.parent   = 0;

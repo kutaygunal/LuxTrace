@@ -107,6 +107,14 @@ private:
     QDoubleSpinBox* m_volumeCoefficient = nullptr;
     QDoubleSpinBox* m_volumeAnisotropy  = nullptr;
 
+    // Appearance only -- the Appearance preview reads this and nothing else
+    // does. Kept beside the optics because it belongs to the surface, and
+    // labelled in the panel so it is never mistaken for one of them.
+    QPushButton* m_appearance      = nullptr;
+    QPushButton* m_appearanceClear = nullptr;
+    double       m_appearanceRgb[3] = {-1.0, -1.0, -1.0};
+    void refreshAppearanceSwatch();
+
     // --- receiver ---
     QGroupBox*      m_detectorBox = nullptr;
     QSpinBox*       m_detNX = nullptr;

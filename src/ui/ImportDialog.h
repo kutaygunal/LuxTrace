@@ -34,7 +34,7 @@ public:
     gp_Dir  axis() const;
     QString axisName() const;
     QString materialName() const;
-    bool    reflective() const;
+    cadimport::Finish finish() const;
 
 private:
     void reread();
@@ -49,7 +49,7 @@ private:
     QDoubleSpinBox* m_customScale = nullptr;
     QComboBox*   m_axis     = nullptr;
     QComboBox*   m_material = nullptr;
-    QCheckBox*   m_reflective = nullptr;
+    QComboBox*   m_finish = nullptr;
     QCheckBox*   m_heal     = nullptr;
     QTreeWidget* m_parts    = nullptr;
     QLabel*      m_verdict  = nullptr;

@@ -33,11 +33,30 @@ struct Emitter {
     // `shape`.
     Graphic3d_Vec3 radiance{0.0f, 0.0f, 0.0f};
 
-    // A point source has no area, so it is an OCCT light rather than geometry.
+    // A point source has no area, so it has no face and can *only* be a light.
+    // One with an area gets both -- see below.
     bool   pointLike = false;
     gp_Pnt origin{0, 0, 0};
-    // Light intensity and the angular size that turns a hard shadow into a soft
-    // one. Point sources only.
+    // The light this source also becomes, and the radius that turns a hard
+    // shadow edge into a soft one.
+    //
+    // Every emitter gets one, not just the point sources, and the reason is a
+    // property of OCCT's path tracer rather than a preference: it finds
+    // emissive geometry only by a path happening to land on it. There is no
+    // next-event estimation to an emissive triangle. A diffuser panel that
+    // fills a third of the frame is hit constantly and lights the scene; a 5 mm
+    // LED die in a 250 mm luminaire is hit almost never, and the picture comes
+    // back black at every exposure -- the die visible as a bright speck,
+    // everything around it unlit. Measured, not assumed: the same scene with a
+    // 50 mm emitter lights up and with a 5 mm one does not.
+    //
+    // So the face carries `Le` and is what the camera sees glowing, and the
+    // light co-located with it is what actually illuminates. The two overlap by
+    // however much the face is hit directly, which is the small quantity that
+    // made the face useless as a light in the first place. This is the standard
+    // arrangement in any renderer whose area lights are both sampled and
+    // visible, and it is why "the emitters are drawn in every mode" is true of
+    // the lighting as well as of the geometry.
     double intensity    = 1.0;
     double smoothRadius = 0.0;
 
@@ -65,6 +84,19 @@ struct EmitterBuild {
 // fix. So the normalised value is multiplied by a single constant, stated here
 // rather than buried, and the exposure control moves it from there.
 inline constexpr double kBrightestRadiance = 6.0;
+
+// The irradiance the full-power source is aimed to land on the middle of the
+// scene, and the reason emitter intensity is not simply the source's power.
+//
+// OCCT's positional light falls off as 1/d^2 -- physically, and in whatever
+// units its `Intensity` happens to be in. So an intensity fixed at 3 lights a
+// 6 mm lens brilliantly and a 600 mm luminaire not at all: at 100 mm the same
+// number arrives as 3e-4, which renders black at every exposure the toolbar
+// offers. Scaling it by the square of half the scene's own size cancels the
+// falloff, so a source lights its scene the same way whatever size the scene
+// is, and the exposure control starts from somewhere usable rather than from
+// six stops under.
+inline constexpr double kEmitterIrradiance = 3.0;
 
 // Linear-sRGB colour of a spectrum, scaled so its largest channel is 1.
 //

@@ -250,7 +250,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         if (m_appearance && m_tabs->widget(index) &&
             m_tabs->widget(index)->isAncestorOf(m_appearance)) {
             m_appearance->setSharedDriver(m_view3d->graphicDriver());
-            m_appearance->setSurfaces(currentSurfaces());
+            refreshAppearanceSurfaces();
             m_appearance->setSources(appearanceSources());
         }
     });
@@ -1510,12 +1510,21 @@ void MainWindow::onObjectOpticsEdited(int id) {
                   .arg(after ? after->name : QString()),
         4000);
     if (binsChanged) onGeometryChanged();
+
+    // The render is a picture *of the optics*, so an optics edit is exactly
+    // what it has to redraw for. It used to be told only on a geometry rebuild
+    // or a tab switch -- which an optics edit deliberately avoids, since a
+    // reflectance is a ray-time property the tessellation does not care about
+    // -- so changing what a surface is made of left the preview showing what it
+    // used to be until something unrelated happened to rebuild the scene.
+    refreshAppearanceSurfaces();
 }
 
 void MainWindow::onObjectOpticsReset(int id) {
     if (!m_document.resetOptics(id)) return;
     m_compiled = m_document.compile();
     refreshInspector();
+    refreshAppearanceSurfaces();
     statusBar()->showMessage(QStringLiteral("Surface restored to the optics its type "
                                             "declares"), 3000);
 }
@@ -1973,8 +1982,9 @@ QWidget* MainWindow::buildAppearanceTab() {
         "Scene emitters lights the picture with the optic's own sources and "
         "nothing else -- what a luminaire looks like switched on. Studio is a "
         "three-point rig, for reading the shape of a part whose source is not "
-        "the subject. Sky is a procedural environment, which is what gives a "
-        "metal reflector something to reflect. "
+        "the subject. Sky puts a procedural dome behind the part and lights it "
+        "with a sun from the same direction, for the outdoor look and for "
+        "giving a metal surface something bright to reflect. "
         "A scene with no source of its own falls back to Studio, because a part "
         "lit by nothing renders black."));
 
@@ -2276,7 +2286,7 @@ void MainWindow::onShowSimulationWindow() {
 void MainWindow::buildMenus() {
     QMenu* file = menuBar()->addMenu(QStringLiteral("&File"));
 
-    // The twenty-six built-in scenes, as tutorials.
+    // The twenty-seven built-in scenes, as tutorials.
     //
     // They were a combo box at the top of the controls column, which put
     // "which optic am I learning about" in the same place as "how many rays",
@@ -2295,6 +2305,7 @@ void MainWindow::buildMenus() {
         {"&Total internal reflection",  GeometryProvider::Scene::LightGuide},
         {"&Scattering",                 GeometryProvider::Scene::IntegratingSphere},
         {"&Multi-source",               GeometryProvider::Scene::LedArrayLuminaire},
+        {"S&howcase",                   GeometryProvider::Scene::ShowcaseLuminaire},
     };
 
     file->addAction(QStringLiteral("&Save configuration..."), QKeySequence::Save,
@@ -2357,7 +2368,7 @@ void MainWindow::buildMenus() {
 
     // The tutorials sit at the bottom, one segment above Exit: they are a way
     // in rather than something reached mid-session, and at the top they pushed
-    // saving and exporting past twenty-six scene names.
+    // saving and exporting past twenty-seven scene names.
     QMenu* tutorials = file->addMenu(QStringLiteral("&Tutorials"));
     tutorials->setStatusTip(QStringLiteral(
         "A worked optic, loaded as a scene you can then edit: every part of it "
@@ -2476,7 +2487,7 @@ void MainWindow::onGeometryReady(Simulation::SceneRef data, quint64 generation) 
     // The renderer reads the scene, and nothing reads the renderer. It defers
     // the rebuild until its tab is actually on screen, so this costs nothing
     // for a user who never opens it.
-    if (m_appearance) m_appearance->setSurfaces(m_sceneData->surfaces);
+    refreshAppearanceSurfaces();
     // The highlight indexes the surface list, and this is a new one. Only the
     // highlight: this arrives a debounce interval after the edit that asked for
     // it, by which time the user may well be part-way through the next one, and
@@ -2535,6 +2546,24 @@ void MainWindow::refreshSourceGlyphs() {
 // The receivers the last run measured, offered as things the render can glow
 // with. Rebuilt whenever a run finishes, because a scene edit can add or remove
 // one and an index into a list that has changed is a picture of the wrong plane.
+// What the Appearance view should be drawing right now. Cheap when the tab is
+// hidden -- the view defers its rebuild until it is on screen -- so callers do
+// not have to ask whether anybody is looking.
+//
+// The *document's* surfaces, not `currentSurfaces()`. Those two differ in
+// exactly the case that matters here: `currentSurfaces()` returns the compiled
+// trace scene, which is rebuilt only when the geometry changes, and an optics
+// edit deliberately does not rebuild it -- a reflectance is a ray-time property
+// and re-tessellating for one would be waste. So the traced copy carries the
+// optics the surface had when its mesh was last built, and handing that to the
+// renderer showed the old material no matter how often it was handed over.
+// `m_document.compile()` runs on every optics edit and is the live answer.
+void MainWindow::refreshAppearanceSurfaces() {
+    if (!m_appearance) return;
+    if (m_compiled.setup) m_appearance->setSurfaces(m_compiled.setup->surfaces);
+    else                  m_appearance->setSurfaces(currentSurfaces());
+}
+
 void MainWindow::refreshAppearanceReceivers() {
     if (!m_appearanceEmission || !m_appearance) return;
 
@@ -3687,7 +3716,7 @@ void MainWindow::onImportCad() {
     // trace, the analysis -- is the same code every built-in scene goes
     // through, on this geometry rather than on the registry's.
     auto setup = std::make_shared<GeometryProvider::SceneSetup>(
-        cadimport::makeScene(result, dlg.materialName(), dlg.reflective(),
+        cadimport::makeScene(result, dlg.materialName(), dlg.finish(),
                              m_controls->config().detectorBins, dlg.axis()));
     if (setup->surfaces.empty()) {
         QMessageBox::warning(this, QStringLiteral("Import failed"),
@@ -3700,10 +3729,20 @@ void MainWindow::onImportCad() {
                              .arg(result.format)
                              .arg(result.auditSummary())
                              .arg(axisName.left(2))
-                             .arg(dlg.reflective()
-                                      ? QStringLiteral("Every part is a mirror.")
-                                      : QStringLiteral("Every part is %1 with Fresnel "
-                                                       "splitting.").arg(dlg.materialName()));
+                             .arg([&] {
+                                 switch (dlg.finish()) {
+                                 case cadimport::Finish::Mirror:
+                                     return QStringLiteral("Every part is a mirror.");
+                                 case cadimport::Finish::Opaque:
+                                     return QStringLiteral(
+                                         "Every part is an opaque diffuse moulding; "
+                                         "give them colours in the surface panel.");
+                                 default:
+                                     return QStringLiteral("Every part is %1 with "
+                                                           "Fresnel splitting.")
+                                         .arg(dlg.materialName());
+                                 }
+                             }());
 
     // The file's parts become objects like any others: selectable in the tree,
     // hideable, re-specifiable, and something a lens can be dropped in front of.

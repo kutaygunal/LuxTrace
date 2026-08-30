@@ -42,6 +42,11 @@ constexpr double kMinGlForAdaptive = 4.4;
 // its soft shadow is built on. Past a quarter turn the setter throws.
 constexpr double kMaxSmoothAngle = 1.5707963267948966;
 
+// Where the sun is in the Sky mode's procedural dome, as a direction pointing
+// *at* it. Stated once because two things have to agree about it: the dome that
+// is drawn, and the light that does the lighting -- see applyLighting.
+const gp_Dir kSunTowards(0.45, 0.70, 0.55);
+
 // The leading major.minor of a GL version string such as
 // "4.6.0 NVIDIA 552.22". Returns 0 when it does not start with a number, which
 // is the honest answer for a string nobody recognises.
@@ -185,6 +190,8 @@ void AppearanceView::initViewer() {
 
 void AppearanceView::applyLighting() {
     if (m_viewer.IsNull()) return;
+
+    std::vector<Handle(V3d_Light)> pending;
     try {
         // Everything this view put in, taken out again. Tracked rather than read
         // back off the viewer, so a light OCCT added on its own behalf is left
@@ -192,10 +199,20 @@ void AppearanceView::applyLighting() {
         for (const Handle(V3d_Light)& light : m_lights) m_viewer->DelLight(light);
         m_lights.clear();
 
-        auto add = [this](const Handle(V3d_Light)& light) {
-            m_viewer->AddLight(light);
-            m_lights.push_back(light);
-        };
+        // Staged rather than handed to the viewer as they are built. OCCT
+        // numbers the shadow-map *samplers* by light index -- the fragment
+        // shader it writes reads occShadowMapSamplers[i] for light i -- but
+        // fills the maps themselves by counting only the lights that cast one,
+        // so THE_NB_SHADOWMAPS is the number of casters. Put a light that casts
+        // no shadow ahead of one that does and the two numberings drift apart,
+        // the generated shader indexes the sampler array past its end, and it
+        // fails to compile ("error C1068: array index out of bounds") -- which
+        // costs the whole shading program, not the shadow. One scene emitter
+        // plus the studio's three suns was exactly that: a point light at index
+        // 0, casters at 1..3, three maps. Ordering the casters first is what
+        // holds the two numberings together, and it is done here, once, rather
+        // than left to the order the rig below happens to be written in.
+        auto add = [&pending](const Handle(V3d_Light)& light) { pending.push_back(light); };
 
         // Directional is the one light type OCCT 7.8 will cast a shadow from, so
         // this is the one place the flag is set. Every setter below throws outside
@@ -211,24 +228,49 @@ void AppearanceView::applyLighting() {
             return light;
         };
 
-        // The scene's own point sources, in every mode. A source with an emitting
-        // area is geometry and was displayed with the scene; one without has no
-        // face to emit from and can only be a light.
+        // The scene's own sources, in every mode, and *every* source rather
+        // than only the point-like ones.
         //
-        // No SetCastShadows here, deliberately: OCCT 7.8 implements shadow casting
-        // for directional and spot lights only and *throws* on a positional one,
-        // which -- uncaught, inside a rebuild -- took the whole application down on
-        // any scene whose source is point-like, which is most of the library. It
-        // would have bought nothing either way: the header says shadow casting has
-        // no effect under ray tracing, where a shadow is what happens when a path
-        // does not reach the light rather than something a light has to be asked
-        // for. The smoothing radius, which the path tracer does use, stays.
+        // A source with an area is already geometry with `Le` on it, displayed
+        // with the scene, and that face is what the camera sees glowing. It is
+        // not what lights the scene: OCCT's path tracer finds emissive geometry
+        // only by a path landing on it, so a 5 mm die in a 250 mm luminaire is
+        // never found and the picture is black at every exposure. The light
+        // below is what illuminates; the face is what is seen. See
+        // appearance::Emitter::intensity, which is where that is set out.
+        //
+        // No SetCastShadows here, deliberately: OCCT 7.8 implements shadow
+        // casting for directional and spot lights only and *throws* on a
+        // positional one, which -- uncaught, inside a rebuild -- took the whole
+        // application down on any scene whose source is point-like, which is
+        // most of the library. It would have bought nothing either way: the
+        // header says shadow casting has no effect under ray tracing, where a
+        // shadow is what happens when a path does not reach the light rather
+        // than something a light has to be asked for. The smoothing radius,
+        // which the path tracer does use, stays.
         for (const appearance::Emitter& e : m_emitters.emitters) {
-            if (!e.pointLike) continue;
-            Handle(V3d_PositionalLight) light = new V3d_PositionalLight(e.origin, Quantity_NOC_WHITE);
+            Handle(V3d_PositionalLight) light =
+                new V3d_PositionalLight(e.origin, Quantity_NOC_WHITE);
             light->SetIntensity(Standard_ShortReal(std::max(1e-3, e.intensity)));
             light->SetSmoothRadius(Standard_ShortReal(std::max(0.0, e.smoothRadius)));
             add(light);
+        }
+
+        // The sky, as light rather than as a picture. OCCT's path tracer does
+        // not gather from the background cube map -- an escaped path returns
+        // the flat background colour, not the dome -- so a scene under the
+        // skydome and nothing else renders black against a photograph of a
+        // sky, which reads as a broken renderer rather than as a limitation.
+        // A sun from the dome's own direction and a soft fill for the rest of
+        // the hemisphere is what the drawn sky would have done, and it agrees
+        // with the drawn sky because both read kSunTowards.
+        if (m_lighting == Lighting::Sky) {
+            add(directional(kSunTowards.Reversed(), 2.2, 0.02));
+
+            Handle(V3d_AmbientLight) skyFill = new V3d_AmbientLight(
+                Quantity_Color(0.55, 0.66, 0.82, Quantity_TOC_RGB));
+            skyFill->SetIntensity(0.9f);
+            add(skyFill);
         }
 
         // The studio rig. Used when the user asks for it, and as a fallback when
@@ -248,19 +290,27 @@ void AppearanceView::applyLighting() {
             ambient->SetIntensity(0.25f);
             add(ambient);
         }
-
-        m_viewer->SetLightOn();
     } catch (const Standard_Failure& e) {
         // A light OCCT declines to build is a picture that is lit wrongly, not
-        // an application that stops. The rig above is partly in by then, which
-        // is why the environment and the restart below are outside the guard:
-        // whatever was accepted still has to be shown. And it is said out loud,
+        // an application that stops. The rig is half-built by then, which is why
+        // the staged lights, the environment and the restart below are all
+        // outside the guard: whatever was accepted still has to be shown. And it is said out loud,
         // because a render lit by fewer lights than it was given is a picture
         // that answers a slightly different question.
         emit lightingFailed(QStringLiteral("Some of the scene's lights could not be "
                                            "built, so the render is lit by the rest: %1")
                                 .arg(QString::fromUtf8(e.GetMessageString())));
     }
+
+    // Outside the guard, for the reason given there: whatever was accepted
+    // before a light was refused still has to light the picture.
+    std::stable_partition(pending.begin(), pending.end(),
+                          [](const Handle(V3d_Light)& light) { return light->ToCastShadows(); });
+    for (const Handle(V3d_Light)& light : pending) {
+        m_viewer->AddLight(light);
+        m_lights.push_back(light);
+    }
+    m_viewer->SetLightOn();
 
     applyEnvironment();
     restart();
@@ -275,12 +325,20 @@ void AppearanceView::applyEnvironment() {
         // The sun is put where the key light would be, so switching between Sky
         // and Studio moves the quality of the light and not its direction.
         Aspect_SkydomeBackground sky;
-        sky.SetSunDirection(gp_Dir(0.45, 0.70, 0.55));
+        sky.SetSunDirection(kSunTowards);
         sky.SetCloudiness(0.35f);
         sky.SetFogginess(0.05f);
         sky.SetSize(512);
         m_view->SetBackgroundSkydome(sky, Standard_True);
         m_view->ChangeRenderingParams().UseEnvironmentMapBackground = Standard_True;
+        // Image-based lighting from the cube map, which is real but reaches
+        // only the rasterized PBR preview: OCCT bakes the dome into an
+        // irradiance probe for that shading model, and the path tracer does not
+        // consult it. Under path tracing the dome is a backdrop and nothing
+        // else -- a scene lit by it alone comes back black, measured rather
+        // than assumed. applyLighting puts in the sun and sky fill that make
+        // the picture agree with the backdrop.
+        m_view->SetImageBasedLighting(Standard_True);
         return;
     }
 

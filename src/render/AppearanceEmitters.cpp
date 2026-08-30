@@ -53,6 +53,26 @@ double emittingArea(const SourceConfig& s) {
     }
 }
 
+// The radius of the emitting face, for the soft shadow the light it becomes
+// should cast. A real penumbra is set by the size of the real emitter, so this
+// is read off the source rather than guessed from the scene -- which is what a
+// point source, having no size at all, has to do instead.
+double emittingRadius(const SourceConfig& s) {
+    if (s.tracesRayFile() && s.rayFile) {
+        const Vec3 e = s.rayFile->extent();
+        return 0.5 * std::hypot(std::abs(e.x) * s.rayFileScale,
+                                std::abs(e.y) * s.rayFileScale);
+    }
+    if (s.type == SourceConfig::Type::Collimated) return std::max(0.0, s.beamRadius);
+    switch (s.shape) {
+        case SourceConfig::Shape::Rect:   return 0.5 * std::hypot(s.sizeA, s.sizeB);
+        case SourceConfig::Shape::Disc:
+        case SourceConfig::Shape::Sphere: return std::max(0.0, s.sizeA);
+        case SourceConfig::Shape::PointLike:
+        default:                          return 0.0;
+    }
+}
+
 // The face light leaves from, in the source's own placement. Null when the
 // source has no area, which the caller has already established.
 TopoDS_Shape emittingFace(const SourceConfig& s) {
@@ -119,6 +139,12 @@ EmitterBuild buildEmitters(const std::vector<SourceConfig>& sources, double scen
     EmitterBuild out;
     if (sources.empty()) return out;
 
+    // What a source of the full run power becomes as an OCCT light intensity.
+    // See kEmitterIrradiance: the square is what cancels the 1/d^2 falloff, so
+    // the answer does not depend on how big the scene happens to be.
+    const double reach = 0.5 * (sceneSize > 0.0 ? sceneSize : 100.0);
+    const double fullPowerIntensity = kEmitterIrradiance * reach * reach;
+
     // One pass to find the scale, a second to apply it. The divisor is a
     // property of the whole source list rather than of any one source, which is
     // what makes two emitters of different power come out in proportion instead
@@ -142,9 +168,8 @@ EmitterBuild buildEmitters(const std::vector<SourceConfig>& sources, double scen
             // light instead -- which is also the only way it can cast a shadow,
             // there being no geometry to cast one from.
             e.pointLike = true;
-            e.intensity = mostPowerful > 0.0
-                              ? 3.0 * std::max(0.0, s.power) / mostPowerful
-                              : 1.0;
+            e.intensity = fullPowerIntensity *
+                          (mostPowerful > 0.0 ? std::max(0.0, s.power) / mostPowerful : 1.0);
             // A non-zero angular size is what makes the shadow edge soft. As a
             // fraction of the scene, because a penumbra fixed in millimetres is
             // right on a lens and invisible on a luminaire.
@@ -156,6 +181,15 @@ EmitterBuild buildEmitters(const std::vector<SourceConfig>& sources, double scen
 
         const TopoDS_Shape face = emittingFace(s);
         if (face.IsNull()) continue;
+
+        // The light half of an area source -- see Emitter::intensity for why
+        // the face alone is not enough. Same power law as a point source, so
+        // two emitters of different power still light the scene in proportion,
+        // and a soft radius taken from the emitter's own size, because that is
+        // what sets a real penumbra.
+        e.intensity = fullPowerIntensity *
+                      (mostPowerful > 0.0 ? std::max(0.0, s.power) / mostPowerful : 1.0);
+        e.smoothRadius = std::max(1e-3, emittingRadius(s));
 
         const Graphic3d_Vec3 colour = spectrumColour(s.spectrum);
         const float scale = float(kBrightestRadiance *
