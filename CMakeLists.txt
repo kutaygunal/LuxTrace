@@ -91,6 +91,16 @@ add_library(optics_core STATIC
     src/core/Studies.h src/core/Studies.cpp
     src/core/Report.h src/core/Report.cpp
     src/core/StudyWorker.h src/core/StudyWorker.cpp
+    # The appearance preview's scene side: SurfaceOptics -> Graphic3d_BSDF, and
+    # the presentations built from it. Here rather than in the application
+    # because neither file needs Qt Widgets or a GL context, so the whole
+    # material mapping is assertable in a headless test -- the view that
+    # displays the result is the only part that needs a window.
+    src/render/AppearanceMaterials.h src/render/AppearanceMaterials.cpp
+    src/render/AppearanceScene.h src/render/AppearanceScene.cpp
+    src/render/AppearanceEmitters.h src/render/AppearanceEmitters.cpp
+    src/render/RadianceMap.h src/render/RadianceMap.cpp
+    src/render/AppearanceExport.h src/render/AppearanceExport.cpp
 )
 
 target_include_directories(optics_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -139,6 +149,7 @@ qt_add_executable(LuxTrace
     src/ui/EnergyBarWidget.h src/ui/EnergyBarWidget.cpp
     src/ui/SourceDialog.h src/ui/SourceDialog.cpp
     src/ui/OcctViewWidget.h src/ui/OcctViewWidget.cpp
+    src/render/AppearanceView.h src/render/AppearanceView.cpp
     src/ui/MainWindow.h src/ui/MainWindow.cpp
 )
 

@@ -166,6 +166,14 @@ public:
     // window instead.
     bool saveImage(const QString& path);
 
+    // The graphic driver this viewport runs on, so a second view can share the
+    // GL resources rather than starting a driver of its own. Null until the
+    // viewport has been painted once, which is when the driver is created.
+    //
+    // Deliberately one-directional: something else may read the viewport's
+    // driver, and the viewport reads nothing back.
+    Handle(Graphic3d_GraphicDriver) graphicDriver() const;
+
     // Qt must not paint over the native surface OCCT draws into.
     QPaintEngine* paintEngine() const override { return nullptr; }
 

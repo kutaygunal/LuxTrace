@@ -1,6 +1,7 @@
 # Unit tests for the optics core. No external test framework: TestMain.cpp
 # carries a small assertion harness, so the tests build wherever the app does.
-add_executable(optics_tests TestMain.cpp NewTests.inc AuditTests.inc SceneDocTests.inc)
+add_executable(optics_tests TestMain.cpp NewTests.inc AuditTests.inc SceneDocTests.inc
+               AppearanceTests.inc)
 
 # The reference corpus lives beside the tests, and the test binary runs from the
 # build tree, so the path has to be baked in rather than guessed at run time.
@@ -29,7 +30,9 @@ set(LUXTRACE_TEST_SUITES
     bsdf coating polarised imagequality tolerancing geometry channels diagnostics
     overridekeys polarisedmetal catalogue rayfile multisource regression
     configkeys scattermodel importaudit simd preview rayinspector pythonenv
-    fidelity sceneparams thetabin meshadaptive scenedoc)
+    fidelity sceneparams thetabin meshadaptive scenedoc
+    appearancematerials appearancescene appearanceemitters appearanceradiance
+    appearanceoutput)
 
 foreach(suite IN LISTS LUXTRACE_TEST_SUITES)
     add_test(NAME ${suite} COMMAND optics_tests ${suite})

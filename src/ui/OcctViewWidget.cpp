@@ -253,6 +253,11 @@ void OcctViewWidget::initViewer() {
     }
 }
 
+Handle(Graphic3d_GraphicDriver) OcctViewWidget::graphicDriver() const {
+    if (m_viewer.IsNull()) return Handle(Graphic3d_GraphicDriver)();
+    return m_viewer->Driver();
+}
+
 double OcctViewWidget::sceneScale() const {
     return m_sceneSize > 1e-9 ? m_sceneSize : 100.0;
 }

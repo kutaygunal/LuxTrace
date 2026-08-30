@@ -45,7 +45,8 @@ TracePro, OpticStudio) is expected to do:
 | Measurements | Spot metrics, far-field intensity, MTF, wavefront error and Strehl, CIE chromaticity and colour temperature |
 | Studies | Convergence, through-focus, parameter sweeps in 1D and 2D, Nelder-Mead and CMA-ES optimisation, and Monte Carlo tolerance analysis with a yield and a sensitivity ranking |
 | Progressive results | The image forms and the error bar shrinks while the trace runs |
-| Import/export | JSON config; CSV irradiance, intensity, metrics and ensembles; **IES LM-63 and EULUMDAT** for DIALux, AGi32 and Relux; PNG of any view; a one-click HTML report |
+| Appearance preview | A GPU path-traced picture of the part switched on — real glass, real metal, the scene's own emitters, and a nominated receiver glowing with the distribution the run measured. An **appearance preview, not a photometric result**: RGB, no dispersion, no polarisation, no cd/m² |
+| Import/export | JSON config; CSV irradiance, intensity, metrics and ensembles; **IES LM-63 and EULUMDAT** for DIALux, AGi32 and Relux; PNG of any view, and the appearance preview offscreen at any resolution; a one-click HTML report |
 | Validation | `--validate` checks the tracer against seven closed forms derived outside it and prints the residuals |
 
 ---
@@ -411,7 +412,7 @@ OCCT under test is the one the developer box has.
 ctest --preset release
 ```
 
-290 tests in 58 suites, no external framework. The scene and test counts are
+384 tests in 69 suites, no external framework. The scene and test counts are
 derived, not retyped: `python tools/regenerate_counts.py` regenerates them from
 `--smoke` and the test binary's own totals. Beyond the original coverage
 (Moller-Trumbore branches, BVH vs brute force, energy conservation, TIR critical
@@ -528,6 +529,7 @@ before anything is traced:
 | **Studies** | Convergence with error bars, and the through-focus sweep |
 | **Design** | A metric against any of the optic's own dimensions, with the error bars that say whether a bump is the design or the noise; and a Nelder-Mead or CMA-ES search for the design that makes it best, which can be adopted into the parameter boxes |
 | **Tolerance** | A simulated production run: the yield against a specification, and the ranking that says which dimension to tighten first. Beside it, the modulation transfer curve with its diffraction limit |
+| **Appearance** | What the part looks like switched on: GPU path tracing with the scene's own emitters, a studio rig or a procedural sky; exposure, white point and tone mapping; depth of field; and — with a receiver nominated — an exit surface glowing with the distribution the trace computed. Exports offscreen at any resolution and goes into the HTML report. A **preview**, labelled as one everywhere it appears, and not a measurement |
 
 **Compare → Pin this run** keeps a result to measure the next one against: the
 plots overlay it, the map shows the difference, and the metrics carry the deltas
@@ -831,6 +833,27 @@ python resources/make_icon.py
 - Per-thread detector grids will not scale past a fine receiver. At 64 x 64 they
   cost 32 KB per thread; at 1024 x 1024 they are 8 MB per thread, and a
   progressive snapshot copies them.
+- The Appearance preview is a picture, not a measurement, and the boundary is
+  sharper than it looks. OCCT's path tracer is an RGB graphics renderer with its
+  own two-layer BSDF: it does not read `SurfaceOptics`' scatter model, `Coating`'s
+  stack, `Material`'s Sellmeier data or `Polarisation`, and its output is
+  tone-mapped sRGB rather than cd/m². What crosses the bridge is a *translation*
+  of our materials into its model, and the emission of a nominated receiver,
+  whose spatial distribution is the run's own — the pattern is measured, the
+  brightness is a normalisation. Nothing in the application reads the render
+  back, and every image it exports carries that sentence in its caption and in
+  the file's own description field.
+- The render needs an OpenGL 4.0 driver and falls back to a rasterized PBR
+  preview of the same materials where there is none, naming the device and the
+  version it found rather than doing nothing. Depth of field is path tracing
+  only: it is an aperture the tracer samples across, so the fallback has none.
+- Path-traced output is not reproducible frame for frame, unlike every other
+  number the application produces. It is a progressive estimate on the GPU with
+  no seed we control, so two runs of the same scene differ in the last bits —
+  which is also why the tests assert on the material mapping and the captions
+  rather than on pixels.
+- Ray legs do not appear in the render. OCCT path-traces triangles; line
+  primitives are not in its BVH. Rays belong to the diagnostic view.
 - No collision in the walkthrough — the camera passes straight through geometry.
 - No logging or diagnostics capture, and the config format string has no
   versioned migration path.

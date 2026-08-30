@@ -7,6 +7,7 @@
 #include "core/SimulationResult.h"
 #include "core/Report.h"
 #include "core/Studies.h"
+#include "render/AppearanceExport.h"
 
 class ControlsPanel;
 class EnergyBarWidget;
@@ -32,6 +33,7 @@ class QGroupBox;
 class QPushButton;
 class QDialog;
 class QTabWidget;
+class AppearanceView;
 class QTextBrowser;
 class QTimer;
 class QToolButton;
@@ -135,6 +137,10 @@ private:
     QWidget* buildDesignTab();
     QWidget* buildToleranceTab();
     QWidget* buildProbeTab();
+    // The Appearance preview -- what the part looks like switched on. Last in
+    // the tab order and additive: it reads the scene, nothing reads it back,
+    // and it is labelled a preview rather than a result everywhere it appears.
+    QWidget* buildAppearanceTab();
     // The window that holds everything about the run rather than about a part:
     // the tutorial's dimensions, the physics switches, the ray budget, and the
     // button that starts it.
@@ -210,6 +216,26 @@ private:
     void updateSummary();
     // The surfaces the 3D viewport is showing right now.
     const std::vector<OpticalSurface>& currentSurfaces() const;
+    // The emitters the current configuration traces, for the Appearance view to
+    // light itself from. Asked of Simulation::sourcesFor rather than derived
+    // here, so the render and the trace cannot disagree about where the light
+    // is.
+    std::vector<SourceConfig> appearanceSources() const;
+    // The render, offscreen at a size the window never has to be. Asks for the
+    // resolution and the sample count first, because both cost time and a
+    // renderer that decides them silently is one that either wastes a minute or
+    // hands back a picture too small for the document it was wanted for.
+    void exportAppearanceImage();
+    // The render as a report figure, or an empty image where the tab has never
+    // been opened and there is no GL context to render with. `shot` comes back
+    // describing what was actually produced -- size and frames accumulated --
+    // because the caption has to state the render's own sample count and not
+    // the window's, which the offscreen pass has just reset.
+    QImage appearanceFigure(appearance::ExportRequest& shot) const;
+    // The receivers the last run measured, offered as exit surfaces the render
+    // can glow with, and the line under the render that says what it is.
+    void refreshAppearanceReceivers();
+    void refreshAppearanceCaption();
     void refreshSweepAxes();
     void refreshImageQuality();
     QString formatMetrics() const;
@@ -229,6 +255,15 @@ private:
     ObjectInspector*    m_object   = nullptr;
     PythonPanel*      m_python   = nullptr;
     OcctViewWidget*   m_view3d   = nullptr;
+    AppearanceView*   m_appearance         = nullptr;
+    QLabel*           m_appearanceState    = nullptr;
+    QComboBox*        m_appearanceEmission = nullptr;
+    int               m_appearanceSamples  = 0;
+    int               m_appearanceBudget   = 1;
+    // What the last export asked for, so the second one does not have to be
+    // typed again. Normalised on the way in, so it is always a size that can
+    // actually be rendered.
+    appearance::ExportRequest m_appearanceExport;
     RayDiagramWidget* m_diagram  = nullptr;
     HeatmapWidget*    m_heatmap  = nullptr;
     PlotWidget*       m_profile  = nullptr;

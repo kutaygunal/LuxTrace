@@ -57,6 +57,11 @@
 #include "core/Optics.h"
 #include "core/RayTracer.h"
 #include "core/SceneDocument.h"
+#include "render/AppearanceMaterials.h"
+#include "render/AppearanceScene.h"
+#include "render/AppearanceEmitters.h"
+#include "render/AppearanceExport.h"
+#include "render/RadianceMap.h"
 #include "core/Simulation.h"
 #include "core/SimulationWorker.h"
 #include "core/Studies.h"
@@ -1099,6 +1104,12 @@ TEST(patterns, retroreflectors_only_score_by_sending_light_back) {
 // Tests for the assembled-scene document: the object model the scene tree, the
 // object library and the property editor are all views onto.
 #include "SceneDocTests.inc"
+
+// Tests for the Appearance preview's scene side -- the SurfaceOptics ->
+// Graphic3d_BSDF mapping and the presentations built from it. Everything up to
+// the GPU; the image itself is reviewed by eye, because a path-traced frame is
+// not bit-stable and asserting on pixels would produce a permanently red build.
+#include "AppearanceTests.inc"
 
 // =================================================================== main ===
 
