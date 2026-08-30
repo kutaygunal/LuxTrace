@@ -501,6 +501,10 @@ QString categoryName(Category c) {
     }
 }
 
+QString typeLabel(const SceneObject& o) {
+    return o.typeLabel.isEmpty() ? typeInfo(o.type).name : o.typeLabel;
+}
+
 const std::vector<ObjectType>& creatableTypes() {
     static const std::vector<ObjectType> t = [] {
         std::vector<ObjectType> v;
@@ -723,6 +727,43 @@ bool SceneDocument::setVisible(int id, bool visible) {
     SceneObject* o = find(id);
     if (!o || o->visible == visible) return false;
     o->visible = visible;
+    // A hidden part is not traced, so the parameter block no longer describes
+    // what a run would produce -- which is exactly what detaching says.
+    detach();
+    return true;
+}
+
+bool SceneDocument::setVisibleTree(int id, bool visible) {
+    const SceneObject* self = find(id);
+    if (!self) return false;
+    const int parent = self->parent;
+
+    bool changed = false;
+    for (const SceneObject& o : m_objects)
+        if (isAncestorOf(id, o.id)) changed |= setVisible(o.id, visible);
+
+    // Nothing above it may be switched off, or the row would come back ticked
+    // and still show nothing.
+    if (visible) {
+        int guard = int(m_objects.size()) + 1;
+        for (int cur = parent; cur != 0 && guard-- > 0;) {
+            const SceneObject* p = find(cur);
+            if (!p) break;
+            const int next = p->parent;
+            changed |= setVisible(cur, true);
+            cur = next;
+        }
+    }
+    return changed;
+}
+
+bool SceneDocument::effectiveVisible(int id) const {
+    int guard = int(m_objects.size()) + 1;
+    for (int cur = id; cur != 0 && guard-- > 0;) {
+        const SceneObject* o = find(cur);
+        if (!o || !o->visible) return false;
+        cur = o->parent;
+    }
     return true;
 }
 
@@ -878,6 +919,7 @@ void SceneDocument::rebuildTutorialParts() {
         o.id            = reuse ? keptParts[i].id : m_nextId++;
         o.type          = ObjectType::TutorialPart;
         o.name          = s.label.isEmpty() ? QStringLiteral("Part %1").arg(i + 1) : s.label;
+        o.typeLabel     = s.label;
         o.baked         = s.shape;
         o.tutorialIndex = int(i);
         o.optics        = static_cast<const SurfaceOptics&>(s);
@@ -995,8 +1037,16 @@ SceneDocument::Compiled SceneDocument::compile() const {
     Compiled out;
     out.setup = std::make_shared<GeometryProvider::SceneSetup>();
 
+    bool hiddenSource = false;
     for (const SceneObject& o : m_objects) {
         if (o.isGroup()) continue;
+        // Switched off, here or by a group above it: not drawn, and not traced
+        // either. This is the one place that decides both, so the picture and
+        // the number cannot disagree about what the scene contains.
+        if (!effectiveVisible(o.id)) {
+            hiddenSource |= o.isSource();
+            continue;
+        }
         const gp_Trsf world = worldPlacement(o.id);
 
         if (o.isSource()) {
@@ -1048,6 +1098,10 @@ SceneDocument::Compiled SceneDocument::compile() const {
     if (out.havePrimary) {
         out.setup->sourceOrigin = out.primary.offset;
         out.setup->sourceAxis   = out.primary.axis;
+    } else if (hiddenSource) {
+        out.warnings << QStringLiteral("Every light source in the scene is switched off, "
+                                       "so a trace has nothing to emit. Tick one in the "
+                                       "scene tree.");
     } else {
         out.warnings << QStringLiteral("The scene has no light source, so a trace has "
                                        "nothing to emit. Drag one in from the library.");
@@ -1223,6 +1277,10 @@ SceneDocument SceneDocument::fromJson(const QJsonObject& root, QStringList* warn
             o.tutorialIndex = j.value(QStringLiteral("tutorialIndex")).toInt(-1);
             if (o.tutorialIndex >= 0 && o.tutorialIndex < int(parts.size())) {
                 const OpticalSurface& s = parts[std::size_t(o.tutorialIndex)];
+                // Not serialised, for the same reason the B-Rep is not: the
+                // tutorial is rebuilt on load and its parts still name
+                // themselves. A renamed part keeps saying what it is.
+                o.typeLabel      = s.label;
                 o.baked          = s.shape;
                 o.instances      = s.placements;
                 o.meshDeflection = s.meshDeflection;
@@ -1245,6 +1303,13 @@ SceneDocument SceneDocument::fromJson(const QJsonObject& root, QStringList* warn
 
     doc.m_nextId = std::max(maxId + 1, root.value(QStringLiteral("nextId")).toInt(1));
     doc.m_linked = root.value(QStringLiteral("linked")).toBool(false);
+
+    // A file written while hiding was display-only can claim both a link and a
+    // switched-off part. It cannot have both now: what is hidden is not traced,
+    // so the tutorial's dimensions do not describe what this document would
+    // produce.
+    for (const SceneObject& o : doc.m_objects)
+        if (!o.visible) { doc.m_linked = false; break; }
 
     // A parent that did not survive the load would orphan its children into
     // nothing; they come back to the top level instead.

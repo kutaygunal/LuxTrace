@@ -126,11 +126,26 @@ struct SceneObject {
     int        parent  = 0;     // 0 == top level
     ObjectType type    = ObjectType::Group;
     QString    name;
-    // Whether the 3D view draws it. Display only -- a trace uses every object
-    // in the document, hidden or not. Hiding a lens to see inside an assembly
-    // is a way of looking at a design, not a way of changing it, and a hidden
-    // part that quietly stopped refracting would be the more surprising of the
-    // two readings by far.
+    // What kind of optic this is, where the type enum cannot say. A tutorial
+    // part is a TutorialPart whatever it does to light, so the enum's own name
+    // answers "which part of the machinery built it" rather than the question
+    // a user is asking, which is whether they are looking at the mirror or at
+    // the receiver. The registry's builders already name each surface, so this
+    // carries that name; empty means the type's own name is the answer.
+    QString    typeLabel;
+    // Whether the object is in the scene at all: the 3D view does not draw it
+    // and a trace does not include it.
+    //
+    // Display-only was the other reading, and it is the one that surprises. A
+    // checkbox beside a lens in a list of what the scene contains says what is
+    // *in* the scene, so hiding an obstruction and then measuring what reaches
+    // the receiver has to mean the obstruction is gone -- otherwise the number
+    // comes back unchanged and nothing on screen says why. Looking inside an
+    // assembly is what the section plane is for.
+    //
+    // Only this object's own flag. A group's children are hidden by the group,
+    // so what compile() and the viewport read is effectiveVisible(), which is
+    // this flag and every ancestor's.
     bool       visible = true;
 
     // Where it sits, relative to its parent. Rotation is XYZ Euler in degrees,
@@ -198,6 +213,12 @@ struct SceneObject {
     void    setLocalAxis(const gp_Dir& axis);
 };
 
+// What to call an object's kind: the name its builder gave it where there is
+// one, and the type's own name otherwise. Every tutorial names its parts, so
+// this reads as the optic in every scene rather than as "tutorial part"
+// twenty-six times over.
+QString typeLabel(const SceneObject& o);
+
 class SceneDocument {
 public:
     SceneDocument();
@@ -241,16 +262,30 @@ public:
     //
     // Split by whether the edit changes what the registry would build.
     //
-    // Renaming a part, hiding it, or changing what its surface does to light
-    // leaves the geometry exactly as the tutorial's builder made it -- so the
-    // parameter block still describes what is on screen, and the sweeps, the
-    // optimiser and the tolerance study still have dimensions to vary. Those
-    // edits keep the link.
+    // Renaming a part, or changing what its surface does to light, leaves the
+    // geometry exactly as the tutorial's builder made it -- so the parameter
+    // block still describes what is on screen, and the sweeps, the optimiser
+    // and the tolerance study still have dimensions to vary. Those edits keep
+    // the link.
     //
-    // Moving a part, resizing it or adding one does not, and there is no
-    // parameter set that describes the result. Those detach.
+    // Moving a part, resizing it, adding one or switching one off does not,
+    // and there is no parameter set that describes the result. Those detach.
+    // Hiding is in that list because a hidden part is not traced: a tutorial
+    // with its mirror switched off is not the tutorial any more, whatever the
+    // dimensions say.
     bool setName(int id, const QString& name);
     bool setVisible(int id, bool visible);
+    // Sets `id` and everything under it, which is what a checkbox on a group
+    // has to mean: a group that is switched off with its contents still ticked
+    // is a row disagreeing with the four rows under it.
+    //
+    // Showing an object also shows the groups above it, for the same reason in
+    // the other direction -- ticking a row that stays invisible because
+    // something above it is off is the same disagreement.
+    bool setVisibleTree(int id, bool visible);
+    // Whether the object is actually in the scene: its own flag and every
+    // ancestor's. This is what decides what is drawn and what is traced.
+    bool effectiveVisible(int id) const;
     bool setOptics(int id, const SurfaceOptics& optics);
     // Puts a surface back to what its type, or its tutorial, declared.
     bool resetOptics(int id);

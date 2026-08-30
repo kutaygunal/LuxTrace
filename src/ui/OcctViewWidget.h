@@ -28,9 +28,9 @@ class RayCloud;
 //   Wheel        zoom toward the cursor
 //   W / S        walk forward / back        A / D  strafe left / right
 //   E / Q        rise / drop                Shift  x4 speed, Ctrl  x0.25
-//   F            fit the whole scene        Home   reset to the default view
-//   G / R / S    move, turn or resize the selected object with the gizmo
-//   Esc          put the gizmo away
+//   F            fit the whole scene        R      reset to the default view
+//   1            put the transform gizmo away
+//   2 / 3 / 4    move, turn or resize the selected object with the gizmo
 //
 // The navigation cube in the upper-right corner is the other way to aim the
 // camera: click a face for a standard view, an edge for a 45-degree one, a
@@ -41,9 +41,11 @@ class OcctViewWidget : public QWidget {
 public:
     // Which gizmo is on the selected object, if any.
     //
-    // One at a time, the way Blender does it: three sets of handles on the same
-    // object at the same time is a target the size of the object with no room
-    // left to click the object itself.
+    // One at a time: three sets of handles on the same object at the same time
+    // is a target the size of the object with no room left to click the object
+    // itself. None is a mode of its own rather than an absence, because putting
+    // the handles away is something the user asks for -- they sit over the
+    // thing they move.
     enum class TransformMode { None = 0, Translate, Rotate, Scale };
 
     // What the colour of a ray leg means.
@@ -358,8 +360,16 @@ private:
         gp_Dir u, v, n;
         double w = 0.0, h = 0.0;
         double acceptanceDeg = 180.0;
+        // Which surface it outlines. The outline is a picture *of* that body,
+        // so it goes when the body does -- otherwise switching a receiver off
+        // erases the plane and leaves its green rectangle hanging in the air
+        // until the next rebuild catches up.
+        int    surface = -1;
     };
     std::vector<ReceiverGlyph> m_receivers;
+    // The receivers whose surface is currently drawn. This is what the overlay
+    // is built from and compared against.
+    std::vector<ReceiverGlyph> shownReceivers() const;
     // The scene size the overlay is drawn against. Held rather than tracked:
     // it only follows m_sceneSize once the scene has genuinely changed size, so
     // nudging a dimension does not resize every marker in the viewport.

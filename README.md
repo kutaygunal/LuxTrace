@@ -546,21 +546,25 @@ Viewport navigation:
 | `A` / `D` | strafe left / right |
 | `E` / `Q` | rise / drop |
 | `Shift` / `Ctrl` | x4 / x0.25 walk speed |
-| `F` / `Home` | fit scene / reset view |
-| `G` / `R` / `S` | move, rotate or scale the selected object |
-| `Esc` | put the transform gizmo away |
+| `F` / `R` | fit scene / reset view |
+| `2` / `3` / `4` | move, rotate or scale the selected object |
+| `1` | put the transform gizmo away |
 
 Walking needs the **Perspective** checkbox on: under an orthographic
 projection, moving along the view axis changes nothing on screen.
 
-Selecting an object and pressing `G`, `R` or `S` -- or clicking **Move**,
+Selecting an object and pressing `2`, `3` or `4` -- or clicking **Move**,
 **Rotate** or **Scale** under the viewport -- puts a gizmo on it, and dragging a
 handle writes the result straight into the object's placement, so the panel on
-the right and the picture never disagree. `G`/`R`/`S` only claim those keys
-while something is selected, which is what leaves `S` to walk backwards the rest
-of the time. The scale is uniform: an optic stretched along one axis is a
-different optic rather than the same one at another size, so resizing a lens in
-one direction only is done by editing its own dimensions.
+the right and the picture never disagree. `1` puts the handles away again. A
+tool picked with nothing selected waits for the next selection, so "3, then
+click the mirror" works as well as the other order.
+
+The handles sit on the object's own axes, so they stay where a drag leaves them
+instead of squaring up to the world each time. The scale is uniform: an optic
+stretched along one axis is a different optic rather than the same one at
+another size, so resizing a lens in one direction only is done by editing its
+own dimensions.
 
 Headless diagnostics (all with `QT_QPA_PLATFORM=offscreen`):
 

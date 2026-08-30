@@ -247,10 +247,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
 QWidget* MainWindow::buildViewerTab() {
     auto* fit         = new QPushButton(QStringLiteral("Fit (F)"), this);
-    // Home, not R: R is the Rotate gizmo whenever an object is selected, and a
-    // key that means two things depending on the selection is worse on a button
-    // than a key that means one.
-    auto* reset       = new QPushButton(QStringLiteral("Reset (Home)"), this);
+    auto* reset       = new QPushButton(QStringLiteral("Reset (R)"), this);
     auto* showRays    = new QCheckBox(QStringLiteral("Show rays"), this);
     auto* perspective = new QCheckBox(QStringLiteral("Perspective"), this);
     showRays->setChecked(true);
@@ -307,11 +304,13 @@ QWidget* MainWindow::buildViewerTab() {
                           .arg(label, key, tip));
         return b;
     };
-    m_moveTool = tool(QStringLiteral("Move"), QStringLiteral("G"),
-                      QStringLiteral("Drag an arrow to slide the object along that axis."));
-    m_rotateTool = tool(QStringLiteral("Rotate"), QStringLiteral("R"),
-                        QStringLiteral("Drag a ring to turn the object about that axis."));
-    m_scaleTool = tool(QStringLiteral("Scale"), QStringLiteral("S"),
+    m_moveTool = tool(QStringLiteral("Move"), QStringLiteral("2"),
+                      QStringLiteral("Drag an arrow to slide the object along that axis. "
+                                     "Press 1 to put the gizmo away."));
+    m_rotateTool = tool(QStringLiteral("Rotate"), QStringLiteral("3"),
+                        QStringLiteral("Drag a ring to turn the object about that axis. "
+                                       "Press 1 to put the gizmo away."));
+    m_scaleTool = tool(QStringLiteral("Scale"), QStringLiteral("4"),
                        QStringLiteral(
                            "Drag a handle to resize the object about its own origin. "
                            "The scale is uniform: an optic stretched along one axis "
@@ -344,9 +343,9 @@ QWidget* MainWindow::buildViewerTab() {
     bar2->addWidget(m_clipFlip);
     bar2->addSpacing(12);
     bar2->addWidget(dim(QStringLiteral("Drag: L orbit · M pan · R look | Wheel zoom | "
-                                       "click a surface to inspect it · G/R/S move, "
-                                       "rotate, scale it · Esc drops the gizmo · "
-                                       "WASD walk · Home resets the view"), this), 1);
+                                       "click a surface to inspect it · 2/3/4 move, "
+                                       "rotate, scale it · 1 drops the gizmo · "
+                                       "WASD walk · F fits · R resets the view"), this), 1);
 
     auto* pane = new QWidget(this);
     auto* v = new QVBoxLayout(pane);
@@ -1179,9 +1178,14 @@ void MainWindow::refreshSelectionHighlight() {
 }
 
 void MainWindow::applySurfaceVisibility() {
+    // A switched-off object is left out of the compile entirely, so in an
+    // assembled scene there is usually nothing here to hide. This still runs
+    // for the case the compile cannot cover: a document restored from a file
+    // whose parts are drawn from the registry rather than from the compile.
     for (const scenedoc::SceneObject& o : m_document.objects()) {
         if (o.isGroup() || o.isSource()) continue;
-        for (int idx : surfacesForObject(o.id)) m_view3d->setSurfaceVisible(idx, o.visible);
+        const bool on = m_document.effectiveVisible(o.id);
+        for (int idx : surfacesForObject(o.id)) m_view3d->setSurfaceVisible(idx, on);
     }
 }
 
@@ -1214,18 +1218,22 @@ std::vector<int> MainWindow::surfacesForObject(int id) const {
     return out;
 }
 
+// A glyph per emitter the compile kept, in the order it kept them -- so a
+// switched-off source, which is not compiled and so has no marker, does not
+// shift the markers after it onto the wrong objects.
 int MainWindow::objectForSource(int glyphIndex) const {
     if (glyphIndex < 0) return 0;
     int seen = 0;
     for (const scenedoc::SceneObject& o : m_document.objects())
-        if (o.isSource() && seen++ == glyphIndex) return o.id;
+        if (o.isSource() && m_document.effectiveVisible(o.id) && seen++ == glyphIndex)
+            return o.id;
     return 0;
 }
 
 int MainWindow::sourceIndexForObject(int id) const {
     int seen = 0;
     for (const scenedoc::SceneObject& o : m_document.objects()) {
-        if (!o.isSource()) continue;
+        if (!o.isSource() || !m_document.effectiveVisible(o.id)) continue;
         if (o.id == id) return seen;
         ++seen;
     }
@@ -1288,8 +1296,26 @@ void MainWindow::onObjectSelected(int id) {
 }
 
 void MainWindow::onObjectVisibility(int id, bool visible) {
-    if (!m_document.setVisible(id, visible)) return;
-    for (int idx : surfacesForObject(id)) m_view3d->setSurfaceVisible(idx, visible);
+    // Erased first, off the surface list the viewport is currently showing: the
+    // recompile below drops the object's geometry altogether, but that reaches
+    // the screen a debounce interval later, and a box that stays ticked-off
+    // over a body still on screen reads as a click that did nothing.
+    if (!visible)
+        for (int idx : surfacesForObject(id)) m_view3d->setSurfaceVisible(idx, false);
+
+    if (!m_document.setVisibleTree(id, visible)) return;
+    syncDocument(true);
+    // The emitter markers come from the compile, which has already run: this is
+    // what makes a source's cone go with the tick rather than with the rebuild.
+    refreshSourceGlyphs();
+    m_sceneTree->setSelectedId(m_selectedObject);
+
+    const scenedoc::SceneObject* o = m_document.find(id);
+    statusBar()->showMessage(
+        QStringLiteral("%1 %2 the scene -- a run traces what is ticked")
+            .arg(o ? o->name : QStringLiteral("Object"),
+                 visible ? QStringLiteral("is back in") : QStringLiteral("is out of")),
+        5000);
 }
 
 void MainWindow::onObjectRenamed(int id, const QString& name) {
@@ -1324,15 +1350,24 @@ void MainWindow::onObjectReparent(int id, int newParent) {
 
 void MainWindow::onIsolateObject(int id) {
     for (const scenedoc::SceneObject& o : m_document.objects())
-        m_document.setVisible(o.id, m_document.isAncestorOf(id, o.id));
-    syncDocument(false);
+        // The object and everything under it, and the groups above it: hiding
+        // an isolated object's own parent would switch the object off with it.
+        m_document.setVisible(o.id, m_document.isAncestorOf(id, o.id) ||
+                                        m_document.isAncestorOf(o.id, id));
+    syncDocument(true);
+    refreshSourceGlyphs();
     m_sceneTree->setSelectedId(m_selectedObject);
+    statusBar()->showMessage(
+        QStringLiteral("Isolated -- everything else is switched off, and a run traces "
+                       "only what is left. Show all puts it back."),
+        6000);
 }
 
 void MainWindow::onShowAllObjects() {
     for (const scenedoc::SceneObject& o : m_document.objects())
         m_document.setVisible(o.id, true);
-    syncDocument(false);
+    syncDocument(true);
+    refreshSourceGlyphs();
     m_sceneTree->setSelectedId(m_selectedObject);
 }
 
@@ -1598,6 +1633,19 @@ SimConfig MainWindow::currentConfig() const {
     }
     cfg.extraSources = m_compiled.extraSources;
     return cfg;
+}
+
+bool MainWindow::requireLightSource() {
+    if (m_compiled.havePrimary) return true;
+    QMessageBox::information(
+        this, windowTitle(),
+        m_document.sourceCount() > 0
+            ? QStringLiteral("Every light source in the scene is switched off, so there "
+                             "is nothing to trace.\n\nTick one in the scene tree, or add "
+                             "another from the object library.")
+            : QStringLiteral("The scene has no light source, so there is nothing to "
+                             "trace.\n\nDrag one in from the object library."));
+    return false;
 }
 
 bool MainWindow::requireParametricScene(const QString& what) {
@@ -2197,6 +2245,7 @@ void MainWindow::onGeometryFailed(const QString& message, quint64 generation) {
 
 void MainWindow::onRun() {
     if (m_worker->isRunning() || m_study->isRunning()) return;
+    if (!requireLightSource()) return;
     m_controls->setRunning(true);
     m_result->setText(QStringLiteral("Running..."));
     m_worker->startRun(currentConfig());

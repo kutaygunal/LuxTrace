@@ -303,7 +303,8 @@ void OcctViewWidget::setScene(GeometryProvider::Scene scene,
     // The receivers, remembered as frames so the overlay can outline them and
     // draw their acceptance cones.
     m_receivers.clear();
-    for (const OpticalSurface& os : surfaces) {
+    for (std::size_t si = 0; si < surfaces.size(); ++si) {
+        const OpticalSurface& os = surfaces[si];
         if (!os.isDetector) continue;
         // The mesher owns the receiver rectangle, so this is what MeshBuilder
         // would derive: the shape's own bounding box in the surface's frame.
@@ -320,6 +321,7 @@ void OcctViewWidget::setScene(GeometryProvider::Scene scene,
         g.w = xM - xm;
         g.h = yM - ym;
         g.acceptanceDeg = os.detAcceptanceDeg;
+        g.surface       = int(si);
         m_receivers.push_back(g);
     }
 
@@ -514,6 +516,10 @@ void OcctViewWidget::setSurfaceVisible(int index, bool visible) {
     if (visible) m_context->Display(m_shapes[std::size_t(index)], AIS_Shaded, 0,
                                     Standard_False);
     else         m_context->Erase(m_shapes[std::size_t(index)], Standard_False);
+    // A receiver's outline and acceptance cone are drawings of the body that
+    // just went, so they go in the same frame rather than a rebuild later. No
+    // receiver among the hidden surfaces means this compares equal and returns.
+    rebuildOverlay();
     // Handles floating over a body that is no longer drawn are handles for
     // something the user cannot see themselves moving. Only when it is a body
     // the gizmo is actually on, though: this is called once per surface when
@@ -649,16 +655,27 @@ bool OcctViewWidget::overlayUpToDate() const {
             return false;
     }
 
-    if (m_drawnReceivers.size() != m_receivers.size()) return false;
-    for (std::size_t i = 0; i < m_receivers.size(); ++i) {
+    const std::vector<ReceiverGlyph> shown = shownReceivers();
+    if (m_drawnReceivers.size() != shown.size()) return false;
+    for (std::size_t i = 0; i < shown.size(); ++i) {
         const ReceiverGlyph& a = m_drawnReceivers[i];
-        const ReceiverGlyph& b = m_receivers[i];
+        const ReceiverGlyph& b = shown[i];
         if (!a.centre.IsEqual(b.centre, 1e-9) || !a.u.IsEqual(b.u, 1e-12) ||
             !a.v.IsEqual(b.v, 1e-12) || !a.n.IsEqual(b.n, 1e-12) ||
             a.w != b.w || a.h != b.h || a.acceptanceDeg != b.acceptanceDeg)
             return false;
     }
     return true;
+}
+
+std::vector<OcctViewWidget::ReceiverGlyph> OcctViewWidget::shownReceivers() const {
+    std::vector<ReceiverGlyph> out;
+    out.reserve(m_receivers.size());
+    for (const ReceiverGlyph& g : m_receivers)
+        if (g.surface < 0 || g.surface >= int(m_visible.size()) ||
+            m_visible[std::size_t(g.surface)])
+            out.push_back(g);
+    return out;
 }
 
 void OcctViewWidget::rebuildOverlay() {
@@ -668,9 +685,11 @@ void OcctViewWidget::rebuildOverlay() {
     // outline flicker on every step of an unrelated spin box.
     if (overlayUpToDate()) return;
 
+    const std::vector<ReceiverGlyph> receivers = shownReceivers();
+
     m_drawnOverlaysOn = m_overlaysOn;
     m_drawnSources    = m_sources;
-    m_drawnReceivers  = m_receivers;
+    m_drawnReceivers  = receivers;
     m_drawnScale      = m_overlayScale;
     for (int i = 0; i < 3; ++i) { m_drawnBbMin[i] = m_bbMin[i]; m_drawnBbMax[i] = m_bbMax[i]; }
     m_haveOverlay = true;
@@ -821,7 +840,7 @@ void OcctViewWidget::rebuildOverlay() {
     // ---- the receivers ------------------------------------------------------
     {
         const Quantity_Color green(0.35, 0.95, 0.55, Quantity_TOC_RGB);
-        for (const ReceiverGlyph& g : m_receivers) {
+        for (const ReceiverGlyph& g : receivers) {
             const gp_Vec eu(g.u), ev(g.v);
             const gp_Vec hu = eu * (0.5 * g.w), hv = ev * (0.5 * g.h);
             const gp_Pnt a = g.centre.Translated(-hu - hv);
@@ -1567,30 +1586,24 @@ void OcctViewWidget::wheelEvent(QWheelEvent* e) {
 }
 
 void OcctViewWidget::keyPressEvent(QKeyEvent* e) {
-    // G / R / S are Blender's transform tools, and S is also this viewport's
-    // walk-backward key. They cannot both win, so the one that wins is the one
-    // that has something to act on: with an object selected there is a
-    // transform to choose, and with nothing selected there is not -- so a
-    // walkthrough keeps all six of its keys, and clicking empty space is how
-    // you hand them back.
-    const bool haveTarget = !manipulatorTargets()->IsEmpty();
-    if (haveTarget) {
-        switch (e->key()) {
-        case Qt::Key_G: setTransformMode(TransformMode::Translate); return;
-        case Qt::Key_R: setTransformMode(TransformMode::Rotate);    return;
-        case Qt::Key_S: setTransformMode(TransformMode::Scale);     return;
-        default: break;
-        }
-    }
     switch (e->key()) {
-    case Qt::Key_F: fitAll(); return;
-    // Escape puts the gizmo away whether or not anything is selected, because
-    // "get this off my object" has to work when the handles are what is in the
-    // way of clicking the object.
-    case Qt::Key_Escape: setTransformMode(TransformMode::None); return;
-    // Reset lost R to the gizmo, so it has a key of its own that nothing else
-    // wants rather than one that means two things.
-    case Qt::Key_Home: resetView(); return;
+    case Qt::Key_F: fitAll();    return;
+    case Qt::Key_R: resetView(); return;
+    // The transform tools, on the number row: 1 puts the gizmo away, and 2, 3
+    // and 4 are move, turn and resize.
+    //
+    // Digits because they collide with nothing. The letters a 3D viewport
+    // reaches for are already spoken for by walking -- S was both "scale" and
+    // "walk backwards", which is why choosing a tool used to depend on whether
+    // anything was selected. Nothing depends on that now.
+    //
+    // A tool chosen with nothing selected is remembered for the next selection
+    // rather than dropped, so "2, then click the lens" works as well as
+    // "click the lens, then 2".
+    case Qt::Key_1: setTransformMode(TransformMode::None);      return;
+    case Qt::Key_2: setTransformMode(TransformMode::Translate); return;
+    case Qt::Key_3: setTransformMode(TransformMode::Rotate);    return;
+    case Qt::Key_4: setTransformMode(TransformMode::Scale);     return;
     default: break;
     }
     if (!e->isAutoRepeat()) m_keysDown.insert(e->key());

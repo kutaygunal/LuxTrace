@@ -171,11 +171,10 @@ TEST(scenedoc, editing_optics_keeps_the_link_and_moving_a_part_breaks_it) {
         if (o.type == scenedoc::ObjectType::TutorialPart) { part = o.id; break; }
     CHECK(part != 0);
 
-    // Renaming, hiding and re-specifying a surface all leave the geometry
-    // exactly as the builder made it, so the parameter block still describes
-    // what is on screen and the sweeps still have dimensions to vary.
+    // Renaming a surface and re-specifying it both leave the geometry exactly
+    // as the builder made it, so the parameter block still describes what is on
+    // screen and the sweeps still have dimensions to vary.
     CHECK(doc.setName(part, QStringLiteral("Primary")));
-    CHECK(doc.setVisible(part, false));
     SurfaceOptics optics = doc.find(part)->optics;
     optics.reflectivity  = 0.55;
     CHECK(doc.setOptics(part, optics));
@@ -186,6 +185,64 @@ TEST(scenedoc, editing_optics_keeps_the_link_and_moving_a_part_breaks_it) {
     double rot[3] = {0.0, 0.0, 0.0};
     CHECK(doc.setPlacement(part, gp_Pnt(0, 0, 12.0), rot));
     CHECK(!doc.linkedToTutorial());
+}
+
+TEST(scenedoc, switching_a_part_off_takes_it_out_of_the_trace_and_detaches) {
+    const auto scene = GeometryProvider::Scene::Reflector;
+    scenedoc::SceneDocument doc;
+    doc.loadTutorial(scene, GeometryProvider::defaultParams(scene));
+    const std::size_t parts = doc.compile().setup->surfaces.size();
+
+    int part = 0;
+    for (const scenedoc::SceneObject& o : doc.objects())
+        if (o.type == scenedoc::ObjectType::TutorialPart) { part = o.id; break; }
+    CHECK(part != 0);
+
+    CHECK(doc.setVisible(part, false));
+    // Not drawn and not traced: what the tree lists as switched off is not in
+    // the scene, so the dimensions no longer describe what a run would produce.
+    CHECK(!doc.effectiveVisible(part));
+    CHECK(!doc.linkedToTutorial());
+    CHECK(doc.compile().setup->surfaces.size() == parts - 1);
+
+    CHECK(doc.setVisible(part, true));
+    CHECK(doc.compile().setup->surfaces.size() == parts);
+}
+
+TEST(scenedoc, a_group_switches_its_whole_subtree_off) {
+    scenedoc::SceneDocument doc;
+    const int group = doc.add(scenedoc::ObjectType::Group, gp_Pnt(0, 0, 0));
+    const int a     = doc.add(scenedoc::ObjectType::Source, gp_Pnt(0, 0, -10.0), group);
+    const int b     = doc.add(scenedoc::ObjectType::Source, gp_Pnt(0, 0, -20.0), group);
+    const int lens  = doc.add(scenedoc::ObjectType::BiconvexLens, gp_Pnt(0, 0, 20.0));
+
+    CHECK(doc.compile().havePrimary);
+    CHECK(doc.compile().extraSources.size() == 1);
+
+    // The group answers for everything under it, and says so in the flags the
+    // tree reads back: a group switched off with its contents still ticked is
+    // one row disagreeing with the rows under it.
+    CHECK(doc.setVisibleTree(group, false));
+    CHECK(!doc.find(a)->visible);
+    CHECK(!doc.find(b)->visible);
+    CHECK(!doc.effectiveVisible(a));
+    // Both emitters are out, so there is nothing left to emit -- and the lens,
+    // which is not in the group, is still traced.
+    scenedoc::SceneDocument::Compiled off = doc.compile();
+    CHECK(!off.havePrimary);
+    CHECK(off.extraSources.empty());
+    CHECK(off.setup->surfaces.size() == 1);
+    CHECK(!off.warnings.isEmpty());
+
+    // Ticking one child back on brings the group with it, or the row would read
+    // as on and still show nothing.
+    CHECK(doc.setVisibleTree(a, true));
+    CHECK(doc.find(group)->visible);
+    CHECK(doc.effectiveVisible(a));
+    CHECK(!doc.effectiveVisible(b));
+    CHECK(doc.compile().havePrimary);
+    CHECK(doc.compile().extraSources.empty());
+    CHECK(doc.find(lens) != nullptr);
 }
 
 TEST(scenedoc, dropping_an_object_into_a_tutorial_detaches_it) {
@@ -383,6 +440,36 @@ TEST(scenedoc, an_assembled_scene_traces_through_the_import_path) {
     CHECK(res.raysEmitted > 0);
     // Light aimed at a ball lens from in front of it has to arrive somewhere.
     CHECK(res.raysHitDetector > 0);
+}
+
+TEST(scenedoc, a_switched_off_body_is_not_in_the_trace) {
+    // The whole point of the checkbox: an obstruction switched off in the tree
+    // has to stop obstructing, or the number that comes back is the same one
+    // and nothing on screen says why.
+    scenedoc::SceneDocument doc;
+    const int blocker = doc.add(scenedoc::ObjectType::Box, gp_Pnt(0, 0, 40.0));
+    doc.find(blocker)->p[0] = 400.0;      // wide enough to shadow the receiver
+    doc.find(blocker)->p[1] = 400.0;
+    doc.find(blocker)->p[2] = 2.0;
+    const int det = doc.add(scenedoc::ObjectType::Detector, gp_Pnt(0, 0, 90.0));
+    doc.find(det)->p[0] = 200.0;
+    doc.add(scenedoc::ObjectType::Source, gp_Pnt(0, 0, 0));
+
+    auto trace = [&] {
+        SimConfig cfg;
+        cfg.imported     = doc.compile().setup;
+        cfg.source       = SourceConfig::Type::Point;
+        cfg.halfAngleDeg = 20.0;
+        cfg.rays         = 2000;
+        cfg.threads      = 1;
+        return Simulation::run(cfg);
+    };
+
+    const SimulationResult blocked = trace();
+    CHECK(doc.setVisibleTree(blocker, false));
+    const SimulationResult clear = trace();
+
+    CHECK(clear.raysHitDetector > blocked.raysHitDetector);
 }
 
 TEST(scenedoc, editing_one_object_leaves_the_others_alone) {

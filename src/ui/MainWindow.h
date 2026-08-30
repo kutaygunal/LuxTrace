@@ -344,4 +344,8 @@ private:
     // assembled or imported scene declares none, so it reports that rather than
     // tracing the identical solid a dozen times and drawing the flat line.
     bool requireParametricScene(const QString& what);
+    // Refuses a run the compile says has nothing to emit -- every source in the
+    // scene switched off, or none in it at all. Without this the trace falls
+    // back to the panel's own emitter and answers a question nobody asked.
+    bool requireLightSource();
 };

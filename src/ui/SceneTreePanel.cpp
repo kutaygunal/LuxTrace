@@ -6,8 +6,10 @@
 #include <QDropEvent>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QBrush>
 #include <QMenu>
 #include <QMimeData>
+#include <QPalette>
 #include <QPushButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
@@ -85,7 +87,7 @@ SceneTreePanel::SceneTreePanel(QWidget* parent) : QWidget(parent) {
     auto* tree = new DocumentTree(this);
     m_tree = tree;
     m_tree->setColumnCount(2);
-    m_tree->setHeaderLabels({QStringLiteral("Scene"), QStringLiteral("What it is")});
+    m_tree->setHeaderLabels({QStringLiteral("Scene"), QStringLiteral("Type")});
     m_tree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_tree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     m_tree->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -114,8 +116,9 @@ SceneTreePanel::SceneTreePanel(QWidget* parent) : QWidget(parent) {
     m_showAll   = new QPushButton(QStringLiteral("Show all"), this);
     m_group->setToolTip(QStringLiteral("Add an empty group. Drag objects onto it to "
                                        "move them together."));
-    m_isolate->setToolTip(QStringLiteral("Hide everything except this object. "
-                                         "Display only -- a trace still uses all of it."));
+    m_isolate->setToolTip(QStringLiteral("Switch everything except this object off. "
+                                         "A run traces what is ticked, so this changes "
+                                         "the trace too -- Show all puts it back."));
     for (QPushButton* b : {m_group, m_duplicate, m_delete, m_isolate, m_showAll}) {
         b->setAutoDefault(false);
         row->addWidget(b);
@@ -154,14 +157,22 @@ void SceneTreePanel::addRows(int parentId, QTreeWidgetItem* parentItem) {
         auto* item = parentItem ? new QTreeWidgetItem(parentItem)
                                 : new QTreeWidgetItem(m_tree);
         item->setText(0, o->name);
-        // A tutorial part says what the tutorial called it, which is more use
-        // than the word "part" twenty-six times over.
-        item->setText(1, o->type == ObjectType::TutorialPart
-                             ? QStringLiteral("tutorial part")
-                             : scenedoc::typeInfo(o->type).name);
+        // The optic, not the machinery that built it: a tutorial's parts are
+        // all TutorialPart, and a column reading "tutorial part" down every row
+        // answers a question nobody asked. Each builder names its surfaces, so
+        // this says "Parabolic Mirror" and "Detector" in every scene.
+        item->setText(1, scenedoc::typeLabel(*o));
         item->setToolTip(0, scenedoc::typeInfo(o->type).description);
         item->setData(0, kIdRole, id);
         item->setCheckState(0, o->visible ? Qt::Checked : Qt::Unchecked);
+        // A row switched off by the group above it is ticked but not in the
+        // scene, so it is drawn the way a disabled control is: the tick says
+        // what this row was set to, the grey says what the scene actually has.
+        if (!m_doc->effectiveVisible(id)) {
+            const QBrush dim = palette().brush(QPalette::Disabled, QPalette::Text);
+            item->setForeground(0, dim);
+            item->setForeground(1, dim);
+        }
 
         Qt::ItemFlags flags = Qt::ItemIsEnabled | Qt::ItemIsSelectable |
                               Qt::ItemIsUserCheckable | Qt::ItemIsEditable |
@@ -233,17 +244,33 @@ void SceneTreePanel::onCurrentChanged() {
     emit selectionChanged(id);
 }
 
+// A row changed: it was ticked, unticked, or renamed in place.
+//
+// Everything is read off the row first and reported afterwards, from a queued
+// call. Both of those edits rebuild the tree, which deletes this very item --
+// while Qt is still inside the model's setData for it, and while this function
+// still holds a pointer to it. Reporting the tick and then reading the name off
+// the freed row is what renamed every object in the scene to whatever text
+// happened to be lying in that memory.
 void SceneTreePanel::onItemChanged(QTreeWidgetItem* item, int column) {
     if (m_loading || column != 0 || !item || !m_doc) return;
     const int          id = idOf(item);
     const SceneObject* o  = m_doc->find(id);
     if (!o) return;
 
-    const bool wantVisible = item->checkState(0) == Qt::Checked;
-    if (wantVisible != o->visible) emit visibilityChanged(id, wantVisible);
+    const bool    wantVisible = item->checkState(0) == Qt::Checked;
+    const QString text        = item->text(0);
+    const bool    visChanged  = wantVisible != o->visible;
+    const bool    nameChanged = !text.isEmpty() && text != o->name;
+    if (!visChanged && !nameChanged) return;
 
-    const QString text = item->text(0);
-    if (!text.isEmpty() && text != o->name) emit renamed(id, text);
+    QMetaObject::invokeMethod(
+        this,
+        [this, id, wantVisible, text, visChanged, nameChanged] {
+            if (visChanged)  emit visibilityChanged(id, wantVisible);
+            if (nameChanged) emit renamed(id, text);
+        },
+        Qt::QueuedConnection);
 }
 
 void SceneTreePanel::onContextMenu(const QPoint& pos) {
