@@ -23,5 +23,9 @@ Makefile
 # Logs
 *.log
 
+# Python bytecode cache
+__pycache__/
+*.pyc
+
 # Personal build paths: inherit from CMakePresets.json, keep them out of the repo
 CMakeUserPresets.json

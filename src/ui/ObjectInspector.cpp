@@ -35,6 +35,10 @@ QDoubleSpinBox* coord(QWidget* parent, const QString& suffix, double step = 1.0)
     s->setSingleStep(step);
     s->setSuffix(suffix);
     s->setKeyboardTracking(false);
+    // Three of these sit side by side in a placement row; without a cap the
+    // wide range and the unit suffix make the row (and the whole inspector
+    // column) wider than a 1920 screen.
+    s->setMaximumWidth(110);
     return s;
 }
 

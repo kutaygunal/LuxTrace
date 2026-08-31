@@ -175,13 +175,20 @@ QWidget* MainWindow::buildDesignTab() {
     optBar->addWidget(m_optMetric);
     optBar->addWidget(dim(QStringLiteral("target:"), this));
     optBar->addWidget(m_optTarget);
-    optBar->addWidget(dim(QStringLiteral("by:"), this));
-    optBar->addWidget(m_optMethod);
-    optBar->addWidget(dim(QStringLiteral("budget:"), this));
-    optBar->addWidget(m_optEvals);
-    optBar->addWidget(runOpt);
-    optBar->addWidget(m_adoptButton);
     optBar->addStretch(1);
+
+    // The method and budget belong to the search, not to the objective, and
+    // putting them on their own row keeps this bar from forcing the whole tab
+    // (and the window) wider than a 1920 screen.
+    auto* optBar2 = new QHBoxLayout;
+    optBar2->setContentsMargins(4, 0, 4, 2);
+    optBar2->addWidget(dim(QStringLiteral("by:"), this));
+    optBar2->addWidget(m_optMethod);
+    optBar2->addWidget(dim(QStringLiteral("budget:"), this));
+    optBar2->addWidget(m_optEvals);
+    optBar2->addWidget(runOpt);
+    optBar2->addWidget(m_adoptButton);
+    optBar2->addStretch(1);
 
     auto* split = new QSplitter(Qt::Horizontal, this);
     split->addWidget(m_sweepPlot);
@@ -198,6 +205,7 @@ QWidget* MainWindow::buildDesignTab() {
     v->setContentsMargins(0, 0, 0, 0);
     v->addLayout(sweepBar, 0);
     v->addLayout(optBar, 0);
+    v->addLayout(optBar2, 0);
     v->addWidget(split, 1);
 
     connect(runSweep, &QPushButton::clicked, this, &MainWindow::onRunSweep);

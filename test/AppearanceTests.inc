@@ -987,12 +987,37 @@ TEST(appearanceshowcase, the_scene_declares_the_emitter_it_is_built_around) {
     params.v[2] = 12.0;
     CHECK_NEAR(Simulation::emitterFor(scene, params).spec.sizeA, 12.0, 1e-12);
 
-    // And a scene that is not built around one says so by declining.
+    // And a scene that is not built around one says so by declining. Two are:
+    // the fixture here, and the TIR collimator, which is designed around a
+    // surface source of a stated size rather than around a point.
     for (int s = 0; s < GeometryProvider::count(); ++s) {
         const auto other = GeometryProvider::Scene(s);
-        if (other == scene) continue;
+        if (other == scene || other == GeometryProvider::Scene::TirLens) continue;
         CHECK(!Simulation::emitterFor(other, GeometryProvider::defaultParams(other)).declared);
     }
+}
+
+TEST(appearanceshowcase, the_tir_collimator_declares_the_surface_source_it_is_built_around) {
+    // A point source at the focus of this optic collimates perfectly and says
+    // nothing, because the one question a collimator answers is what a die of
+    // finite size does to the beam. So the scene declares the emitting area the
+    // way the fixture declares its die: Lambertian over a square, sized by the
+    // parameter on screen, and following it when it moves.
+    const auto scene = GeometryProvider::Scene::TirLens;
+    SceneParams params = GeometryProvider::defaultParams(scene);
+
+    const Simulation::SceneEmitter declared = Simulation::emitterFor(scene, params);
+    CHECK(declared.declared);
+    CHECK(declared.spec.type == SourceConfig::Type::Lambertian);
+    CHECK(declared.spec.shape == SourceConfig::Shape::Rect);
+    CHECK(declared.spec.sizeA > 0.0);
+    CHECK_NEAR(declared.spec.sizeA, params.v[3], 1e-12);
+    CHECK_NEAR(declared.spec.sizeB, params.v[3], 1e-12);
+
+    params.v[3] = 4.0;
+    const Simulation::SceneEmitter moved = Simulation::emitterFor(scene, params);
+    CHECK_NEAR(moved.spec.sizeA, 4.0, 1e-12);
+    CHECK_NEAR(moved.spec.sizeB, 4.0, 1e-12);
 }
 
 TEST(appearanceshowcase, a_declared_emitter_has_a_real_area_so_it_renders_as_a_face) {

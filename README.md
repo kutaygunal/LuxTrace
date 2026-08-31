@@ -27,7 +27,7 @@ TracePro, OpticStudio) is expected to do:
 
 | Capability | LuxTrace |
 |---|---|
-| Geometry | 27 parametric OCCT scenes, plus STEP/IGES import of a customer's own CAD; instanced parts share one mesh and one hierarchy |
+| Geometry | 28 parametric OCCT scenes, plus STEP/IGES import of a customer's own CAD; instanced parts share one mesh and one hierarchy |
 | Surface normals | Read off the exact B-Rep at each tessellation node and interpolated across the facet, so the mesh is no longer what limits how sharply a scene focuses |
 | Materials | A catalogue by name — N-BK7, N-SF11, fused silica, PMMA, polycarbonate, water, cement, Al/Ag/Au — with Sellmeier dispersion, Abbe numbers and complex-index Fresnel for the metals |
 | Glass catalogue | Import a real catalogue — a Zemax `.agf` from Schott, Ohara, CDGM, Hoya or Sumita, or a refractiveindex.info `.yml` entry — and the ten built-in names become a catalogue a lens designer can actually type into |
@@ -123,7 +123,7 @@ would be absurd.
 
 ## The scene library
 
-27 scenes, all built from OCCT B-Rep and enumerated from one registry
+28 scenes, all built from OCCT B-Rep and enumerated from one registry
 (`GeometryProvider::Scene`), so the UI, the diagnostics and the tests pick them
 up automatically. Each declares 2-4 editable dimensions (`paramInfo`), the last
 of which is always the receiver position; the emitter follows the geometry, so
@@ -168,6 +168,7 @@ Efficiencies are for a Lambertian source at 50 000 rays, with the full physics o
 | Square Light Guide | 77.0 % | Flat walls mix the beam differently |
 | Tapered Light Guide | 59.9 % | A taper steepens rays until some break TIR and leak |
 | Porro Prism (TIR retro) | 15.6 % | Two 45-degree faces fold the beam straight back |
+| TIR Collimator Lens | 92.8 % | A lens over the well and a parabolic wall around it: a hemisphere out as a beam, uncoated |
 
 **Scattering**
 
@@ -418,7 +419,7 @@ OCCT under test is the one the developer box has.
 ctest --preset release
 ```
 
-415 tests in 72 suites, no external framework. The scene and test counts are
+418 tests in 73 suites, no external framework. The scene and test counts are
 derived, not retyped: `python tools/regenerate_counts.py` regenerates them from
 `--smoke` and the test binary's own totals. Beyond the original coverage
 (Moller-Trumbore branches, BVH vs brute force, energy conservation, TIR critical
@@ -732,7 +733,7 @@ src/
     Polarisation        Stokes vectors and Mueller matrices
     Spectrum            SPDs, CIE colour matching, V(lambda), sampling
     Sampling            Owen-scrambled Sobol
-    GeometryProvider    scene registry: 27 parametric OCCT scenes + their sources
+    GeometryProvider    scene registry: 28 parametric OCCT scenes + their sources
     CadImport           STEP / IGES reading, and optics assigned per part or face
     MeshBuilder         BRepMesh tessellation -> triangle meshes + exact normals
     Mesh                the flat triangle mesh the tracer walks

@@ -7,6 +7,7 @@
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
@@ -17,6 +18,7 @@
 #include <GeomAPI_PointsToBSpline.hxx>
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_Plane.hxx>
+#include <Precision.hxx>
 #include <TColgp_Array1OfPnt.hxx>
 #include <TopoDS_Compound.hxx>
 #include <gp_Ax1.hxx>
@@ -153,6 +155,81 @@ TopoDS_Shape revolveSolid(const std::vector<gp_Pnt>& profile) {
     poly.Close();
     BRepBuilderAPI_MakeFace face(poly.Wire());
     return BRepPrimAPI_MakeRevol(face.Face(), gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1))).Shape();
+}
+
+// One run of a closed profile: a straight chain of points, or a curved one.
+struct ProfileRun {
+    std::vector<gp_Pnt> pts;
+    bool                curved = false;
+};
+
+// A closed profile in the plane x = 0, revolved about +Z into a solid, where
+// some runs are curved and some are straight.
+//
+// revolveSolid above takes a polyline and revolveSpline takes a curve, and a
+// moulded optic is neither: a TIR collimator is a curved wall, a flat exit
+// face, a straight well and a curved lens, in one contour. Built as a polyline
+// its curved parts become stacks of conical bands, and because the tracer reads
+// its normals off the exact surface those bands are optically real -- they
+// print themselves onto the beam as rings the optic does not have.
+//
+// Runs are joined by the endpoints the geometry actually has, taken from the
+// curve rather than from the points it was fitted to, so the wire closes
+// exactly instead of within a tolerance that a later boolean would have to
+// forgive. If it fails to all the same, the polyline is the fallback: faceted
+// geometry is wrong in a way somebody can see, and an empty shape is a scene
+// that silently traces nothing.
+TopoDS_Shape revolveProfileSolid(const std::vector<ProfileRun>& runs) {
+    BRepBuilderAPI_MakeWire wire;
+    std::vector<gp_Pnt>     flat;      // every point, for the fallback
+    gp_Pnt first, last;
+    bool   have = false;
+
+    for (const ProfileRun& run : runs) {
+        if (run.pts.size() < 2) continue;
+        for (const gp_Pnt& p : run.pts) flat.push_back(p);
+
+        gp_Pnt runStart = run.pts.front();
+        gp_Pnt runEnd   = run.pts.back();
+        TopoDS_Edge curvedEdge;
+        if (run.curved && run.pts.size() >= 3) {
+            TColgp_Array1OfPnt pts(1, int(run.pts.size()));
+            for (int i = 0; i < int(run.pts.size()); ++i)
+                pts.SetValue(i + 1, run.pts[std::size_t(i)]);
+            Handle(Geom_BSplineCurve) curve = GeomAPI_PointsToBSpline(pts).Curve();
+            if (curve.IsNull()) return revolveSolid(flat);
+            runStart   = curve->Value(curve->FirstParameter());
+            runEnd     = curve->Value(curve->LastParameter());
+            curvedEdge = BRepBuilderAPI_MakeEdge(curve).Edge();
+        }
+
+        if (have && runStart.Distance(last) > Precision::Confusion())
+            wire.Add(BRepBuilderAPI_MakeEdge(last, runStart).Edge());
+        if (!curvedEdge.IsNull()) {
+            wire.Add(curvedEdge);
+        } else {
+            for (std::size_t i = 0; i + 1 < run.pts.size(); ++i)
+                if (run.pts[i].Distance(run.pts[i + 1]) > Precision::Confusion())
+                    wire.Add(BRepBuilderAPI_MakeEdge(run.pts[i], run.pts[i + 1]).Edge());
+        }
+
+        if (!have) { first = runStart; have = true; }
+        last = runEnd;
+    }
+    if (!have) return TopoDS_Shape();
+
+    if (last.Distance(first) > Precision::Confusion())
+        wire.Add(BRepBuilderAPI_MakeEdge(last, first).Edge());
+    if (!wire.IsDone()) return revolveSolid(flat);
+
+    // Built on the profile's own plane rather than on whatever plane the wire
+    // suggests: every point has x = 0, so the plane is known and saying so is
+    // cheaper than asking a fitter to find it.
+    Handle(Geom_Plane) plane = new Geom_Plane(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)));
+    BRepBuilderAPI_MakeFace face(plane, wire.Wire(), true);
+    if (!face.IsDone()) return revolveSolid(flat);
+    return BRepPrimAPI_MakeRevol(face.Face(),
+                                 gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1))).Shape();
 }
 
 // Profile given in the x-z plane, extruded along y and centred on y = 0.
@@ -353,6 +430,72 @@ Fixture fixture(const SceneParams& P) {
     return x;
 }
 
+// A TIR collimator, resolved from its parameters once so the builder, the
+// derived readouts and the emitter the scene declares cannot disagree about
+// where the die sits or how deep the well is.
+struct TirCollimator {
+    double exitRadius = 20.0;   // radius of the flat exit face
+    double height     = 25.0;   // base plane to exit face
+    double well       = 4.0;    // radius of the cavity, before clamping
+    double die        = 2.0;    // edge of the square emitting area
+
+    // Moulded acrylic, and the geometry is solved at the index the trace will
+    // actually use -- read from the same catalogue entry the body is built
+    // from, rather than retyped. Solving at a round 1.5 and tracing PMMA would
+    // leave the collimation slightly off in a way no parameter on screen
+    // explains.
+    static double index() {
+        const OpticalMaterial m = materials::byName(QLatin1String(kPolymer));
+        return m.valid() ? m.nd : 1.4906;
+    }
+
+    // The TIR wall: r^2 = 4f(z + f), focus on the die at the origin. A ray from
+    // the focus reflects off it parallel to the axis -- that is the defining
+    // property of a parabola, and the whole reason the wall has this shape.
+    // f follows from the rim it has to reach.
+    double focal() const {
+        return std::max(0.05, 0.5 * (std::sqrt(height * height + exitRadius * exitRadius)
+                                     - height));
+    }
+    double wallZ(double r) const { const double f = focal(); return r * r / (4.0 * f) - f; }
+    // Where the wall meets the base plane, z(r) = 0.
+    double footRadius() const { return 2.0 * focal(); }
+
+    // The central lens, roofing the well and bulging down toward the die. One
+    // surface collimates a source at distance d when its radius is d(n-1), so
+    // the depth of the well and the curvature of its roof are one number stated
+    // twice rather than two numbers to keep in step.
+    double lensVertexZ() const { return 0.55 * height; }
+    double lensRadius() const { return lensVertexZ() * (index() - 1.0); }
+
+    // The well, clamped twice: the lens has to span it, and the wall foot has
+    // to stay outside it -- a well wider than the foot would cut the parabola
+    // off exactly where most of the light meets it.
+    double wellRadius() const {
+        const double hi = std::max(0.3, std::min(0.90 * lensRadius(), 0.80 * footRadius()));
+        return std::clamp(well, 0.2, hi);
+    }
+    double lensSag() const {
+        const double R = lensRadius(), r = wellRadius();
+        return R - std::sqrt(std::max(0.0, R * R - r * r));
+    }
+    // Top of the well wall, which is where the central lens starts.
+    double wellTopZ() const { return lensVertexZ() + lensSag(); }
+
+    // The half-angle that divides the two optics: inside it the die sees the
+    // central lens, outside it the well wall and then the TIR surface.
+    double splitAngle() const { return std::atan2(wellRadius(), lensVertexZ()); }
+};
+
+TirCollimator tirLens(const SceneParams& P) {
+    TirCollimator t;
+    t.exitRadius = P.v[0];
+    t.height     = P.v[1];
+    t.well       = P.v[2];
+    t.die        = P.v[3];
+    return t;
+}
+
 // Where the lenslets of an nx x ny array sit, as translations about the origin.
 // One lenslet plus these is the whole array: it is tessellated once, its
 // hierarchy is built once, and the placements are what put it in nx * ny
@@ -483,6 +626,19 @@ const std::array<SceneInfo, std::size_t(Scene::Count)>& registry() {
         {QStringLiteral("Porro Prism (TIR retro)"),
          QStringLiteral("Two 45-degree faces above the critical angle: the beam is folded twice and sent straight back."),
          gp_Pnt(0, 0, -80.0), gp_Dir(0, 0, 1)},
+
+        {QStringLiteral("TIR Collimator Lens"),
+         QStringLiteral("The optic a small LED is actually collimated with, and two "
+                        "optics in one moulding. A die sits in a well at the bottom; "
+                        "the narrow cone it sends straight up meets the lens that "
+                        "roofs the well, and everything wider crosses the well wall "
+                        "into the acrylic and is turned parallel by a parabolic wall "
+                        "working by total internal reflection alone -- no coating, "
+                        "no mirror. Both halves are aimed at the same point, so both "
+                        "leave through the flat top as one beam. The receiver shows "
+                        "the bright core with the rings around it that the join "
+                        "between the two halves puts there."),
+         gp_Pnt(0, 0, 0.0), gp_Dir(0, 0, 1)},
 
         // --- scattering ---
         {QStringLiteral("Integrating Sphere"),
@@ -648,6 +804,22 @@ const std::array<std::vector<SceneParamInfo>, std::size_t(Scene::Count)>& paramT
         {mk("Half width", "mm", 25, 120, 60, 5, 1, "Half the base of the prism."),
          mk("Prism height", "mm", 25, 120, 60, 5, 1, "At half the width the roof faces sit at 45 degrees."),
          detZ(-500, -40, -150)},
+        // TirLens
+        {mk("Exit radius", "mm", 8, 60, 20, 1, 1,
+            "Radius of the flat top face -- the aperture the collimated beam leaves "
+            "through, and the rim the TIR wall has to reach."),
+         mk("Lens height", "mm", 10, 80, 25, 1, 1,
+            "Base plane to top face. With the exit radius it fixes the wall: the "
+            "parabola through the rim whose focus is on the die."),
+         mk("Well radius", "mm", 1, 20, 4, 0.5, 1,
+            "The cavity the die sits in. Clamped against the lens that has to span "
+            "it and the wall foot it must not cut into, so a value typed past "
+            "either simply stops there."),
+         mk("Emitter size", "mm", 0.5, 10, 2, 0.5, 1,
+            "Edge of the square emitting area. It is what the scene's own source is "
+            "built to, and it is the etendue that limits how tightly this lens can "
+            "collimate."),
+         detZ(30, 800, 100)},
         // IntegratingSphere
         {mk("Sphere radius", "mm", 40, 160, 80, 5, 1, "Cavity radius."),
          mk("Wall reflectance", "", 0.80, 0.995, 0.96, 0.01, 3,
@@ -1094,6 +1266,52 @@ std::vector<DerivedQuantity> GeometryProvider::derived(Scene scene, const SceneP
                                         "with no coating at all.")));
         break;
     }
+    case Scene::TirLens: {
+        const TirCollimator t = tirLens(P);
+        const double split = t.splitAngle();
+        out.push_back(dq(QStringLiteral("Wall focal length"), t.focal(), 2,
+                         QStringLiteral("mm"),
+                         QStringLiteral("The wall is the parabola r^2 = 4f(z+f) with its focus "
+                                        "on the die, so every ray that reaches it leaves "
+                                        "parallel to the axis.")));
+        out.push_back(dq(QStringLiteral("Wall foot radius"), t.footRadius(), 2,
+                         QStringLiteral("mm"),
+                         QStringLiteral("Where the wall meets the base plane. The well has to "
+                                        "stay inside it, which is what clamps the well radius.")));
+        out.push_back(dq(QStringLiteral("Central lens radius"), t.lensRadius(), 2,
+                         QStringLiteral("mm"),
+                         QStringLiteral("Radius of the well's roof: d(n-1) for a die d below "
+                                        "it, which is the single-surface condition for "
+                                        "collimating a point.")));
+        out.push_back(dq(QStringLiteral("Refractive / TIR split"), split / kPi * 180.0, 1,
+                         QStringLiteral("deg"),
+                         QStringLiteral("Inside this half-angle the die sees the central lens; "
+                                        "outside it the light crosses the well wall and is "
+                                        "turned by the TIR surface.")));
+        const double viaWall = 100.0 * (1.0 - std::sin(split) * std::sin(split));
+        out.push_back(dq(QStringLiteral("Share via the wall"), viaWall, 1,
+                         QStringLiteral("%"),
+                         QStringLiteral("A Lambertian die sends sin^2(theta) of its flux inside "
+                                        "a half-angle theta, so this is what the wall is aimed "
+                                        "at and the rest is the central lens's.")));
+        out.push_back(dq(QStringLiteral("Critical angle"),
+                         std::asin(1.0 / nPolymr) / kPi * 180.0, 1, QStringLiteral("deg"),
+                         QStringLiteral("The wall is uncoated and does not need to be: a ray "
+                                        "from the focus meets it at 90 - theta/2, which stays "
+                                        "above this for everything the well can send at it.")));
+        out.push_back(dq(QStringLiteral("Source-limited spread"),
+                         2.0 * std::atan2(0.5 * t.die, t.focal()) / kPi * 180.0, 2,
+                         QStringLiteral("deg"),
+                         QStringLiteral("The bound the die's own size puts on the beam, at "
+                                        "the foot of the wall: the angle it subtends from one "
+                                        "focal length away, which is the closest the wall ever "
+                                        "comes to it. Higher up the wall the same die subtends "
+                                        "less, so the traced beam comes out narrower than this "
+                                        "-- but no die smaller and no moulding better than "
+                                        "perfect can beat it there.")));
+        addEtendue(out, 0.5 * t.die * std::sqrt(2.0), 0.5 * kPi);
+        break;
+    }
     case Scene::IntegratingSphere: {
         const double R = P.v[0], rho = P.v[1], port = P.v[2];
         const double sphereArea = 4.0 * kPi * R * R;
@@ -1505,6 +1723,66 @@ GeometryProvider::SceneSetup GeometryProvider::build(Scene scene, const ScenePar
                                          gp_Pnt(0.0, 0, h)}, 140.0, true),
                           QStringLiteral("Porro Prism"), /*guide=*/true));
         s.push_back(detector(std::max(300.0, 7.0 * halfW), std::min(dz, -40.0)));
+        break;
+    }
+
+    case Scene::TirLens: {
+        const TirCollimator t = tirLens(P);
+        const double R = t.exitRadius, H = t.height, rw = t.wellRadius();
+
+        // The wall, from the exit rim down to the base plane.
+        std::vector<gp_Pnt> wall;
+        constexpr int nWall = 36;
+        wall.reserve(nWall);
+        for (int i = 0; i < nWall; ++i) {
+            const double r = R + (t.footRadius() - R) * double(i) / double(nWall - 1);
+            wall.emplace_back(0.0, r, t.wallZ(r));
+        }
+
+        // The central lens, from the rim of the well in to its vertex on the axis.
+        std::vector<gp_Pnt> lens;
+        constexpr int nLens = 20;
+        const double Rd = t.lensRadius();
+        lens.reserve(nLens);
+        for (int i = 0; i < nLens; ++i) {
+            const double r = rw * (1.0 - double(i) / double(nLens - 1));
+            lens.emplace_back(0.0, r, t.lensVertexZ() + Rd
+                                          - std::sqrt(std::max(0.0, Rd * Rd - r * r)));
+        }
+
+        // One closed contour, revolved: exit face, TIR wall, base annulus, well
+        // wall, central lens, and back up the axis to where it started.
+        const std::vector<ProfileRun> runs = {
+            {{gp_Pnt(0, 0, H), gp_Pnt(0, R, H)}, false},
+            {wall, true},
+            {{wall.back(), gp_Pnt(0, rw, 0.0)}, false},
+            {{gp_Pnt(0, rw, 0.0), gp_Pnt(0, rw, t.wellTopZ())}, false},
+            {lens, true},
+        };
+
+        // Uncoated, because a TIR lens is: the wall works by total internal
+        // reflection and a coating on it is precisely what the part must not
+        // have, exactly as the light guides above are left bare.
+        OpticalSurface body = glass(revolveProfileSolid(runs),
+                                    QStringLiteral("TIR Collimator Lens"),
+                                    /*guide=*/true, kPolymer);
+        // A 20 mm optic meshed at the 0.3 mm default is meshed as coarsely as a
+        // 200 mm one, and a collimator prints its own tessellation onto the
+        // beam. The part is small, so buying the fine mesh costs little.
+        body.meshDeflection = 0.02;
+        s.push_back(body);
+
+        // Four times the aperture, and above the exit face whatever the slider
+        // says: the receiver cannot be dragged down inside the moulding, and it
+        // is wide enough that the spill the wall does not catch lands on it and
+        // is measured rather than escaping past the edge.
+        s.push_back(detector(std::max(160.0, 4.0 * R), std::max(dz, H + 10.0)));
+
+        // The die, on the axis at the bottom of the well -- which is the focus
+        // of the wall and the object point of the central lens, because that is
+        // the one place both halves of the optic are aimed at.
+        out.sourceOrigin = gp_Pnt(0, 0, 0);
+        out.sourceAxis   = gp_Dir(0, 0, 1);
         break;
     }
 

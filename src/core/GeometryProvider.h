@@ -150,6 +150,7 @@ public:
         SquareLightGuide,       // square rod
         TaperedLightGuide,      // tapered rod, angle transformation
         PorroPrism,             // TIR retroreflector
+        TirLens,                // TIR collimator: central lens plus a TIR wall
 
         // --- scattering ---
         IntegratingSphere,      // diffuse white cavity with an exit port

@@ -184,10 +184,18 @@ QWidget* MainWindow::buildAppearanceTab() {
     image->addWidget(white);
     image->addWidget(depth);
     image->addWidget(budget);
-    image->addWidget(aperture);
-    image->addWidget(focus);
     image->addStretch(1);
-    image->addWidget(save);
+
+    // Depth of field is its own question, and putting it on its own row keeps
+    // the tone row from forcing the whole tab (and the window) wider than a
+    // 1920 screen. Aperture and focus only matter when path tracing.
+    auto* dof = new QHBoxLayout;
+    dof->setContentsMargins(0, 0, 0, 0);
+    dof->addWidget(new QLabel(QStringLiteral("Depth of field"), this));
+    dof->addWidget(aperture);
+    dof->addWidget(focus);
+    dof->addStretch(1);
+    dof->addWidget(save);
 
     auto* page = new QWidget(this);
     auto* col  = new QVBoxLayout(page);
@@ -195,6 +203,7 @@ QWidget* MainWindow::buildAppearanceTab() {
     col->setSpacing(4);
     col->addLayout(scene);
     col->addLayout(image);
+    col->addLayout(dof);
     col->addWidget(m_appearance, 1);
     col->addWidget(m_appearanceState, 0);
 

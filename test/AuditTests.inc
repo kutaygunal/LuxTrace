@@ -1069,6 +1069,67 @@ TEST(multisource, filling_the_led_array_lights_every_cup_equally) {
     CHECK(res.fluxDetector > 2.0 * single.fluxDetector);
 }
 
+// ========================================================= TIR collimator ===
+
+namespace {
+
+// The scene traced with the surface source it declares, rather than with the
+// point source a config defaults to. A point at the focus of this optic
+// collimates perfectly and answers nothing; the die is the question.
+SimConfig tirLensConfig(double die, int rays) {
+    const auto scene = GeometryProvider::Scene::TirLens;
+    SceneParams p = GeometryProvider::defaultParams(scene);
+    p.v[3] = die;
+
+    SimConfig cfg = quickConfig(scene, rays);
+    cfg.params           = GeometryProvider::sanitise(scene, p);
+    cfg.useSceneDefaults = false;
+
+    const Simulation::SceneEmitter e = Simulation::emitterFor(scene, cfg.params);
+    cfg.source       = e.spec.type;
+    cfg.shape        = e.spec.shape;
+    cfg.sizeA        = e.spec.sizeA;
+    cfg.sizeB        = e.spec.sizeB;
+    cfg.halfAngleDeg = e.spec.halfAngleDeg;
+    return cfg;
+}
+
+} // namespace
+
+TEST(tircollimator, an_uncoated_moulding_turns_a_hemisphere_into_a_beam) {
+    // What the optic claims. A Lambertian die radiates into a whole hemisphere;
+    // this part collects nearly all of it and delivers it to the receiver as a
+    // beam a few degrees wide. Both halves have to be working for that -- the
+    // lens over the well and the parabolic wall around it -- and the wall has
+    // no coating at all, so every bounce on it is total internal reflection.
+    const SimulationResult res = Simulation::run(tirLensConfig(2.0, 60000));
+
+    CHECK(res.efficiency > 0.80);
+    CHECK_NEAR(res.fluxAccounted(), res.sourcePower, 1e-7);
+
+    // A Lambertian source is 120 degrees wide. This is a beam.
+    CHECK(res.intensity.fwhmDeg > 0.0);
+    CHECK(res.intensity.fwhmDeg < 30.0);
+
+    // And it lands as a spot well inside the aperture rather than as a wash
+    // over the whole plane.
+    const analysis::SpotMetrics m = analysis::computeSpotMetrics(res);
+    CHECK(m.d86Radius < 20.0);
+}
+
+TEST(tircollimator, a_smaller_die_makes_a_tighter_beam_because_etendue_says_so) {
+    // The one thing no moulding beats. The wall is a parabola with its focus on
+    // the die, so a point there would collimate exactly and every degree the
+    // beam actually has is the die's own size. Shrinking the die therefore has
+    // to show up in both measurements: a narrower far field and a smaller spot.
+    const SimulationResult small = Simulation::run(tirLensConfig(1.0, 60000));
+    const SimulationResult large = Simulation::run(tirLensConfig(8.0, 60000));
+
+    CHECK(small.intensity.fwhmDeg < large.intensity.fwhmDeg);
+    CHECK(analysis::computeSpotMetrics(small).d86Radius <
+          analysis::computeSpotMetrics(large).d86Radius);
+}
+
 // ============================================================= regression ===
 
 TEST(regression, every_scene_matches_the_stored_reference_to_the_last_digits) {

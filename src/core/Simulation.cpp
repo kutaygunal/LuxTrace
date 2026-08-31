@@ -402,9 +402,28 @@ SourceConfig Simulation::sourceFor(GeometryProvider::Scene scene,
 Simulation::SceneEmitter Simulation::emitterFor(GeometryProvider::Scene scene,
                                                 const SceneParams& raw) {
     SceneEmitter out;
-    if (scene != GeometryProvider::Scene::ShowcaseLuminaire) return out;
+    if (scene != GeometryProvider::Scene::ShowcaseLuminaire &&
+        scene != GeometryProvider::Scene::TirLens)
+        return out;
 
     const SceneParams P = GeometryProvider::sanitise(scene, raw);
+
+    if (scene == GeometryProvider::Scene::TirLens) {
+        // The surface source a collimator is designed around: a square emitting
+        // area, Lambertian, sitting at the bottom of the well. A point source in
+        // a TIR lens collimates perfectly and says nothing -- the question the
+        // optic answers is what a die of finite size does to the beam, so the
+        // scene declares the die rather than leaving a point in its place.
+        out.declared          = true;
+        out.spec.label        = QStringLiteral("Emitting surface");
+        out.spec.type         = SourceConfig::Type::Lambertian;
+        out.spec.shape        = SourceConfig::Shape::Rect;
+        out.spec.halfAngleDeg = 90.0;
+        out.spec.sizeA        = P.v[3];
+        out.spec.sizeB        = P.v[3];
+        out.spec.power        = 1.0;
+        return out;
+    }
 
     out.declared          = true;
     out.spec.label        = QStringLiteral("LED die");

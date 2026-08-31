@@ -278,10 +278,6 @@ QWidget* MainWindow::buildViewerTab() {
     bar1->addWidget(showRays);
     bar1->addWidget(perspective);
     bar1->addWidget(viewCube);
-    bar1->addSpacing(10);
-    bar1->addWidget(dim(QStringLiteral("Colour:"), this));
-    bar1->addWidget(m_rayColor);
-    bar1->addWidget(m_detectorOnly);
     bar1->addStretch(1);
 
     auto* bar2 = new QHBoxLayout;
@@ -291,10 +287,17 @@ QWidget* MainWindow::buildViewerTab() {
     bar2->addWidget(m_clipSlider);
     bar2->addWidget(m_clipFlip);
     bar2->addSpacing(12);
-    bar2->addWidget(dim(QStringLiteral("Drag: L orbit · M pan · R look | Wheel zoom | "
+    bar2->addWidget(dim(QStringLiteral("Colour:"), this));
+    bar2->addWidget(m_rayColor);
+    bar2->addWidget(m_detectorOnly);
+    bar2->addSpacing(12);
+    auto* help = new QLabel(QStringLiteral("Drag: L orbit · M pan · R look | Wheel zoom | "
                                        "click a surface to inspect it · 2/3/4 move, "
                                        "rotate, scale it · 1 drops the gizmo · "
-                                       "WASD walk · F fits · R resets the view"), this), 1);
+                                       "WASD walk · F fits · R resets the view"), this);
+    help->setStyleSheet(QStringLiteral("color:#8a8f9c;"));
+    help->setWordWrap(true);
+    bar2->addWidget(help, 1);
 
     auto* pane = new QWidget(this);
     auto* v = new QVBoxLayout(pane);
@@ -857,7 +860,7 @@ void MainWindow::onShowSimulationWindow() {
 void MainWindow::buildMenus() {
     QMenu* file = menuBar()->addMenu(QStringLiteral("&File"));
 
-    // The twenty-seven built-in scenes, as tutorials.
+    // The twenty-eight built-in scenes, as tutorials.
     //
     // They were a combo box at the top of the controls column, which put
     // "which optic am I learning about" in the same place as "how many rays",
@@ -939,7 +942,7 @@ void MainWindow::buildMenus() {
 
     // The tutorials sit at the bottom, one segment above Exit: they are a way
     // in rather than something reached mid-session, and at the top they pushed
-    // saving and exporting past twenty-seven scene names.
+    // saving and exporting past twenty-eight scene names.
     QMenu* tutorials = file->addMenu(QStringLiteral("&Tutorials"));
     tutorials->setStatusTip(QStringLiteral(
         "A worked optic, loaded as a scene you can then edit: every part of it "
