@@ -1,0 +1,32 @@
+# ThreadSanitizer suppressions.
+#
+# Only for code we do not compile. Qt and OpenCASCADE come off a binary cache
+# uninstrumented, so TSan sees one half of an access pair inside them and
+# reports a race it cannot actually prove. Suppressing those keeps the job's
+# output about the tracer, which is the whole reason the job exists.
+#
+# Nothing in src/ is suppressed, and nothing should be. A race in RayTracer,
+# ThreadPool, SimulationWorker or the shared atomic receiver grid is the finding
+# this job is for; if one shows up, the fix is the code, not a line here.
+
+# --- OpenCASCADE -----------------------------------------------------------
+# OCCT's handle reference counting and its lazy global initialisers (unit
+# tables, memory manager, message registries) are not instrumented.
+called_from_lib:libTK
+race:^Standard_Transient
+race:^opencascade::handle
+race:^Standard_MMgr
+
+# --- Qt --------------------------------------------------------------------
+# Qt's atomics, its QObject connection lists and the per-thread event
+# dispatchers are not instrumented either.
+called_from_lib:libQt6Core
+called_from_lib:libQt6Gui
+race:^QBasicAtomic
+race:^QThreadData
+
+# --- the C++ runtime -------------------------------------------------------
+# Uninstrumented libstdc++ carries its own atomics through std::shared_ptr's
+# control block, which optics_core uses to share scene geometry across threads
+# read-only.
+called_from_lib:libstdc++

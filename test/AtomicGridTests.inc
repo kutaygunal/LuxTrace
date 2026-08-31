@@ -1,11 +1,10 @@
-// T3-004 — atomic large-receiver accumulation coverage. ADDITIVE-ONLY.
+// Atomic large-receiver accumulation. Suite "atomicgrid".
 //
-// Engineer-6 added a second receiver-accumulation path to RayTracer::trace:
-// above 65536 all-receivers cells, threads accumulate into ONE shared atomic
-// grid (relaxed CAS adds per bin) instead of a per-thread copy; below the
-// threshold the per-thread deterministic reduction is preserved. The existing
-// suites only ever exercised the small-receiver path, so the atomic large-
-// receiver path was genuinely untested. This module pins it down:
+// RayTracer::trace has two receiver-accumulation paths: above 65536
+// all-receivers cells, threads accumulate into ONE shared atomic grid (relaxed
+// CAS adds per bin) instead of a per-thread copy; below the threshold the
+// per-thread bit-exact reduction is used. Every other suite exercises only the
+// small-receiver path. This module pins the large one down:
 //
 //   * equivalence   a large (atomic) grid traces to the same bin totals as a
 //                   small (per-thread) grid at a matching resolution,
@@ -70,7 +69,7 @@ double rebin4(const std::vector<double>& fine, int cx, int cy) {
 
 // Equivalence: the atomic large-receiver path agrees with the small-receiver
 // per-thread path at a matching resolution, within tolerance.
-TEST(t3_004, atomic_large_grid_matches_per_thread_path_on_bin_totals) {
+TEST(atomicgrid, atomic_large_grid_matches_per_thread_path_on_bin_totals) {
     const std::uint64_t seed = 54321u;
     const int rays = 250000;
     const unsigned threads = 8;
@@ -110,7 +109,7 @@ TEST(t3_004, atomic_large_grid_matches_per_thread_path_on_bin_totals) {
 // Determinism: two identical atomic runs give the same result, in total and
 // bin-for-bin -- no update is lost or mis-ordered in a way that changes the
 // physics.
-TEST(t3_004, atomic_large_grid_is_deterministic_across_runs) {
+TEST(atomicgrid, atomic_large_grid_is_deterministic_across_runs) {
     const std::uint64_t seed = 424242u;
     const int rays = 250000;
     const unsigned threads = 8;
@@ -131,7 +130,7 @@ TEST(t3_004, atomic_large_grid_is_deterministic_across_runs) {
 // Concurrency: many threads writing into the one shared grid lose no updates.
 // A single-threaded atomic run is the ground-truth total (no concurrency, so
 // nothing can be lost); the multi-threaded total must match it.
-TEST(t3_004, atomic_large_grid_does_not_lose_updates_under_concurrency) {
+TEST(atomicgrid, atomic_large_grid_does_not_lose_updates_under_concurrency) {
     const std::uint64_t seed = 777u;
     const int rays = 250000;
 

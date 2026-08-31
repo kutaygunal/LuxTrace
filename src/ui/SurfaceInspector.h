@@ -1,6 +1,9 @@
 #pragma once
 #include <QWidget>
+#include <vector>
+
 #include "core/SurfaceOptics.h"
+#include "MultiEdit.h"
 
 class PlotWidget;
 
@@ -42,6 +45,16 @@ public:
     // panel can say whether what is on screen is an edit.
     void setSurface(const QString& label, const SurfaceOptics& optics,
                     const SurfaceOptics& sceneValue, bool edited);
+
+    // Shows what several surfaces have in common. Every field the whole set
+    // agrees on reads as its value; every field they disagree on reads as a
+    // dash, and stays a dash until somebody answers it.
+    //
+    // `values` is the selection, primary first: the primary is what the form
+    // starts from, so a field nobody touches carries a real number behind its
+    // dash for the arrows to step from. There is no scene value to reset to
+    // across a mixed selection, so the reset button is not offered.
+    void setSurfaces(const QString& label, const std::vector<SurfaceOptics>& values);
     void clearSurface();
 
     // What the form currently describes.
@@ -49,8 +62,14 @@ public:
     bool          hasSurface() const { return m_haveSurface; }
 
 signals:
-    // The form changed. Not emitted while setSurface is writing the widgets.
-    void edited();
+    // The form changed, and `fields` says which of multiedit::optic's flags it
+    // was. Not emitted while setSurface is writing the widgets.
+    //
+    // Which field, rather than merely that something changed, because a
+    // multi-selection writes back only what the user actually answered: the
+    // whole struct would carry every dash with it and flatten fifteen
+    // properties onto the primary's because somebody nudged one.
+    void edited(quint32 fields);
     // Put this surface back to what the scene declares.
     void resetRequested();
 
@@ -60,10 +79,16 @@ private:
     void refreshCoatingPlot();
     void refreshLobePlot();
     void refreshAll();
-    void onEdit();
+    void onEdit(quint32 fields);
+    // Writes `values` into the widgets and marks every field they disagree on.
+    // `values` is never empty.
+    void showValues(const std::vector<SurfaceOptics>& values);
 
     bool m_loading     = false;
     bool m_haveSurface = false;
+    // How many surfaces the form is showing. Above one it is a multi-edit: the
+    // dashes are meaningful and the reset button is hidden.
+    int  m_surfaceCount = 1;
     SurfaceOptics m_sceneValue;
 
     QLabel*    m_name    = nullptr;
@@ -113,6 +138,9 @@ private:
     QPushButton* m_appearance      = nullptr;
     QPushButton* m_appearanceClear = nullptr;
     double       m_appearanceRgb[3] = {-1.0, -1.0, -1.0};
+    // The selected surfaces are not all the same colour. The swatch says so
+    // rather than showing one of them.
+    bool         m_appearanceMixed = false;
     void refreshAppearanceSwatch();
 
     // --- receiver ---

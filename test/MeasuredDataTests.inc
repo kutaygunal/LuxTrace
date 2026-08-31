@@ -1,6 +1,6 @@
-// Tests for T3-002: measured-data sample caps raised + resampling surfaced.
+// Measured-data sample caps, and the resampling that replaced truncation.
 //
-// Included by TestMain.cpp (see ./TestMain.cpp), suite "fidelity".
+// Included by TestMain.cpp, suite "fidelity".
 //
 // These pin the structural fix: the three measured-data tables (coating R,
 // material n/k, BSDF) no longer truncate a measurement to eight / sixteen

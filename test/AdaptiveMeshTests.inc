@@ -1,4 +1,4 @@
-// T3-005 -- curvature-driven adaptive meshing.
+// Curvature-driven adaptive meshing.
 //
 // The mesh is now per-face adaptive rather than uniform per body: a face's
 // deflection is driven by its local curvature and by whether that curvature

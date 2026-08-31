@@ -114,10 +114,14 @@ jobs:
       - name: Physics validation
         run: .\build\Release\LuxTrace.exe --validate 400000 validation.html
 
-      # Bit-identical results whatever the thread count. Exits non-zero the
-      # moment one scene disagrees between one thread and the pool. The ray
-      # count is well below the documented 100000: determinism does not depend
-      # on it, and timings from a shared runner are not worth waiting for.
+      # The scalar totals -- efficiency and the energy budget -- are identical
+      # between one thread and the pool. Exits non-zero the moment one scene
+      # disagrees. Note what this does NOT cover: it traces the default 64x64
+      # receiver, which is below the 65536-cell threshold where the tracer
+      # switches to a shared atomic grid, and it compares one scalar rather
+      # than the grid. The atomic path's add order IS thread-dependent by
+      # construction; the "atomicgrid" ctest suite pins that path down, and the
+      # TSan job below checks the memory model underneath it.
       - name: Determinism and benchmark
         run: .\build\Release\LuxTrace.exe --bench 50000
 
@@ -128,3 +132,118 @@ jobs:
           name: validation-report
           path: validation.html
           if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # ThreadSanitizer.
+  #
+  # The Windows job proves the answers are the same. It cannot prove they are
+  # arrived at safely: MSVC ships no ThreadSanitizer, and comparing two runs'
+  # floats is not a race detector -- a data race can return the same number a
+  # thousand times and a different one on a customer's machine. The tracer has a
+  # shared atomic receiver grid written by a relaxed compare-exchange loop, an
+  # acquire/release publication counter behind the progressive preview, and a
+  # condition-variable pool. That is the part worth checking properly.
+  #
+  # Linux and Clang because that is where TSan is. Only optics_tests is built --
+  # the UI needs a window system, and none of the races live there.
+  #
+  # Two caveats, stated rather than hidden. Qt and OCCT come off the binary
+  # cache uninstrumented, so .github/tsan.supp silences reports that are half
+  # inside them; nothing under src/ is suppressed. And avx2Available() answers
+  # false off MSVC, so this job exercises the scalar leaf -- the wide path is
+  # arithmetic on stack locals with no threading of its own, so there is nothing
+  # there for it to hide.
+  tsan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    env:
+      QT_QPA_PLATFORM: offscreen
+      # halt_on_error keeps a race from being buried under the thousands of
+      # lines a long trace prints after it. second_deadlock_stack makes a lock
+      # order inversion name both sites instead of one.
+      TSAN_OPTIONS: >-
+        halt_on_error=1
+        second_deadlock_stack=1
+        suppressions=${{ github.workspace }}/.github/tsan.supp
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # OCCT's visualisation toolkits link X11, GL and fontconfig even for a
+      # console binary, so the runner needs the development packages before
+      # vcpkg will configure it.
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang ninja-build libx11-dev libxext-dev libxmu-dev libxi-dev \
+            libgl1-mesa-dev libglu1-mesa-dev libfontconfig1-dev libfreetype-dev \
+            libxrandr-dev libxrender-dev libxfixes-dev libxcb1-dev \
+            libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev
+
+      - name: Cache Qt
+        id: qt-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/Qt
+          key: qt-linux-${{ env.QT_VERSION }}-gcc_64
+
+      - name: Install Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: |
+          pip install "aqtinstall>=3.1,<4"
+          aqt install-qt linux desktop $QT_VERSION linux_gcc_64 \
+            --outputdir ${{ github.workspace }}/Qt
+
+      # The same vcpkg commit the Windows job pins, so a red build here is about
+      # this code and not about a different OCCT.
+      - name: Check out vcpkg
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-binary-cache
+          key: vcpkg-${{ env.VCPKG_COMMIT }}-x64-linux-opencascade
+
+      - name: Build OpenCASCADE
+        env:
+          VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-binary-cache
+        run: |
+          mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+          ./vcpkg/bootstrap-vcpkg.sh
+          ./vcpkg/vcpkg install opencascade:x64-linux --clean-after-build
+
+      - name: Configure
+        run: >
+          cmake -S . -B build-tsan -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          -DLUXTRACE_SANITIZE=thread
+          -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/Qt/${{ env.QT_VERSION }}/gcc_64
+
+      - name: Build the test binary
+        run: cmake --build build-tsan --target optics_tests --parallel
+
+      # The suites that actually start threads, rather than the whole corpus:
+      # TSan costs roughly a factor of ten, and a race is found by executing the
+      # contended code once, not by executing uncontended code sixty times.
+      #
+      #   atomicgrid  the shared relaxed-CAS receiver grid
+      #   worker      SimulationWorker: a trace on a thread, a result on the UI one
+      #   preview     the acquire/release publication counter behind progressive output
+      #   convergence repeated pool traces with growing ray budgets
+      #   trace       the ordinary threaded path, as a control
+      - name: ThreadSanitizer
+        run: |
+          for suite in atomicgrid worker preview convergence trace; do
+            echo "::group::tsan $suite"
+            ./build-tsan/optics_tests "$suite"
+            echo "::endgroup::"
+          done

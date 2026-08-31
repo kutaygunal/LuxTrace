@@ -1,0 +1,853 @@
+<title>LuxTrace Against the Illumination Module</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Spectral:ital,wght@0,400;0,600;1,400&display=swap">
+
+<style>
+  :root {
+    --paper:      #F1F4F5;
+    --surface:    #FFFFFF;
+    --surface-2:  #E7ECEE;
+    --ink:        #0E1417;
+    --ink-2:      #3B474C;
+    --ink-3:      #6B777C;
+    --rule:       #D3DBDE;
+    --rule-soft:  #E3E9EB;
+    --accent:     #0E5B68;
+    --accent-2:   #12798A;
+    --accent-wash:#E2EFF1;
+
+    --parity:     #2E6B3F;
+    --parity-bg:  #E4EFE6;
+    --partial:    #8E6210;
+    --partial-bg: #F3EBDA;
+    --gap:        #9E3630;
+    --gap-bg:     #F5E4E2;
+    --lead:       #1E5C86;
+    --lead-bg:    #E1ECF4;
+
+    --shadow: 0 1px 2px rgba(14,20,23,.06), 0 8px 24px -16px rgba(14,20,23,.28);
+
+    --serif: "Spectral", Georgia, "Times New Roman", serif;
+    --sans:  "IBM Plex Sans", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono:  "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #0C1013;
+      --surface:    #141A1E;
+      --surface-2:  #1B2328;
+      --ink:        #E8EDEF;
+      --ink-2:      #B3BEC3;
+      --ink-3:      #7F8B91;
+      --rule:       #2A343A;
+      --rule-soft:  #202A2F;
+      --accent:     #58BECD;
+      --accent-2:   #7FD3DF;
+      --accent-wash:#123036;
+
+      --parity:     #7CC08C;
+      --parity-bg:  #16301D;
+      --partial:    #D9AC55;
+      --partial-bg: #33280F;
+      --gap:        #E38B84;
+      --gap-bg:     #351B19;
+      --lead:       #7CB8E0;
+      --lead-bg:    #142B3C;
+
+      --shadow: 0 1px 2px rgba(0,0,0,.5), 0 10px 28px -18px rgba(0,0,0,.9);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #0C1013;
+    --surface:    #141A1E;
+    --surface-2:  #1B2328;
+    --ink:        #E8EDEF;
+    --ink-2:      #B3BEC3;
+    --ink-3:      #7F8B91;
+    --rule:       #2A343A;
+    --rule-soft:  #202A2F;
+    --accent:     #58BECD;
+    --accent-2:   #7FD3DF;
+    --accent-wash:#123036;
+
+    --parity:     #7CC08C;
+    --parity-bg:  #16301D;
+    --partial:    #D9AC55;
+    --partial-bg: #33280F;
+    --gap:        #E38B84;
+    --gap-bg:     #351B19;
+    --lead:       #7CB8E0;
+    --lead-bg:    #142B3C;
+
+    --shadow: 0 1px 2px rgba(0,0,0,.5), 0 10px 28px -18px rgba(0,0,0,.9);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 28px 96px; }
+
+  /* ---------- masthead ---------- */
+
+  .masthead { padding: 64px 0 0; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 18px;
+  }
+
+  h1 {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: clamp(36px, 5.6vw, 58px);
+    line-height: 1.04;
+    letter-spacing: -.015em;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  .standfirst {
+    font-family: var(--serif);
+    font-size: clamp(17px, 2.1vw, 20px);
+    line-height: 1.55;
+    color: var(--ink-2);
+    max-width: 62ch;
+    margin: 22px 0 0;
+  }
+
+  .spectrum {
+    height: 4px;
+    margin: 36px 0 0;
+    border-radius: 2px;
+    background: linear-gradient(90deg,
+      #4b0f7a 0%, #2b2fb8 14%, #1477c4 28%, #17a37a 42%,
+      #6fbc1f 55%, #e0bc12 68%, #e07a12 82%, #a32424 100%);
+    opacity: .85;
+  }
+
+  .meta {
+    display: flex; flex-wrap: wrap; gap: 8px 32px;
+    padding: 18px 0 0;
+    font-family: var(--mono); font-size: 12px; color: var(--ink-3);
+  }
+  .meta b { color: var(--ink-2); font-weight: 500; }
+
+  /* ---------- scorecard ---------- */
+
+  .scorecard {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    overflow: hidden;
+    margin: 44px 0 0;
+  }
+  .tile { background: var(--surface); padding: 20px 20px 18px; }
+  .tile .n {
+    font-family: var(--mono); font-size: 30px; font-weight: 500;
+    line-height: 1; letter-spacing: -.02em;
+    font-variant-numeric: tabular-nums; display: block;
+  }
+  .tile .k { display: block; margin-top: 9px; font-size: 12.5px; line-height: 1.35; color: var(--ink-3); }
+  .tile.is-parity  .n { color: var(--parity); }
+  .tile.is-partial .n { color: var(--partial); }
+  .tile.is-gap     .n { color: var(--gap); }
+  .tile.is-lead    .n { color: var(--lead); }
+  .tile.is-plain   .n { color: var(--ink); }
+
+  /* ---------- sections ---------- */
+
+  section { padding-top: 62px; scroll-margin-top: 24px; }
+
+  h2 {
+    font-family: var(--serif); font-weight: 600;
+    font-size: clamp(25px, 3.2vw, 33px);
+    line-height: 1.15; letter-spacing: -.012em;
+    margin: 0; text-wrap: balance;
+  }
+
+  .sec-head {
+    display: flex; align-items: baseline; gap: 14px;
+    border-bottom: 1px solid var(--rule); padding-bottom: 12px;
+  }
+  .sec-num {
+    font-family: var(--mono); font-size: 12px; color: var(--accent);
+    letter-spacing: .06em; flex: none; padding-top: 4px;
+  }
+  .sec-count {
+    margin-left: auto; font-family: var(--mono); font-size: 11.5px;
+    color: var(--ink-3); white-space: nowrap;
+  }
+
+  .lede { max-width: 68ch; color: var(--ink-2); margin: 18px 0 0; }
+  p { margin: 14px 0 0; max-width: 68ch; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  a:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 3px; border-radius: 3px; }
+  code { font-family: var(--mono); font-size: .87em; background: var(--surface-2); padding: 1px 5px; border-radius: 3px; }
+
+  /* ---------- audit items ---------- */
+
+  .items { display: grid; gap: 12px; margin: 24px 0 0; }
+
+  .item {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--rule);
+    border-radius: 6px;
+    padding: 20px 24px 22px;
+    box-shadow: var(--shadow);
+    display: grid;
+    grid-template-columns: 40px 1fr;
+    column-gap: 18px;
+    row-gap: 0;
+  }
+  .item.v-parity  { border-left-color: var(--parity); }
+  .item.v-partial { border-left-color: var(--partial); }
+  .item.v-gap     { border-left-color: var(--gap); }
+  .item.v-lead    { border-left-color: var(--lead); }
+
+  .idx {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink-3);
+    padding-top: 3px;
+    grid-row: 1 / span 4;
+  }
+
+  .bullet {
+    font-family: var(--serif);
+    font-size: 19px;
+    line-height: 1.35;
+    font-weight: 600;
+    letter-spacing: -.008em;
+    margin: 0;
+    text-wrap: balance;
+    max-width: none;
+  }
+
+  .means {
+    margin: 8px 0 0;
+    font-size: 13.5px;
+    color: var(--ink-3);
+    font-style: italic;
+    font-family: var(--serif);
+    max-width: 72ch;
+  }
+
+  .state { margin: 14px 0 0; font-size: 14.5px; color: var(--ink-2); max-width: 76ch; }
+  .state b { color: var(--ink); font-weight: 600; }
+
+  .badges {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px;
+    margin: 16px 0 0; padding-top: 13px;
+    border-top: 1px solid var(--rule-soft);
+  }
+  .effort {
+    font-family: var(--mono); font-size: 11.5px;
+    font-variant-numeric: tabular-nums; color: var(--ink-3);
+  }
+  .effort b { color: var(--ink-2); font-weight: 500; }
+  .todo {
+    font-size: 13px; color: var(--ink-3);
+    border-left: 2px solid var(--rule); padding-left: 12px;
+    flex: 1 1 320px; min-width: 240px;
+  }
+  .todo b { color: var(--ink-2); font-weight: 600; }
+
+  .chip {
+    display: inline-block; font-family: var(--mono);
+    font-size: 10.5px; font-weight: 500; letter-spacing: .07em;
+    text-transform: uppercase; padding: 3px 8px 2px;
+    border-radius: 3px; white-space: nowrap;
+  }
+  .chip.parity  { color: var(--parity);  background: var(--parity-bg); }
+  .chip.partial { color: var(--partial); background: var(--partial-bg); }
+  .chip.gap     { color: var(--gap);     background: var(--gap-bg); }
+  .chip.lead    { color: var(--lead);    background: var(--lead-bg); }
+
+  /* ---------- callout / panels ---------- */
+
+  .callout {
+    margin: 30px 0 0; padding: 22px 24px;
+    background: var(--accent-wash); border-radius: 6px;
+    border-left: 3px solid var(--accent);
+  }
+  .callout p { margin: 0; max-width: 74ch; color: var(--ink); }
+  .callout p + p { margin-top: 12px; }
+  .callout .label {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--accent);
+    display: block; margin-bottom: 10px;
+  }
+
+  .twoup {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 16px; margin: 26px 0 0;
+  }
+  .panel {
+    background: var(--surface); border: 1px solid var(--rule);
+    border-radius: 6px; padding: 22px 24px 24px;
+  }
+  .panel h3 {
+    margin: 0; font-family: var(--sans); font-size: 15px; font-weight: 600;
+  }
+  .panel ul { margin: 14px 0 0; padding-left: 18px; display: grid; gap: 9px; }
+  .panel li { font-size: 14px; color: var(--ink-2); line-height: 1.5; }
+  .panel li b { color: var(--ink); font-weight: 600; }
+  .panel p { font-size: 14px; color: var(--ink-2); }
+
+  /* ---------- plan ---------- */
+
+  .plan { display: grid; gap: 14px; margin: 26px 0 0; }
+  .step {
+    display: grid; grid-template-columns: auto 1fr auto; gap: 6px 18px;
+    align-items: baseline;
+    background: var(--surface); border: 1px solid var(--rule);
+    border-radius: 6px; padding: 18px 22px 20px;
+  }
+  .step .wk {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--surface);
+    background: var(--accent); padding: 3px 9px 2px; border-radius: 3px;
+    white-space: nowrap;
+  }
+  .step h3 { margin: 0; font-family: var(--serif); font-size: 18px; font-weight: 600; }
+  .step .cost { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); white-space: nowrap; }
+  .step ul { grid-column: 2 / -1; margin: 10px 0 0; padding-left: 18px; display: grid; gap: 7px; }
+  .step li { font-size: 14px; color: var(--ink-2); line-height: 1.5; }
+  .step li b { color: var(--ink); font-weight: 600; }
+
+  .sources { margin: 22px 0 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+  .sources li { font-size: 13.5px; color: var(--ink-3); line-height: 1.5; }
+  .sources a { word-break: break-word; }
+
+  footer {
+    margin-top: 72px; padding-top: 22px; border-top: 1px solid var(--rule);
+    font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); line-height: 1.7;
+  }
+
+  @media (max-width: 640px) {
+    .wrap { padding: 0 18px 72px; }
+    .masthead { padding-top: 44px; }
+    .item { grid-template-columns: 1fr; }
+    .idx { grid-row: auto; padding-top: 0; margin-bottom: 4px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="eyebrow">Gap analysis II · single module · 29 August 2026</p>
+    <h1>LuxTrace Against the Illumination Module</h1>
+    <p class="standfirst">
+      The Keysight modules datasheet declares exactly twenty-one capabilities under
+      "Illumination Module", in two groups. This is a line-by-line audit of all
+      twenty-one — no other module credited on either side.
+    </p>
+    <div class="spectrum" aria-hidden="true"></div>
+    <div class="meta">
+      <span><b>Scope</b> Illumination Module only</span>
+      <span><b>Source</b> LightTools Modules datasheet, 3125-1206.EN, Oct 2025</span>
+      <span><b>Subject</b> LuxTrace at commit 91ea0c5</span>
+    </div>
+  </header>
+
+  <div class="scorecard">
+    <div class="tile is-plain"><span class="n">21</span><span class="k">declared capabilities audited</span></div>
+    <div class="tile is-parity"><span class="n">6</span><span class="k">covered to spec</span></div>
+    <div class="tile is-lead"><span class="n">2</span><span class="k">exceeded</span></div>
+    <div class="tile is-partial"><span class="n">8</span><span class="k">partial — real but short of the bullet</span></div>
+    <div class="tile is-gap"><span class="n">5</span><span class="k">absent</span></div>
+  </div>
+
+  <section id="framing" style="padding-top:56px">
+    <div class="sec-head"><h2>Why this comparison is much closer than the last one</h2></div>
+
+    <p class="lede">
+      The whole-product comparison put LuxTrace at roughly a quarter of LightTools. Against
+      the Illumination Module alone it lands at <b>eight of twenty-one fully met and eight
+      more partially met</b> — because this module is the one that measures light, and
+      measuring light is the thing LuxTrace was built to do.
+    </p>
+
+    <p class="lede">
+      The boundary matters, and it cuts both ways. The datasheet puts geometry, scatter
+      models, volume scattering, coatings, ray splitting and surface patterns in the
+      <b>Core Module</b>, not here. So LuxTrace's BSDF work, its coating solver and its
+      medium stack earn nothing in this report — they compete with Core. Conversely,
+      LightTools' freeform tools, optimizer, GRIN and phosphor are other modules and are
+      not held against LuxTrace here either.
+    </p>
+
+    <div class="callout">
+      <span class="label">The result in one line</span>
+      <p>
+        Nineteen of the twenty-one are reachable in roughly <b>six to eight engineer-months</b>,
+        and most of those are weeks rather than months. The remaining two —
+        photorealistic rendering and backward ray tracing — are one shared bet worth
+        nine to eighteen months, and they are the only items here that change what the
+        product <em>is</em> rather than what it covers.
+      </p>
+    </div>
+  </section>
+
+  <!-- =============== GROUP 1 =============== -->
+  <section id="analysis">
+    <div class="sec-head">
+      <span class="sec-num">A</span>
+      <h2>Illumination analysis</h2>
+      <span class="sec-count">11 capabilities</span>
+    </div>
+    <p class="lede">
+      Everything downstream of the trace: what gets computed, how it is charted, and what
+      can be asked of the data afterwards. LuxTrace is strong on the numbers and weak on
+      the interrogation — it computes well and filters barely at all.
+    </p>
+
+    <div class="items">
+
+      <article class="item v-gap">
+        <div class="idx">01</div>
+        <p class="bullet">Photorealistic Rendering</p>
+        <p class="means">A lit-appearance image of the model — what the luminaire looks like switched on. The Core Module renders mechanical models; lit appearance needs this module.</p>
+        <p class="state">Nothing comparable. The 3D tab is an OCCT shaded viewport with ray legs drawn over it, coloured by energy, bounce count or wavelength — a diagnostic display, not a physically-based render. It also caps at about 6&nbsp;000 ray legs before a dense bundle draws as a solid tube.</p>
+        <div class="badges">
+          <span class="chip gap">Gap</span>
+          <span class="effort"><b>6–12 mo</b> · needs a camera-side trace first</span>
+          <span class="todo"><b>Coupled to item 02.</b> Build backward tracing once and both fall out; build a renderer without it and the image is not photometric.</span>
+        </div>
+      </article>
+
+      <article class="item v-partial">
+        <div class="idx">02</div>
+        <p class="bullet">Photometric or radiometric analysis using forward and backward ray tracing</p>
+        <p class="means">Both unit systems, and both trace directions — source-to-detector and eye-to-source.</p>
+        <p class="state"><b>Units: met.</b> Source flux in watts or lumens, receiver in W/m² or lux, far field in W/sr or candela, converted through the CIE V(λ) curve, with a test asserting a photometric run delivers the lumens it was asked for. <b>Direction: forward only.</b> Next-event estimation at diffuse bounces is a deterministic connection back to the receiver and the nearest thing in the codebase to a backward step, but there is no camera-originated trace.</p>
+        <div class="badges">
+          <span class="chip partial">Partial</span>
+          <span class="effort"><b>3–6 mo</b> · backward path only</span>
+          <span class="todo"><b>The NEE machinery is the head start.</b> Connecting to an arbitrary camera pixel rather than to the receiver is the same estimator with a different endpoint.</span>
+        </div>
+      </article>
+
+      <article class="item v-partial">
+        <div class="idx">03</div>
+        <p class="bullet">Illuminance, luminance, luminous intensity</p>
+        <p class="means">The three photometric quantities: flux per area, flux per area per solid angle, flux per solid angle.</p>
+        <p class="state"><b>Illuminance and luminous intensity: met.</b> Lux on the receiver grid; candela in the far field, correctly divided by each cell's solid angle so an isotropic source does not read dark at the poles. <b>Luminance: absent.</b> Nothing measures flux per projected area per steradian, which is the quantity glare, display uniformity and lit-appearance specifications are written in.</p>
+        <div class="badges">
+          <span class="chip partial">Partial</span>
+          <span class="effort"><b>1–2 mo</b> · shared with item 20</span>
+          <span class="todo"><b>One implementation covers both.</b> Luminance is what an angular/spatial luminance meter reports; build the meter and the quantity arrives with it.</span>
+        </div>
+      </article>
+
+      <article class="item v-partial">
+        <div class="idx">04</div>
+        <p class="bullet">Line charts, raster, contour, and surface charts</p>
+        <p class="means">Four chart forms over the same receiver data.</p>
+        <p class="state"><b>Line: met</b> — <code>PlotWidget</code> carries error bars, reference markers and a hover readout across cross-sections, encircled energy, convergence, through-focus and sweeps. <b>Raster: met</b> — <code>HeatmapWidget</code> with five colour maps, linear/log/sqrt scaling, RGB mode and a click-to-move cut line. <b>Contour and 3D surface: absent.</b></p>
+        <div class="badges">
+          <span class="chip partial">Partial</span>
+          <span class="effort"><b>0.5 mo</b></span>
+          <span class="todo"><b>Marching squares over the existing grid.</b> The data structure and the colour maps are already there; this is chart code, not analysis code.</span>
+        </div>
+      </article>
+
+      <article class="item v-parity">
+        <div class="idx">05</div>
+        <p class="bullet">Colorimetric analysis: 1931 and 1976 CIE coordinates, correlated color temperature</p>
+        <p class="means">Chromaticity in both standard spaces, plus CCT.</p>
+        <p class="state">CIE 1931 colour-matching functions are implemented in <code>Spectrum</code> and chromaticity and correlated colour temperature are reported in the metrics panel. CIE 1976 u′v′ is a closed-form transform of the same XYZ and is simply not printed — a few lines, not a capability.</p>
+        <div class="badges">
+          <span class="chip parity">Parity</span>
+          <span class="effort"><b>&lt;0.1 mo</b> · to add u′v′</span>
+          <span class="todo"><b>Worth doing immediately.</b> u′v′ is the space colour-shift tolerances are actually specified in for LED work.</span>
+        </div>
+      </article>
+
+      <article class="item v-partial">
+        <div class="idx">06</div>
+        <p class="bullet">RGB output display, CIE chromaticity chart</p>
+        <p class="means">A colour rendering of the receiver, and the horseshoe diagram with the result plotted on it.</p>
+        <p class="state"><b>RGB display: met.</b> Per-band grids and linear sRGB weights per monochromatic stimulus drive an RGB heatmap mode. <b>Chromaticity chart: absent.</b> The coordinates are computed and printed as numbers; there is no diagram to plot them on, and no way to see a colour spread rather than a colour average.</p>
+        <div class="badges">
+          <span class="chip partial">Partial</span>
+          <span class="effort"><b>0.25 mo</b></span>
+          <span class="todo"><b>The spectral locus is already in the codebase</b> as the CIE curves. Drawing the horseshoe and scattering per-bin points on it is a widget, and it is the natural home for a colour-over-angle view later.</span>
+        </div>
+      </article>
+
+      <article class="item v-parity">
+        <div class="idx">07</div>
+        <p class="bullet">Post-processing of output data</p>
+        <p class="means">Deriving new answers from a completed trace without re-tracing it.</p>
+        <p class="state">Strong, and in one case unusually so. Every receiver arrival is recorded with its incoming direction, so through-focus propagates arrivals analytically to any nearby plane and refines the minimum with a parabolic fit — one trace answers every plane. Encircled energy, cross-sections, spot metrics, MTF and the OPD/wavefront map are all post-processes over the same arrivals. The gap is re-binning: changing receiver resolution still costs a trace.</p>
+        <div class="badges">
+          <span class="chip parity">Parity</span>
+          <span class="effort"><b>0.5 mo</b> · to add re-binning</span>
+          <span class="todo"><b>Metrics are already computed as densities</b> so they survive a re-bin unchanged. Storing arrivals rather than only the binned grid is the remaining piece.</span>
+        </div>
+      </article>
+
+      <article class="item v-gap">
+        <div class="idx">08</div>
+        <p class="bullet">Receiver data filtering using over a dozen filter types</p>
+        <p class="means">Ask the same trace many questions: show only rays from this source, in this band, that hit this surface, arrived within this angle, after this many bounces.</p>
+        <p class="state">One filter exists — the receiver's acceptance half-angle, with a documented choice between absorbing and passing refused flux, booked to its own channel so the loss budget stays honest. Beyond that, nothing. The 3D view's receiver-paths-only toggle is a display filter, not a data one. Per-source arrival tagging already exists and is the one filter that is nearly free today.</p>
+        <div class="badges">
+          <span class="chip gap">Gap</span>
+          <span class="effort"><b>1–1.5 mo</b></span>
+          <span class="todo"><b>The highest value-per-week item in this report.</b> Filtering is what turns one expensive trace into ten answers, and it is the analysis capability illumination engineers reach for constantly.</span>
+        </div>
+      </article>
+
+      <article class="item v-parity">
+        <div class="idx">09</div>
+        <p class="bullet">Encircled and ensquared energy</p>
+        <p class="means">Fraction of flux within a radius, and within a square half-width.</p>
+        <p class="state"><b>Encircled: met</b> — a full curve plus D50 and D86 radii, validated against a synthetic uniform disc whose encircled-energy radius is known in closed form to be R·√f. <b>Ensquared: absent</b>, and it is the same integration over a different kernel.</p>
+        <div class="badges">
+          <span class="chip parity">Parity</span>
+          <span class="effort"><b>&lt;0.1 mo</b></span>
+          <span class="todo"><b>Ensquared matters for sensors and displays</b>, where the pixel is square and the circular figure understates the answer.</span>
+        </div>
+      </article>
+
+      <article class="item v-partial">
+        <div class="idx">10</div>
+        <p class="bullet">Spectral power distribution</p>
+        <p class="means">The spectrum of what <em>arrived</em>, not the spectrum that was emitted.</p>
+        <p class="state">SPDs are a first-class input — measured, blackbody, white LED, D65 — and per-band RGB grids are accumulated on the receiver. But arrivals do not accumulate a wavelength histogram, so the trace cannot answer "what colour is the light landing here, spectrally", which is the question a filtered, dispersive or phosphor-adjacent system exists to raise.</p>
+        <div class="badges">
+          <span class="chip partial">Partial</span>
+          <span class="effort"><b>0.5 mo</b></span>
+          <span class="todo"><b>Every ray already carries its wavelength.</b> This is one more accumulator on the detector, and it makes the colorimetry above measured rather than assumed.</span>
+        </div>
+      </article>
+
+      <article class="item v-lead">
+        <div class="idx">11</div>
+        <p class="bullet">Multi-CPU processing</p>
+        <p class="means">Use every core on the machine.</p>
+        <p class="state">Met, and then some. A thread pool over rays with dynamic 512-ray chunks, a SAH BVH, and a four-wide AVX2 leaf intersection probed at run time and bit-for-bit identical to the scalar kernel. <b>Results are bit-identical regardless of thread count</b> — every ray seeds its own RNG from its index and totals reduce in chunk order, asserted in CI on every scene and source combination. The whole 26-scene library at 50&nbsp;000 rays each traces in 0.51&nbsp;s.</p>
+        <div class="badges">
+          <span class="chip lead">Exceeds</span>
+          <span class="effort"><b>—</b></span>
+          <span class="todo"><b>Determinism is not on LightTools' list.</b> For anyone doing regression work or tolerancing, it is the difference between a reproducible study and a suggestive one.</span>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- =============== GROUP 2 =============== -->
+  <section id="sources">
+    <div class="sec-head">
+      <span class="sec-num">B</span>
+      <h2>Sources and receivers</h2>
+      <span class="sec-count">10 capabilities</span>
+    </div>
+    <p class="lede">
+      The instruments at each end of the trace. LuxTrace matches LightTools on measured
+      data and on sampling, and falls behind wherever the bullet says
+      <em>user-defined</em> — every distribution it emits is one of a fixed set of laws.
+    </p>
+
+    <div class="items">
+
+      <article class="item v-parity">
+        <div class="idx">12</div>
+        <p class="bullet">Point sources</p>
+        <p class="means">An emitter of zero extent.</p>
+        <p class="state">Met. Isotropic point emission is one of three source types, and the app does not quietly substitute a Lambertian emitter to flatter the efficiency figure — most scenes drop to roughly half with a point source, because the backward hemisphere is genuinely lost, and that is reported as the answer.</p>
+        <div class="badges">
+          <span class="chip parity">Parity</span>
+          <span class="effort"><b>—</b></span>
+          <span class="todo"><b>Honest by construction.</b> Worth keeping in the pitch.</span>
+        </div>
+      </article>
+
+      <article class="item v-partial">
+        <div class="idx">13</div>
+        <p class="bullet">Volume and surface emitters (spheres, cylinders, blocks, toroids)</p>
+        <p class="means">Light emitted from the whole body of an object, or across its surface, with the emitter shaped like a real part.</p>
+        <p class="state"><b>Surface emitters: partly met.</b> A source emits over a real emitting area sized by <code>sizeA</code>, <code>sizeB</code> and <code>beamRadius</code> — enough for a rectangular die or a circular aperture, not enough to emit from the surface of an arbitrary solid. <b>Volume emitters: absent.</b> There is no way to say "this whole body glows", which is how a fluorescent tube, a scattering diffuser body or a phosphor volume gets modelled.</p>
+        <div class="badges">
+          <span class="chip partial">Partial</span>
+          <span class="effort"><b>1–1.5 mo</b></span>
+          <span class="todo"><b>Sample the tessellation, not a new primitive.</b> Every object already carries a triangle mesh; area-weighted sampling over it gives surface emission from any solid, and rejection sampling in its bounding volume gives the volume case.</span>
+        </div>
+      </article>
+
+      <article class="item v-gap">
+        <div class="idx">14</div>
+        <p class="bullet">User-defined spatial, volume, and angular distributions</p>
+        <p class="means">Supply your own emission profile as data rather than picking from a menu.</p>
+        <p class="state">Absent in every axis. Emission is one of three fixed laws — isotropic, Lambertian, or collimated — plus a cone half-angle. There is no I(θ,φ) table, no spatial emission map across the die, no volumetric density. The only escape hatch is a measured ray file, which is a different thing: it supplies rays, not a distribution to sample.</p>
+        <div class="badges">
+          <span class="chip gap">Gap</span>
+          <span class="effort"><b>0.75 mo</b></span>
+          <span class="todo"><b>Cheap and disproportionately useful.</b> A tabulated angular distribution with alias-method sampling also unlocks reading an IES or EULUMDAT file back in <em>as a source</em> — which the app can currently only write.</span>
+        </div>
+      </article>
+
+      <article class="item v-partial">
+        <div class="idx">15</div>
+        <p class="bullet">Source emittance aim regions</p>
+        <p class="means">Concentrate emission toward a nominated region so rays are not wasted on empty space.</p>
+        <p class="state">The mechanism exists but the control does not. Emission aiming at the scene is part of the estimator work and contributes to error bars 1.5× to 28× tighter at the same ray count — but the target is derived automatically from the scene bounds. A user cannot nominate a region, which is what the bullet describes and what matters when the interesting optic is a small part of a large model.</p>
+        <div class="badges">
+          <span class="chip partial">Partial</span>
+          <span class="effort"><b>0.25 mo</b></span>
+          <span class="todo"><b>Mostly UI over existing machinery</b> — a target volume in the scene document, passed to the aiming code that already exists. One of the cheapest genuine wins here.</span>
+        </div>
+      </article>
+
+      <article class="item v-parity">
+        <div class="idx">16</div>
+        <p class="bullet">Spectral distributions: Blackbody, Gaussian, continuous, discrete, and user defined</p>
+        <p class="means">Five ways to say what colour the source is.</p>
+        <p class="state">Blackbody, continuous (CIE D65, phosphor-converted white LED), discrete (monochromatic line, three RGB lines) and user-defined (measured SPD) are all implemented. A Gaussian line profile is the only member missing, and it is a few lines against the same sampling interface. One wavelength is sampled per ray, so a spectral trace costs what a monochromatic one costs.</p>
+        <div class="badges">
+          <span class="chip parity">Parity</span>
+          <span class="effort"><b>&lt;0.1 mo</b></span>
+          <span class="todo"><b>Add the Gaussian line</b> for laser-diode and filtered-source work, where the linewidth is the point.</span>
+        </div>
+      </article>
+
+      <article class="item v-lead">
+        <div class="idx">17</div>
+        <p class="bullet">Angular and spatial importance sampling</p>
+        <p class="means">Spend rays where they matter instead of uniformly.</p>
+        <p class="state">Met, and beyond the bullet. Owen-scrambled Sobol emission with replicated scrambling, emission aiming, next-event estimation at diffuse bounces, Russian roulette in place of a hard cutoff, and branch collapsing at interfaces. Elliptical reflector: ±0.312 % → ±0.011 %, a 28× tighter error bar, which is 256× fewer rays for the same answer. Every variance-reduction shortcut books its difference into a residual bucket, so energy still closes to 1e-9.</p>
+        <div class="badges">
+          <span class="chip lead">Exceeds</span>
+          <span class="effort"><b>—</b></span>
+          <span class="todo"><b>This is the headline result.</b> An error bar 16× tighter is a hardware-class speedup obtained in the estimator, and it is measured rather than claimed.</span>
+        </div>
+      </article>
+
+      <article class="item v-parity">
+        <div class="idx">18</div>
+        <p class="bullet">Ray data sources and Radiant Imaging source model support</p>
+        <p class="means">Use a vendor's measured LED instead of modelling one.</p>
+        <p class="state">Met for ray data: Zemax binary <code>.dat</code>, ASAP <code>.dis</code> and TracePro text, dispatched on content rather than extension because vendors ship binary sets as <code>.dat</code>, <code>.ray</code>, <code>.txt</code> and <code>.dis</code> indiscriminately. A capped load takes an evenly strided subset rather than the leading block, so the first N rays of a scanned measurement do not stand in for the whole. Radiant's proprietary source-model format specifically is not read; its exported ray sets are.</p>
+        <div class="badges">
+          <span class="chip parity">Parity</span>
+          <span class="effort"><b>—</b></span>
+          <span class="todo"><b>The strided-subset detail is a real correctness point</b>, and most tools get it wrong. Worth saying out loud in any comparison.</span>
+        </div>
+      </article>
+
+      <article class="item v-partial">
+        <div class="idx">19</div>
+        <p class="bullet">Surface and far field receivers</p>
+        <p class="means">Two receiver kinds: one that measures where light lands, one that measures which way it leaves.</p>
+        <p class="state"><b>Surface: met.</b> Any number, each with its own frame, resolution and acceptance cone; tilted and off-axis receivers bin against themselves. <b>Far field: met but under-resolved.</b> The θ/φ grid totals exactly <code>escaped + detector</code> and exports as IES LM-63 and EULUMDAT — but θ is binned uniformly, so the app's own 1.3° collimated beam falls inside a single 2° bin and the polar cells are starved of samples. The README names equal-solid-angle binning as the fix.</p>
+        <div class="badges">
+          <span class="chip partial">Partial</span>
+          <span class="effort"><b>0.5 mo</b></span>
+          <span class="todo"><b>Fix the binning before showing anyone the collimator.</b> The flagship result is currently under-resolved by the app's own analysis.</span>
+        </div>
+      </article>
+
+      <article class="item v-gap">
+        <div class="idx">20</div>
+        <p class="bullet">Angular and spatial luminance meters</p>
+        <p class="means">Virtual instruments that report cd/m² over angle and over position — the software equivalent of a luminance camera pointed at the part.</p>
+        <p class="state">Absent. This is the instrument behind item 03's missing quantity, and its absence is why LuxTrace cannot answer glare, display-uniformity or lit-appearance questions at all — the three questions that dominate automotive, display and architectural work.</p>
+        <div class="badges">
+          <span class="chip gap">Gap</span>
+          <span class="effort"><b>1–2 mo</b> · shared with item 03</span>
+          <span class="todo"><b>Buildable forward.</b> A luminance meter is a receiver that bins by position <em>and</em> incoming direction and divides by projected area — it does not require the backward tracer that photorealistic rendering does.</span>
+        </div>
+      </article>
+
+      <article class="item v-gap">
+        <div class="idx">21</div>
+        <p class="bullet">Receiver aperture sub-sampling</p>
+        <p class="means">Sample within each bin rather than accumulating raw hits at bin centres, so the map converges smoothly instead of aliasing.</p>
+        <p class="state">Absent. Bins accumulate arrivals directly. On a fine grid with a structured source this shows as bin-to-bin noise that is sampling artefact rather than physics — the exact failure mode the low-discrepancy emission sequence was chosen to avoid everywhere else in the pipeline.</p>
+        <div class="badges">
+          <span class="chip gap">Gap</span>
+          <span class="effort"><b>0.5 mo</b></span>
+          <span class="todo"><b>Pairs with bounded receiver memory.</b> Per-thread detector grids already cost 8&nbsp;MB per thread at 1024², so the accumulation path needs revisiting regardless — do both in one pass.</span>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- =============== BOUNDARY =============== -->
+  <section id="boundary">
+    <div class="sec-head">
+      <span class="sec-num">§</span>
+      <h2>Where the module boundary falls</h2>
+    </div>
+    <p class="lede">
+      Reading the datasheet closely changes two things about the first report, and both are
+      worth carrying forward.
+    </p>
+
+    <div class="twoup">
+      <div class="panel">
+        <h3>Credited to Core, not Illumination</h3>
+        <p>These are LuxTrace strengths that earn nothing in this report, because LightTools ships them one module lower:</p>
+        <ul>
+          <li>Scatter models — LightTools' Core lists "mixed diffuse, narrow angle, and angle of incidence (AOI)"</li>
+          <li><b>Volume scattering (Mie, user defined)</b> — worth noting that LuxTrace's Henyey–Greenstein is a phase-function model, not one derived from particle size and index. A refinement of the first report's parity call</li>
+          <li>Scattering aim regions, user-defined coatings, probabilistic ray splitting and importance sampling</li>
+          <li>Index of refraction and dispersion formulas</li>
+          <li>Surface patterns of 2D or 3D elements — the texture capability, and it is Core, not Advanced Design</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3>Not held against LuxTrace here</h3>
+        <p>Other modules' work, excluded from this audit by scope:</p>
+        <ul>
+          <li>Freeform Design, MacroFocal Reflector, Procedural Rectangle Lens and LED Lens tools — <b>Advanced Design</b></li>
+          <li>Merit functions, constraints, backlight pattern optimization, parameter sensitivity — <b>Optimization</b></li>
+          <li>Phosphor particle modeling, GRIN, UDOPs, uniaxial birefringence — <b>Advanced Physics</b></li>
+          <li>Sequential tracing, paraxial solves, spot diagram and transverse aberration plots — <b>Imaging Path</b></li>
+          <li>SAT, Parasolid, CATIA V4/V5 import <em>and export</em> — <b>Data Exchange</b></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- =============== PLAN =============== -->
+  <section id="plan">
+    <div class="sec-head">
+      <span class="sec-num">→</span>
+      <h2>Closing nineteen of twenty-one</h2>
+    </div>
+    <p class="lede">
+      Ordered by value per week, and grouped so that shared machinery gets built once.
+      Everything below excludes items 01 and 02, which are a separate decision.
+    </p>
+
+    <div class="plan">
+
+      <div class="step">
+        <span class="wk">Weeks 1–2</span>
+        <h3>The near-misses</h3>
+        <span class="cost">≈ 0.5 mo</span>
+        <ul>
+          <li><b>CIE 1976 u′v′</b> beside the existing 1931 coordinates <span style="color:var(--ink-3)">— item 05</span></li>
+          <li><b>Ensquared energy</b> alongside encircled <span style="color:var(--ink-3)">— item 09</span></li>
+          <li><b>Gaussian spectral line</b> <span style="color:var(--ink-3)">— item 16</span></li>
+          <li><b>User-nominated aim region</b> passed to the aiming code that already exists <span style="color:var(--ink-3)">— item 15</span></li>
+          <li><b>Equal-solid-angle far-field binning</b> <span style="color:var(--ink-3)">— item 19</span></li>
+        </ul>
+      </div>
+
+      <div class="step">
+        <span class="wk">Months 1–2</span>
+        <h3>Make one trace answer many questions</h3>
+        <span class="cost">≈ 2 mo</span>
+        <ul>
+          <li><b>Receiver data filtering</b> — by source (the tagging already exists), wavelength band, bounce count, arrival angle, and surface last hit <span style="color:var(--ink-3)">— item 08</span></li>
+          <li><b>Arrival storage and re-binning</b> without a re-trace; metrics are already densities, so they survive it <span style="color:var(--ink-3)">— item 07</span></li>
+          <li><b>Receiver aperture sub-sampling</b>, folded into the same accumulation rewrite that bounds per-thread grid memory <span style="color:var(--ink-3)">— item 21</span></li>
+          <li><b>Spectral power distribution at the receiver</b> — one more accumulator; every ray already carries its wavelength <span style="color:var(--ink-3)">— item 10</span></li>
+        </ul>
+      </div>
+
+      <div class="step">
+        <span class="wk">Months 3–4</span>
+        <h3>Emit what the user says, not what the menu offers</h3>
+        <span class="cost">≈ 2 mo</span>
+        <ul>
+          <li><b>Tabulated angular distributions</b> with alias-method sampling, which also lets IES and EULUMDAT files load as sources rather than only export <span style="color:var(--ink-3)">— item 14</span></li>
+          <li><b>Spatial emission maps</b> across the emitting area <span style="color:var(--ink-3)">— item 14</span></li>
+          <li><b>Surface emitters over any solid</b>, by area-weighted sampling of the triangle mesh each object already carries <span style="color:var(--ink-3)">— item 13</span></li>
+          <li><b>Volume emitters</b> by rejection sampling inside the body <span style="color:var(--ink-3)">— item 13</span></li>
+        </ul>
+      </div>
+
+      <div class="step">
+        <span class="wk">Months 5–6</span>
+        <h3>The luminance instrument</h3>
+        <span class="cost">≈ 2 mo</span>
+        <ul>
+          <li><b>Angular and spatial luminance meters</b> — a receiver binning by position and incoming direction, divided by projected area <span style="color:var(--ink-3)">— item 20</span></li>
+          <li><b>Luminance as a reported quantity</b> everywhere illuminance and intensity already appear <span style="color:var(--ink-3)">— item 03</span></li>
+          <li><b>Contour and 3D surface charts</b> over the receiver grid <span style="color:var(--ink-3)">— item 04</span></li>
+          <li><b>CIE chromaticity diagram</b> with per-bin points, the natural home for colour-over-angle <span style="color:var(--ink-3)">— item 06</span></li>
+        </ul>
+      </div>
+
+    </div>
+
+    <div class="callout">
+      <span class="label">The remaining two</span>
+      <p>
+        <b>Photorealistic rendering and backward ray tracing are one decision, not two.</b>
+        Nine to eighteen months, and it converts LuxTrace from a tool that measures light
+        into one that also shows what the part looks like lit. That is a genuine product
+        pivot, and it should be taken deliberately or not at all — not drifted into
+        because a renderer looks impressive in a screenshot.
+      </p>
+      <p>
+        If the answer is no, say so in the documentation the way the README already handles
+        wave propagation and thermal coupling: a stated boundary reads as judgement, and an
+        unstated one reads as an omission.
+      </p>
+    </div>
+  </section>
+
+  <section id="sources-list">
+    <div class="sec-head">
+      <span class="sec-num">§</span>
+      <h2>Sources</h2>
+    </div>
+    <p class="lede">
+      Every LightTools capability in this report is a verbatim bullet from one document —
+      the modules datasheet — rather than an inference from marketing prose. That is what
+      makes a twenty-one-item audit possible at all. The LuxTrace column is from a direct
+      read of the working tree: headers, the README's capability and limits sections, and
+      the test manifest.
+    </p>
+    <p class="lede">
+      The same caveat as the first report applies: no LightTools licence was exercised, so
+      depth-of-implementation on their side is the vendor's claim. A bullet says a feature
+      exists, not how good it is.
+    </p>
+    <ul class="sources">
+      <li><a href="https://www.keysight.com/us/en/assets/3125-1206/data-sheets/LightTools-Modules.pdf">LightTools Modules — data sheet 3125-1206.EN</a>, Keysight Technologies, published 20 October 2025. The Illumination Module section is the basis of all twenty-one items</li>
+      <li><a href="https://www.keysight.com/us/en/products/software/optical-solutions-software/optical-design-solutions/lighttools.html">LightTools Illumination Design Software</a> — Keysight product page</li>
+      <li><a href="https://www.keysight.com/blogs/en/tech/sim-des/lighttools-2026-advancing-optical-system-simulation-with-gpu-acceleration-visionsym-integration-and-stray-light-ar-waveguide-meta-optic-lens-and-cad-import-workflow-enhancements">LightTools 2026 release notes</a> — VisionSym backward tracing and the Luminance Camera Receiver, context for items 01, 02 and 20</li>
+    </ul>
+  </section>
+
+  <footer>
+    Companion to the whole-product gap analysis · LuxTrace © 2026 Kutay Gunal · PolyForm Noncommercial 1.0.0<br>
+    Prepared 29 August 2026 against the working tree at commit 91ea0c5.<br>
+    Effort figures are estimates for one experienced C++/OCCT developer, not quotes.
+  </footer>
+
+</div>

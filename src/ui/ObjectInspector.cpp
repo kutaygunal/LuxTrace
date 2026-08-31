@@ -1,7 +1,9 @@
 #include "ObjectInspector.h"
+#include "MultiEdit.h"
 #include "SurfaceInspector.h"
 
 #include <algorithm>
+#include <map>
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -27,7 +29,7 @@ using scenedoc::SceneObject;
 namespace {
 
 QDoubleSpinBox* coord(QWidget* parent, const QString& suffix, double step = 1.0) {
-    auto* s = new QDoubleSpinBox(parent);
+    auto* s = new multiedit::DoubleSpinBox(parent);
     s->setRange(-1e6, 1e6);
     s->setDecimals(2);
     s->setSingleStep(step);
@@ -73,12 +75,22 @@ ObjectInspector::ObjectInspector(QWidget* parent) : QWidget(parent) {
     m_kind->setStyleSheet(QStringLiteral("color:#9aa0b0; font-size:11px;"));
     v->addWidget(m_kind);
 
+    // The one thing that must be impossible to miss: that what is being typed
+    // into reaches more than the object whose name is at the top.
+    m_multiBanner = new QLabel(m_body);
+    m_multiBanner->setWordWrap(true);
+    m_multiBanner->setStyleSheet(QStringLiteral(
+        "background:#3a2f12; color:#e8c46a; border:1px solid #6b5520;"
+        "border-radius:3px; padding:5px; font-size:11px;"));
+    m_multiBanner->setVisible(false);
+    v->addWidget(m_multiBanner);
+
     auto* nameForm = new QFormLayout;
     m_name = new QLineEdit(m_body);
     nameForm->addRow(QStringLiteral("Name"), m_name);
     v->addLayout(nameForm);
     connect(m_name, &QLineEdit::editingFinished, this, [this] {
-        if (m_loading || !m_haveObject) return;
+        if (m_loading || !m_haveObject || isMulti()) return;
         const QString text = m_name->text().trimmed();
         if (text.isEmpty() || text == m_object.name) return;
         m_object.name = text;
@@ -107,7 +119,7 @@ ObjectInspector::ObjectInspector(QWidget* parent) : QWidget(parent) {
     rotRow->addWidget(m_rz);
     pf->addRow(QStringLiteral("Rotation X / Y / Z"), rotRow);
 
-    m_scale = new QDoubleSpinBox(m_placeBox);
+    m_scale = new multiedit::DoubleSpinBox(m_placeBox);
     m_scale->setRange(scenedoc::SceneDocument::kMinScale,
                       scenedoc::SceneDocument::kMaxScale);
     m_scale->setDecimals(3);
@@ -128,16 +140,25 @@ ObjectInspector::ObjectInspector(QWidget* parent) : QWidget(parent) {
         "these same numbers."));
     v->addWidget(m_placeBox);
 
-    for (QDoubleSpinBox* s : {m_px, m_py, m_pz, m_rx, m_ry, m_rz, m_scale})
-        connect(s, &QDoubleSpinBox::valueChanged, this, [this] {
+    struct PlaceTag { QDoubleSpinBox* w; quint32 f; };
+    for (const PlaceTag& t : {PlaceTag{m_px,    multiedit::place::PosX},
+                              PlaceTag{m_py,    multiedit::place::PosY},
+                              PlaceTag{m_pz,    multiedit::place::PosZ},
+                              PlaceTag{m_rx,    multiedit::place::RotX},
+                              PlaceTag{m_ry,    multiedit::place::RotY},
+                              PlaceTag{m_rz,    multiedit::place::RotZ},
+                              PlaceTag{m_scale, multiedit::place::Scale}}) {
+        const quint32 f = t.f;
+        connect(t.w, &QDoubleSpinBox::valueChanged, this, [this, f] {
             if (m_loading || !m_haveObject) return;
             m_object.position       = gp_Pnt(m_px->value(), m_py->value(), m_pz->value());
             m_object.rotationDeg[0] = m_rx->value();
             m_object.rotationDeg[1] = m_ry->value();
             m_object.rotationDeg[2] = m_rz->value();
             m_object.scale          = m_scale->value();
-            emit placementEdited(m_object.id);
+            emitPlacement(f);
         });
+    }
 
     // ---- geometry ----------------------------------------------------------
     m_geomBox  = new QGroupBox(QStringLiteral("Geometry"), m_body);
@@ -167,25 +188,25 @@ ObjectInspector::ObjectInspector(QWidget* parent) : QWidget(parent) {
         "concentrator reporting an impossible gain."));
     sf->addRow(QStringLiteral("Emitter shape"), m_srcShape);
 
-    m_halfAngle = new QDoubleSpinBox(m_sourceBox);
+    m_halfAngle = new multiedit::DoubleSpinBox(m_sourceBox);
     m_halfAngle->setRange(0.0, 180.0);
     m_halfAngle->setSuffix(QStringLiteral(" deg"));
     m_halfAngle->setKeyboardTracking(false);
     sf->addRow(QStringLiteral("Cone half-angle"), m_halfAngle);
 
-    m_sizeA = new QDoubleSpinBox(m_sourceBox);
+    m_sizeA = new multiedit::DoubleSpinBox(m_sourceBox);
     m_sizeA->setRange(0.0, 10000.0);
     m_sizeA->setSuffix(QStringLiteral(" mm"));
     m_sizeA->setKeyboardTracking(false);
     sf->addRow(QStringLiteral("Size A (radius / width)"), m_sizeA);
 
-    m_sizeB = new QDoubleSpinBox(m_sourceBox);
+    m_sizeB = new multiedit::DoubleSpinBox(m_sourceBox);
     m_sizeB->setRange(0.0, 10000.0);
     m_sizeB->setSuffix(QStringLiteral(" mm"));
     m_sizeB->setKeyboardTracking(false);
     sf->addRow(QStringLiteral("Size B (height)"), m_sizeB);
 
-    m_beamRadius = new QDoubleSpinBox(m_sourceBox);
+    m_beamRadius = new multiedit::DoubleSpinBox(m_sourceBox);
     m_beamRadius->setRange(0.0, 10000.0);
     m_beamRadius->setSuffix(QStringLiteral(" mm"));
     m_beamRadius->setKeyboardTracking(false);
@@ -196,20 +217,20 @@ ObjectInspector::ObjectInspector(QWidget* parent) : QWidget(parent) {
         m_spectrum->addItem(SpectrumConfig::kindName(SpectrumConfig::Kind(i)));
     sf->addRow(QStringLiteral("Spectrum"), m_spectrum);
 
-    m_wavelength = new QDoubleSpinBox(m_sourceBox);
+    m_wavelength = new multiedit::DoubleSpinBox(m_sourceBox);
     m_wavelength->setRange(200.0, 2000.0);
     m_wavelength->setSuffix(QStringLiteral(" nm"));
     m_wavelength->setKeyboardTracking(false);
     sf->addRow(QStringLiteral("Wavelength"), m_wavelength);
 
-    m_cct = new QDoubleSpinBox(m_sourceBox);
+    m_cct = new multiedit::DoubleSpinBox(m_sourceBox);
     m_cct->setRange(1000.0, 20000.0);
     m_cct->setSingleStep(100.0);
     m_cct->setSuffix(QStringLiteral(" K"));
     m_cct->setKeyboardTracking(false);
     sf->addRow(QStringLiteral("Colour temperature"), m_cct);
 
-    m_power = new QDoubleSpinBox(m_sourceBox);
+    m_power = new multiedit::DoubleSpinBox(m_sourceBox);
     m_power->setRange(0.0, 1e9);
     m_power->setDecimals(3);
     m_power->setKeyboardTracking(false);
@@ -241,7 +262,7 @@ ObjectInspector::ObjectInspector(QWidget* parent) : QWidget(parent) {
     rayRow->addWidget(m_rayClear);
     sf->addRow(rayRow);
 
-    m_rayScale = new QDoubleSpinBox(m_sourceBox);
+    m_rayScale = new multiedit::DoubleSpinBox(m_sourceBox);
     m_rayScale->setRange(1e-6, 1e6);
     m_rayScale->setDecimals(4);
     m_rayScale->setValue(1.0);
@@ -253,20 +274,37 @@ ObjectInspector::ObjectInspector(QWidget* parent) : QWidget(parent) {
 
     v->addWidget(m_sourceBox);
 
-    auto emitSource = [this] {
-        if (m_loading || !m_haveObject) return;
-        readSourceForm();
-        syncSourceEnabledState();
-        emit sourceEdited(m_object.id);
-    };
-    connect(m_srcType,   &QComboBox::currentIndexChanged,  this, emitSource);
-    connect(m_srcShape,  &QComboBox::currentIndexChanged,  this, emitSource);
-    connect(m_spectrum,  &QComboBox::currentIndexChanged,  this, emitSource);
-    connect(m_polState,  &QComboBox::currentIndexChanged,  this, emitSource);
-    connect(m_rayLambda, &QCheckBox::toggled,              this, emitSource);
-    for (QDoubleSpinBox* s : {m_halfAngle, m_sizeA, m_sizeB, m_beamRadius,
-                              m_wavelength, m_cct, m_power, m_rayScale})
-        connect(s, &QDoubleSpinBox::valueChanged, this, emitSource);
+    struct SrcComboTag { QComboBox* w; quint32 f; };
+    for (const SrcComboTag& t : {SrcComboTag{m_srcType,  multiedit::src::Type},
+                                 SrcComboTag{m_srcShape, multiedit::src::Shape},
+                                 SrcComboTag{m_spectrum, multiedit::src::Spectrum},
+                                 SrcComboTag{m_polState, multiedit::src::Polarisation}}) {
+        QComboBox*    w = t.w;
+        const quint32 f = t.f;
+        connect(w, &QComboBox::currentIndexChanged, this, [this, w, f](int) {
+            multiedit::clearMixed(w);
+            emitSource(f);
+        });
+    }
+    connect(m_rayLambda, &QCheckBox::toggled, this, [this](bool) {
+        multiedit::clearMixed(m_rayLambda);
+        emitSource(multiedit::src::RayLambda);
+    });
+
+    struct SrcSpinTag { QDoubleSpinBox* w; quint32 f; };
+    for (const SrcSpinTag& t : {SrcSpinTag{m_halfAngle,  multiedit::src::HalfAngle},
+                                SrcSpinTag{m_sizeA,      multiedit::src::SizeA},
+                                SrcSpinTag{m_sizeB,      multiedit::src::SizeB},
+                                SrcSpinTag{m_beamRadius, multiedit::src::BeamRadius},
+                                SrcSpinTag{m_wavelength, multiedit::src::Wavelength},
+                                SrcSpinTag{m_cct,        multiedit::src::Cct},
+                                SrcSpinTag{m_power,      multiedit::src::Power},
+                                SrcSpinTag{m_rayScale,   multiedit::src::RayScale}}) {
+        const quint32 f = t.f;
+        connect(t.w, &QDoubleSpinBox::valueChanged, this, [this, f](double) {
+            emitSource(f);
+        });
+    }
 
     connect(m_rayChoose, &QPushButton::clicked, this, &ObjectInspector::chooseRayFile);
     connect(m_rayClear,  &QPushButton::clicked, this, &ObjectInspector::clearRayFile);
@@ -274,13 +312,16 @@ ObjectInspector::ObjectInspector(QWidget* parent) : QWidget(parent) {
     // ---- optics ------------------------------------------------------------
     m_optics = new SurfaceInspector(m_body);
     v->addWidget(m_optics);
-    connect(m_optics, &SurfaceInspector::edited, this, [this] {
+    connect(m_optics, &SurfaceInspector::edited, this, [this](quint32 fields) {
         if (m_loading || !m_haveObject) return;
         m_object.optics = m_optics->optics();
-        emit opticsEdited(m_object.id);
+        if (isMulti()) emit multiOpticsEdited(fields);
+        else           emit opticsEdited(m_object.id);
     });
     connect(m_optics, &SurfaceInspector::resetRequested, this, [this] {
-        if (!m_haveObject) return;
+        // Offered on one surface only: each of a selection has its own scene
+        // value, so there is no single thing this could restore.
+        if (!m_haveObject || isMulti()) return;
         emit opticsResetRequested(m_object.id);
     });
 
@@ -346,7 +387,7 @@ void ObjectInspector::rebuildParamRows(bool sameObject) {
 
     for (std::size_t i = 0; i < want; ++i) {
         const SceneParamInfo& p = info[i];
-        auto* s = new QDoubleSpinBox(m_geomBox);
+        auto* s = new multiedit::DoubleSpinBox(m_geomBox);
         s->setRange(p.min, p.max);
         s->setDecimals(p.decimals);
         s->setSingleStep(p.step);
@@ -357,11 +398,12 @@ void ObjectInspector::rebuildParamRows(bool sameObject) {
         m_geomForm->addRow(p.name, s);
         m_params.push_back(s);
 
-        connect(s, &QDoubleSpinBox::valueChanged, this, [this] {
+        const int slot = int(i);
+        connect(s, &QDoubleSpinBox::valueChanged, this, [this, slot] {
             if (m_loading || !m_haveObject) return;
             for (std::size_t k = 0; k < m_params.size(); ++k)
                 m_object.p[k] = m_params[k]->value();
-            emit parametersEdited(m_object.id);
+            emitParameters(multiedit::param::slot(slot));
         });
     }
 }
@@ -381,22 +423,48 @@ void setIfIdle(QDoubleSpinBox* s, double v) {
 
 } // namespace
 
+void ObjectInspector::setObjects(const std::vector<SceneObject>& objects) {
+    if (objects.empty()) { clearObject(); return; }
+    if (objects.size() == 1) {
+        setObject(objects.front(), objects.front().sceneOptics);
+        return;
+    }
+    showObjects(objects);
+}
+
 void ObjectInspector::setObject(const SceneObject& object, const SurfaceOptics& defaultOptics) {
-    // Whether this is a change of subject or the same object read back. The
+    m_defaultOptics = defaultOptics;
+    showObjects({object});
+}
+
+void ObjectInspector::showObjects(const std::vector<SceneObject>& objects) {
+    const SceneObject& object = objects.front();
+
+    // Whether this is a change of subject or the same selection read back. The
     // second is allowed to leave the control the user is working in alone; the
-    // first has to overwrite everything, because none of it is about this
-    // object any more.
+    // first has to overwrite everything, because none of it is about these
+    // objects any more.
     const bool same = m_haveObject && m_object.id == object.id &&
-                      m_object.type == object.type;
+                      m_object.type == object.type &&
+                      m_count == int(objects.size());
 
     m_loading    = true;
     m_object     = object;
+    m_count      = int(objects.size());
     m_haveObject = true;
 
     const scenedoc::TypeInfo& info = scenedoc::typeInfo(object.type);
-    m_title->setText(object.name);
-    m_kind->setText(info.description);
-    if (!same || !m_name->hasFocus()) m_name->setText(object.name);
+    showSelectionSummary(objects);
+    if (!isMulti() && (!same || !m_name->hasFocus())) m_name->setText(object.name);
+    // Two objects cannot share one name and stay two objects the tree can tell
+    // apart, so this is the one common property a multi-selection does not
+    // offer -- which is what Unreal and Unity do with it as well.
+    m_name->setEnabled(!isMulti());
+    if (isMulti())
+        m_name->setText(QStringLiteral("%1 objects").arg(objects.size()));
+    m_name->setToolTip(isMulti()
+        ? QStringLiteral("Renaming is per object: select one row to rename it.")
+        : QString());
 
     if (same) {
         setIfIdle(m_px, object.position.X());
@@ -416,17 +484,24 @@ void ObjectInspector::setObject(const SceneObject& object, const SurfaceOptics& 
         m_scale->setValue(object.scale);
     }
 
+    bool sameType = true;
+    for (const SceneObject& o : objects) sameType = sameType && o.type == object.type;
+
     rebuildParamRows(same);
     const bool baked = object.type == ObjectType::TutorialPart;
-    m_bakedNote->setVisible(baked);
+    m_bakedNote->setVisible(baked && sameType);
     if (baked)
         m_bakedNote->setText(QStringLiteral(
             "Built by the tutorial. Its dimensions come from the scene parameters "
             "on the right; everything else about it is editable here."));
-    m_geomBox->setVisible(!info.params.empty() || baked);
+    // Slot 2 is a radius on one type and a wall thickness on another, so there
+    // is nothing a mixed-type selection could put in these rows.
+    m_geomBox->setVisible(sameType && (!info.params.empty() || baked));
 
     // ---- source ----
-    const bool isSource = object.isSource();
+    bool allSources = true;
+    for (const SceneObject& o : objects) allSources = allSources && o.isSource();
+    const bool isSource = allSources;
     m_sourceBox->setVisible(isSource);
     if (isSource) {
         const SourceSpec& s = object.source;
@@ -448,19 +523,126 @@ void ObjectInspector::setObject(const SceneObject& object, const SurfaceOptics& 
     }
 
     // ---- optics ----
-    const bool hasOptics = !object.isGroup() && !isSource;
+    bool hasOptics = true;
+    for (const SceneObject& o : objects)
+        hasOptics = hasOptics && !o.isGroup() && !o.isSource();
     m_optics->setVisible(hasOptics);
-    if (hasOptics) m_optics->setSurface(object.name, object.optics, defaultOptics, false);
-    else           m_optics->clearSurface();
+    if (hasOptics && isMulti()) {
+        std::vector<SurfaceOptics> values;
+        values.reserve(objects.size());
+        for (const SceneObject& o : objects) values.push_back(o.optics);
+        m_optics->setSurfaces(
+            QStringLiteral("%1 surfaces selected").arg(objects.size()), values);
+    } else if (hasOptics) {
+        m_optics->setSurface(object.name, object.optics, m_defaultOptics, false);
+    } else {
+        m_optics->clearSurface();
+    }
+
+    markMixedRows(objects);
+    // After the dashes, not before: what to grey out depends on what the fields
+    // now read, and a dashed field is not an answer to that question either.
+    if (m_sourceBox->isVisible()) syncSourceEnabledState();
 
     m_empty->setVisible(false);
     m_scroll->setVisible(true);
     m_loading = false;
 }
 
+// The banner, and the two lines above it.
+void ObjectInspector::showSelectionSummary(const std::vector<SceneObject>& objects) {
+    if (objects.size() == 1) {
+        m_title->setText(objects.front().name);
+        m_kind->setText(scenedoc::typeInfo(objects.front().type).description);
+        m_multiBanner->setVisible(false);
+        return;
+    }
+
+    // Counted by the label the tree shows, not by the enum: a tutorial's parts
+    // are all TutorialPart, and a breakdown reading "4 tutorial part" answers a
+    // question nobody asked.
+    std::map<QString, int> kinds;
+    for (const SceneObject& o : objects) ++kinds[scenedoc::typeLabel(o)];
+
+    QStringList parts;
+    for (const auto& [label, n] : kinds)
+        parts << QStringLiteral("%1 x %2").arg(n).arg(label);
+
+    m_title->setText(QStringLiteral("%1 objects selected").arg(objects.size()));
+    m_kind->setText(parts.join(QStringLiteral("  ·  ")));
+    m_multiBanner->setText(
+        kinds.size() == 1
+            ? QStringLiteral("MULTI-EDIT — %1 objects. Every property below is "
+                             "written to all %1 of them.")
+                  .arg(objects.size())
+            : QStringLiteral("MULTI-EDIT — %1 objects of %2 types. Only the "
+                             "properties they share are shown, and each one is "
+                             "written to all %1 of them.")
+                  .arg(objects.size()).arg(kinds.size()));
+    m_multiBanner->setVisible(true);
+}
+
+// Which rows the selection disagrees about. Nothing here decides what is shown
+// -- only what a shown row reads as.
+void ObjectInspector::markMixedRows(const std::vector<SceneObject>& objects) {
+    const auto differs = [&objects](auto get) {
+        for (std::size_t i = 1; i < objects.size(); ++i)
+            if (!(get(objects[i]) == get(objects[0]))) return true;
+        return false;
+    };
+
+    multiedit::setMixed(m_px, differs([](const SceneObject& o) { return o.position.X(); }));
+    multiedit::setMixed(m_py, differs([](const SceneObject& o) { return o.position.Y(); }));
+    multiedit::setMixed(m_pz, differs([](const SceneObject& o) { return o.position.Z(); }));
+    multiedit::setMixed(m_rx, differs([](const SceneObject& o) { return o.rotationDeg[0]; }));
+    multiedit::setMixed(m_ry, differs([](const SceneObject& o) { return o.rotationDeg[1]; }));
+    multiedit::setMixed(m_rz, differs([](const SceneObject& o) { return o.rotationDeg[2]; }));
+    multiedit::setMixed(m_scale, differs([](const SceneObject& o) { return o.scale; }));
+
+    for (std::size_t i = 0; i < m_params.size(); ++i)
+        multiedit::setMixed(m_params[i],
+            differs([i](const SceneObject& o) { return o.p[i]; }));
+
+    if (!m_sourceBox->isVisible()) return;
+    multiedit::setMixed(m_srcType,  differs([](const SceneObject& o) { return int(o.source.type); }));
+    multiedit::setMixed(m_srcShape, differs([](const SceneObject& o) { return int(o.source.shape); }));
+    multiedit::setMixed(m_spectrum, differs([](const SceneObject& o) { return int(o.source.spectrum.kind); }));
+    multiedit::setMixed(m_polState, differs([](const SceneObject& o) { return o.source.polarisationState; }));
+    multiedit::setMixed(m_halfAngle,  differs([](const SceneObject& o) { return o.source.halfAngleDeg; }));
+    multiedit::setMixed(m_sizeA,      differs([](const SceneObject& o) { return o.source.sizeA; }));
+    multiedit::setMixed(m_sizeB,      differs([](const SceneObject& o) { return o.source.sizeB; }));
+    multiedit::setMixed(m_beamRadius, differs([](const SceneObject& o) { return o.source.beamRadius; }));
+    multiedit::setMixed(m_wavelength, differs([](const SceneObject& o) { return o.source.spectrum.wavelengthNm; }));
+    multiedit::setMixed(m_cct,        differs([](const SceneObject& o) { return o.source.spectrum.cct; }));
+    multiedit::setMixed(m_power,      differs([](const SceneObject& o) { return o.source.power; }));
+    multiedit::setMixed(m_rayScale,   differs([](const SceneObject& o) { return o.source.rayFileScale; }));
+    multiedit::setMixed(m_rayLambda,  differs([](const SceneObject& o) { return o.source.rayFileWavelengths; }));
+}
+
+void ObjectInspector::emitPlacement(quint32 field) {
+    if (isMulti()) emit multiPlacementEdited(field);
+    else           emit placementEdited(m_object.id);
+}
+
+void ObjectInspector::emitParameters(quint32 field) {
+    if (isMulti()) emit multiParametersEdited(field);
+    else           emit parametersEdited(m_object.id);
+}
+
+void ObjectInspector::emitSource(quint32 field) {
+    if (m_loading || !m_haveObject) return;
+    readSourceForm();
+    syncSourceEnabledState();
+    if (isMulti()) emit multiSourceEdited(field);
+    else           emit sourceEdited(m_object.id);
+}
+
 void ObjectInspector::clearObject() {
     m_haveObject = false;
+    m_count      = 0;
     m_object     = SceneObject{};
+    m_multiBanner->setVisible(false);
+    m_name->setEnabled(true);
     // Nothing is shown, so the rows describe no type: the next selection has to
     // build its own rather than inherit whichever ones happen to be left.
     m_paramType  = -1;
@@ -470,26 +652,42 @@ void ObjectInspector::clearObject() {
 }
 
 void ObjectInspector::readSourceForm() {
+    // A field showing a dash is not read: it holds the primary's value for its
+    // arrows to step from, and the caller's field mask keeps it from being
+    // written anywhere. Reading a dashed combo would be worse than useless --
+    // its current row sits one past the end of the enum it maps onto.
     SourceSpec& s = m_object.source;
-    s.type                 = SourceConfig::Type(m_srcType->currentIndex());
-    s.shape                = SourceConfig::Shape(m_srcShape->currentIndex());
-    s.halfAngleDeg         = m_halfAngle->value();
-    s.sizeA                = m_sizeA->value();
-    s.sizeB                = m_sizeB->value();
-    s.beamRadius           = m_beamRadius->value();
-    s.spectrum.kind        = SpectrumConfig::Kind(m_spectrum->currentIndex());
-    s.spectrum.wavelengthNm = m_wavelength->value();
-    s.spectrum.cct         = m_cct->value();
-    s.power                = m_power->value();
-    s.polarisationState    = m_polState->currentIndex();
-    s.rayFileScale         = m_rayScale->value();
-    s.rayFileWavelengths   = m_rayLambda->isChecked();
+    if (!multiedit::isMixed(m_srcType))
+        s.type = SourceConfig::Type(std::clamp(m_srcType->currentIndex(), 0, 2));
+    if (!multiedit::isMixed(m_srcShape))
+        s.shape = SourceConfig::Shape(std::clamp(m_srcShape->currentIndex(), 0, 3));
+    if (!multiedit::isMixed(m_halfAngle))  s.halfAngleDeg = m_halfAngle->value();
+    if (!multiedit::isMixed(m_sizeA))      s.sizeA        = m_sizeA->value();
+    if (!multiedit::isMixed(m_sizeB))      s.sizeB        = m_sizeB->value();
+    if (!multiedit::isMixed(m_beamRadius)) s.beamRadius   = m_beamRadius->value();
+    if (!multiedit::isMixed(m_spectrum))
+        s.spectrum.kind = SpectrumConfig::Kind(
+            std::clamp(m_spectrum->currentIndex(), 0, SpectrumConfig::kKindCount - 1));
+    if (!multiedit::isMixed(m_wavelength)) s.spectrum.wavelengthNm = m_wavelength->value();
+    if (!multiedit::isMixed(m_cct))        s.spectrum.cct = m_cct->value();
+    if (!multiedit::isMixed(m_power))      s.power        = m_power->value();
+    if (!multiedit::isMixed(m_polState))
+        s.polarisationState = std::clamp(m_polState->currentIndex(), 0, 3);
+    if (!multiedit::isMixed(m_rayScale))   s.rayFileScale = m_rayScale->value();
+    if (!multiedit::isMixed(m_rayLambda))  s.rayFileWavelengths = m_rayLambda->isChecked();
 }
 
 void ObjectInspector::syncSourceEnabledState() {
-    const auto type    = SourceConfig::Type(m_srcType->currentIndex());
-    const auto shape   = SourceConfig::Shape(m_srcShape->currentIndex());
-    const auto kind    = SpectrumConfig::Kind(m_spectrum->currentIndex());
+    // A dashed field is read as the permissive answer: with several sources
+    // disagreeing about their angular law, the cone half-angle stays reachable
+    // rather than being greyed out on the strength of whichever one is primary.
+    const bool mixedType  = multiedit::isMixed(m_srcType);
+    const bool mixedShape = multiedit::isMixed(m_srcShape);
+    const bool mixedKind  = multiedit::isMixed(m_spectrum);
+    const auto type  = SourceConfig::Type(std::clamp(m_srcType->currentIndex(), 0, 2));
+    const auto shape = SourceConfig::Shape(std::clamp(m_srcShape->currentIndex(), 0, 3));
+    const auto kind  = SpectrumConfig::Kind(
+        std::clamp(m_spectrum->currentIndex(), 0, SpectrumConfig::kKindCount - 1));
     // A measured set carries every ray already, so the analytic emitter's own
     // controls are not consulted at all. Naming them inactive is the difference
     // between a form that lies and one that does not.
@@ -497,12 +695,16 @@ void ObjectInspector::syncSourceEnabledState() {
 
     m_srcType->setEnabled(!measured);
     m_srcShape->setEnabled(!measured);
-    m_halfAngle->setEnabled(!measured && type != SourceConfig::Type::Collimated);
-    m_sizeA->setEnabled(!measured && shape != SourceConfig::Shape::PointLike);
-    m_sizeB->setEnabled(!measured && shape == SourceConfig::Shape::Rect);
-    m_beamRadius->setEnabled(!measured && type == SourceConfig::Type::Collimated);
-    m_wavelength->setEnabled(kind == SpectrumConfig::Kind::Monochromatic);
-    m_cct->setEnabled(kind == SpectrumConfig::Kind::Blackbody ||
+    m_halfAngle->setEnabled(!measured &&
+                            (mixedType || type != SourceConfig::Type::Collimated));
+    m_sizeA->setEnabled(!measured &&
+                        (mixedShape || shape != SourceConfig::Shape::PointLike));
+    m_sizeB->setEnabled(!measured &&
+                        (mixedShape || shape == SourceConfig::Shape::Rect));
+    m_beamRadius->setEnabled(!measured &&
+                             (mixedType || type == SourceConfig::Type::Collimated));
+    m_wavelength->setEnabled(mixedKind || kind == SpectrumConfig::Kind::Monochromatic);
+    m_cct->setEnabled(mixedKind || kind == SpectrumConfig::Kind::Blackbody ||
                       kind == SpectrumConfig::Kind::LedPhosphor);
     m_rayClear->setEnabled(measured);
     m_rayScale->setEnabled(measured);
@@ -522,6 +724,8 @@ void ObjectInspector::refreshRayFileLabel() {
 }
 
 void ObjectInspector::chooseRayFile() {
+    // Loading one file into every selected source is a real operation, and it
+    // goes through the same field mask as everything else.
     const QString path = QFileDialog::getOpenFileName(
         this, QStringLiteral("Open measured ray set"), QString(), rayfile::fileFilter());
     if (path.isEmpty()) return;
@@ -534,7 +738,9 @@ void ObjectInspector::chooseRayFile() {
     m_object.source.rayFile = res.data;
     refreshRayFileLabel();
     syncSourceEnabledState();
-    if (m_haveObject) emit sourceEdited(m_object.id);
+    if (!m_haveObject) return;
+    if (isMulti()) emit multiSourceEdited(multiedit::src::RayFile);
+    else           emit sourceEdited(m_object.id);
 }
 
 void ObjectInspector::clearRayFile() {
@@ -542,5 +748,7 @@ void ObjectInspector::clearRayFile() {
     m_object.source.rayFile.reset();
     refreshRayFileLabel();
     syncSourceEnabledState();
-    if (m_haveObject) emit sourceEdited(m_object.id);
+    if (!m_haveObject) return;
+    if (isMulti()) emit multiSourceEdited(multiedit::src::RayFile);
+    else           emit sourceEdited(m_object.id);
 }

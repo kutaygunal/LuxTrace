@@ -1,0 +1,1652 @@
+<title>LuxTrace Against LightTools</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Spectral:ital,wght@0,400;0,600;1,400&display=swap">
+
+<style>
+  :root {
+    --paper:      #F1F4F5;
+    --surface:    #FFFFFF;
+    --surface-2:  #E7ECEE;
+    --ink:        #0E1417;
+    --ink-2:      #3B474C;
+    --ink-3:      #6B777C;
+    --rule:       #D3DBDE;
+    --rule-soft:  #E3E9EB;
+    --accent:     #0E5B68;
+    --accent-2:   #12798A;
+    --accent-wash:#E2EFF1;
+
+    --parity:     #2E6B3F;
+    --parity-bg:  #E4EFE6;
+    --partial:    #8E6210;
+    --partial-bg: #F3EBDA;
+    --gap:        #9E3630;
+    --gap-bg:     #F5E4E2;
+    --lead:       #1E5C86;
+    --lead-bg:    #E1ECF4;
+    --nongoal:    #616B70;
+    --nongoal-bg: #E7EBEC;
+
+    --shadow: 0 1px 2px rgba(14,20,23,.06), 0 8px 24px -16px rgba(14,20,23,.28);
+
+    --serif: "Spectral", Georgia, "Times New Roman", serif;
+    --sans:  "IBM Plex Sans", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono:  "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #0C1013;
+      --surface:    #141A1E;
+      --surface-2:  #1B2328;
+      --ink:        #E8EDEF;
+      --ink-2:      #B3BEC3;
+      --ink-3:      #7F8B91;
+      --rule:       #2A343A;
+      --rule-soft:  #202A2F;
+      --accent:     #58BECD;
+      --accent-2:   #7FD3DF;
+      --accent-wash:#123036;
+
+      --parity:     #7CC08C;
+      --parity-bg:  #16301D;
+      --partial:    #D9AC55;
+      --partial-bg: #33280F;
+      --gap:        #E38B84;
+      --gap-bg:     #351B19;
+      --lead:       #7CB8E0;
+      --lead-bg:    #142B3C;
+      --nongoal:    #96A2A8;
+      --nongoal-bg: #1E2529;
+
+      --shadow: 0 1px 2px rgba(0,0,0,.5), 0 10px 28px -18px rgba(0,0,0,.9);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #0C1013;
+    --surface:    #141A1E;
+    --surface-2:  #1B2328;
+    --ink:        #E8EDEF;
+    --ink-2:      #B3BEC3;
+    --ink-3:      #7F8B91;
+    --rule:       #2A343A;
+    --rule-soft:  #202A2F;
+    --accent:     #58BECD;
+    --accent-2:   #7FD3DF;
+    --accent-wash:#123036;
+
+    --parity:     #7CC08C;
+    --parity-bg:  #16301D;
+    --partial:    #D9AC55;
+    --partial-bg: #33280F;
+    --gap:        #E38B84;
+    --gap-bg:     #351B19;
+    --lead:       #7CB8E0;
+    --lead-bg:    #142B3C;
+    --nongoal:    #96A2A8;
+    --nongoal-bg: #1E2529;
+
+    --shadow: 0 1px 2px rgba(0,0,0,.5), 0 10px 28px -18px rgba(0,0,0,.9);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: 0 28px 96px;
+  }
+
+  /* ---------- masthead ---------- */
+
+  .masthead { padding: 64px 0 0; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 18px;
+  }
+
+  h1 {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: clamp(38px, 6vw, 62px);
+    line-height: 1.02;
+    letter-spacing: -.015em;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  .standfirst {
+    font-family: var(--serif);
+    font-size: clamp(17px, 2.1vw, 20px);
+    line-height: 1.55;
+    color: var(--ink-2);
+    max-width: 62ch;
+    margin: 22px 0 0;
+  }
+
+  .spectrum {
+    height: 4px;
+    margin: 36px 0 0;
+    border-radius: 2px;
+    background: linear-gradient(90deg,
+      #4b0f7a 0%, #2b2fb8 14%, #1477c4 28%, #17a37a 42%,
+      #6fbc1f 55%, #e0bc12 68%, #e07a12 82%, #a32424 100%);
+    opacity: .85;
+  }
+
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 32px;
+    padding: 18px 0 0;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-3);
+  }
+  .meta b { color: var(--ink-2); font-weight: 500; }
+
+  /* ---------- scorecard ---------- */
+
+  .scorecard {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    overflow: hidden;
+    margin: 44px 0 0;
+  }
+  .tile { background: var(--surface); padding: 20px 20px 18px; }
+  .tile .n {
+    font-family: var(--mono);
+    font-size: 30px;
+    font-weight: 500;
+    line-height: 1;
+    letter-spacing: -.02em;
+    font-variant-numeric: tabular-nums;
+    display: block;
+  }
+  .tile .k {
+    display: block;
+    margin-top: 9px;
+    font-size: 12.5px;
+    line-height: 1.35;
+    color: var(--ink-3);
+  }
+  .tile.is-parity  .n { color: var(--parity); }
+  .tile.is-partial .n { color: var(--partial); }
+  .tile.is-gap     .n { color: var(--gap); }
+  .tile.is-lead    .n { color: var(--lead); }
+  .tile.is-plain   .n { color: var(--ink); }
+
+  /* ---------- sections ---------- */
+
+  section { padding-top: 60px; scroll-margin-top: 68px; }
+
+  h2 {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: clamp(25px, 3.2vw, 33px);
+    line-height: 1.15;
+    letter-spacing: -.012em;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  .sec-head {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 12px;
+  }
+  .sec-num {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--accent);
+    letter-spacing: .06em;
+    flex: none;
+    padding-top: 4px;
+  }
+
+  .lede {
+    max-width: 68ch;
+    color: var(--ink-2);
+    margin: 18px 0 0;
+  }
+  .lede + .lede { margin-top: 12px; }
+
+  h3 {
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 16px;
+    letter-spacing: .005em;
+    margin: 38px 0 0;
+  }
+
+  p { margin: 14px 0 0; max-width: 68ch; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent-2);
+    outline-offset: 3px;
+    border-radius: 3px;
+  }
+  code {
+    font-family: var(--mono);
+    font-size: .87em;
+    background: var(--surface-2);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  /* ---------- nav ---------- */
+
+  .navbar {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    margin: 40px 0 0;
+    padding: 10px 0;
+    background: color-mix(in srgb, var(--paper) 92%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--rule-soft);
+  }
+  .navbar ol {
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 6px;
+    margin: 0;
+    padding: 0;
+  }
+  .navbar a {
+    display: block;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .02em;
+    text-decoration: none;
+    color: var(--ink-3);
+    padding: 4px 8px;
+    border-radius: 4px;
+  }
+  .navbar a:hover { color: var(--ink); background: var(--surface-2); }
+
+  /* ---------- matrix ---------- */
+
+  .matrix-scroll {
+    overflow-x: auto;
+    margin: 22px 0 0;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+
+  table { border-collapse: collapse; width: 100%; min-width: 860px; }
+
+  thead th {
+    text-align: left;
+    font-family: var(--mono);
+    font-weight: 500;
+    font-size: 10.5px;
+    letter-spacing: .11em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--rule);
+    background: var(--surface-2);
+    white-space: nowrap;
+  }
+
+  tbody td {
+    padding: 13px 16px;
+    border-bottom: 1px solid var(--rule-soft);
+    vertical-align: top;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--ink-2);
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody td:first-child { color: var(--ink); font-weight: 500; }
+
+  col.c-cap  { width: 22%; }
+  col.c-lt   { width: 27%; }
+  col.c-lx   { width: 30%; }
+  col.c-vd   { width: 11%; }
+  col.c-ef   { width: 10%; }
+
+  .effort {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    color: var(--ink-3);
+  }
+
+  .chip {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    padding: 3px 8px 2px;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+  .chip.parity  { color: var(--parity);  background: var(--parity-bg); }
+  .chip.partial { color: var(--partial); background: var(--partial-bg); }
+  .chip.gap     { color: var(--gap);     background: var(--gap-bg); }
+  .chip.lead    { color: var(--lead);    background: var(--lead-bg); }
+  .chip.nongoal { color: var(--nongoal); background: var(--nongoal-bg); }
+
+  /* verdict severity stripe */
+  tbody tr { position: relative; }
+  td.verdict { border-left: 3px solid transparent; }
+  td.v-parity  { border-left-color: var(--parity); }
+  td.v-partial { border-left-color: var(--partial); }
+  td.v-gap     { border-left-color: var(--gap); }
+  td.v-lead    { border-left-color: var(--lead); }
+  td.v-nongoal { border-left-color: var(--nongoal); }
+
+  /* ---------- legend ---------- */
+
+  .legend {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 14px 26px;
+    margin: 26px 0 0;
+    padding: 20px 22px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+  }
+  .legend div { font-size: 13px; color: var(--ink-3); line-height: 1.45; }
+  .legend .chip { margin-bottom: 6px; }
+
+  /* ---------- callout ---------- */
+
+  .callout {
+    margin: 30px 0 0;
+    padding: 22px 24px;
+    background: var(--accent-wash);
+    border-radius: 6px;
+    border-left: 3px solid var(--accent);
+  }
+  .callout p { margin: 0; max-width: 72ch; color: var(--ink); }
+  .callout p + p { margin-top: 12px; }
+  .callout .label {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    display: block;
+    margin-bottom: 10px;
+  }
+
+  /* ---------- roadmap ---------- */
+
+  .tiers { display: grid; gap: 16px; margin: 28px 0 0; }
+  .tier {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 22px 24px 24px;
+    box-shadow: var(--shadow);
+  }
+  .tier-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 12px;
+    padding-bottom: 4px;
+  }
+  .tier-tag {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--surface);
+    background: var(--accent);
+    padding: 3px 9px 2px;
+    border-radius: 3px;
+  }
+  .tier h3 { margin: 0; font-size: 18px; font-family: var(--serif); font-weight: 600; }
+  .tier .horizon {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink-3);
+    font-variant-numeric: tabular-nums;
+  }
+  .tier .why { margin: 10px 0 0; font-size: 14px; color: var(--ink-3); max-width: 74ch; }
+  .tier ul { margin: 16px 0 0; padding: 0; list-style: none; display: grid; gap: 9px; }
+  .tier li {
+    font-size: 14px;
+    color: var(--ink-2);
+    padding-left: 20px;
+    position: relative;
+    line-height: 1.5;
+  }
+  .tier li::before {
+    content: "";
+    position: absolute;
+    left: 2px;
+    top: .62em;
+    width: 7px;
+    height: 7px;
+    border-radius: 1px;
+    background: var(--accent);
+    opacity: .55;
+  }
+  .tier li b { color: var(--ink); font-weight: 600; }
+
+  /* ---------- two-up ---------- */
+
+  .twoup {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 16px;
+    margin: 26px 0 0;
+  }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 22px 24px 24px;
+  }
+  .panel h3 { margin: 0 0 4px; }
+  .panel ul { margin: 14px 0 0; padding-left: 18px; display: grid; gap: 8px; }
+  .panel li { font-size: 14px; color: var(--ink-2); line-height: 1.5; }
+  .panel li b { color: var(--ink); font-weight: 600; }
+
+  /* ---------- sources ---------- */
+
+  .sources { margin: 22px 0 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+  .sources li { font-size: 13.5px; color: var(--ink-3); line-height: 1.5; }
+  .sources a { word-break: break-word; }
+
+  footer {
+    margin-top: 72px;
+    padding-top: 22px;
+    border-top: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink-3);
+    line-height: 1.7;
+  }
+
+  @media (max-width: 640px) {
+    .wrap { padding: 0 18px 72px; }
+    .masthead { padding-top: 44px; }
+    .navbar { position: static; backdrop-filter: none; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="eyebrow">Competitive gap analysis · 29 August 2026</p>
+    <h1>LuxTrace Against LightTools</h1>
+    <p class="standfirst">
+      Eighty-six capabilities, compared line by line against what Keysight's LightTools
+      advertises across its thirteen modules. LuxTrace has a verified physics engine and
+      almost no modeler; that single asymmetry explains most of what follows.
+    </p>
+    <div class="spectrum" aria-hidden="true"></div>
+    <div class="meta">
+      <span><b>Subject</b> LuxTrace 1.0.0 · 32.5k LoC C++20 · Qt 6.8.2 · OCCT 7.8.1</span>
+      <span><b>Baseline</b> LightTools 2026 (Keysight)</span>
+      <span><b>Method</b> source audit + vendor collateral</span>
+    </div>
+  </header>
+
+  <div class="scorecard">
+    <div class="tile is-plain"><span class="n">86</span><span class="k">capabilities assessed across 11 domains</span></div>
+    <div class="tile is-parity"><span class="n">23</span><span class="k">at parity — the physics core, mostly</span></div>
+    <div class="tile is-partial"><span class="n">12</span><span class="k">partial — present but not to spec</span></div>
+    <div class="tile is-gap"><span class="n">35</span><span class="k">absent — nothing in the codebase</span></div>
+    <div class="tile is-lead"><span class="n">12</span><span class="k">where LuxTrace is genuinely ahead</span></div>
+  </div>
+
+  <nav class="navbar" aria-label="Sections">
+    <ol>
+      <li><a href="#verdict">Verdict</a></li>
+      <li><a href="#geometry">01 Geometry</a></li>
+      <li><a href="#materials">02 Materials</a></li>
+      <li><a href="#sources">03 Sources</a></li>
+      <li><a href="#engine">04 Engine</a></li>
+      <li><a href="#receivers">05 Receivers</a></li>
+      <li><a href="#optimization">06 Optimization</a></li>
+      <li><a href="#tolerancing">07 Tolerancing</a></li>
+      <li><a href="#physics">08 Advanced physics</a></li>
+      <li><a href="#interop">09 Interop</a></li>
+      <li><a href="#platform">10 Platform</a></li>
+      <li><a href="#trust">11 Trust</a></li>
+      <li><a href="#roadmap">Roadmap</a></li>
+      <li><a href="#sources-list">Sources</a></li>
+    </ol>
+  </nav>
+
+  <!-- ============ VERDICT ============ -->
+  <section id="verdict">
+    <div class="sec-head">
+      <h2>The shape of the gap</h2>
+    </div>
+
+    <p class="lede">
+      LightTools is sold as a Core module plus twelve optional ones — Illumination,
+      Optimization, Advanced Design, Advanced Physics, SOLIDWORKS Link, Data Exchange,
+      SmartStart Library, Imaging Path, Imaging Analysis, Distributed Simulation,
+      MetaOptic Design, and the AR Waveguide Designer. LuxTrace covers the Core module's
+      ray engine and a substantial slice of the Illumination module's analysis, touches the
+      Optimization module, and has essentially nothing from the other nine.
+    </p>
+
+    <p class="lede">
+      That is not the useful summary, though, because the modules are unevenly weighted.
+      The honest reading is that LuxTrace is a <em>simulator</em> and LightTools is a
+      <em>design environment</em>. LuxTrace can tell you, with a defensible error bar, what
+      a system does. It cannot let you build most systems in the first place: twenty-six
+      parametric tutorial scenes plus seventeen primitive object types plus a STEP importer
+      is not a modeler, and an optic that is not a sphere, a paraboloid, a cone, a cylinder
+      or a plane cannot be expressed at all. LightTools models plane, sphere, conic,
+      cylinder, toroid, polynomial and anamorphic asphere, Zernike, XY&nbsp;polynomial,
+      superconic, swept spline and spline patch, with unrestricted Boolean operations
+      over all of them.
+    </p>
+
+    <div class="callout">
+      <span class="label">The one-sentence version</span>
+      <p>
+        The physics gap is narrow and mostly deliberate; the <b>modeling gap is wide and
+        structural</b>; the <b>design-automation gap is the commercially decisive one</b>.
+        Closing physics buys credibility, closing modeling buys usability, and closing
+        design automation is what LightTools customers actually pay for.
+      </p>
+    </div>
+
+    <div class="legend">
+      <div><span class="chip parity">Parity</span>LuxTrace does the same job to a comparable standard. Not identical UI or breadth — comparable outcome.</div>
+      <div><span class="chip lead">Leads</span>LuxTrace does something LightTools does not do, or does less rigorously.</div>
+      <div><span class="chip partial">Partial</span>A working subset exists, with a documented limit that blocks real use.</div>
+      <div><span class="chip gap">Gap</span>Nothing in the codebase addresses it.</div>
+      <div><span class="chip nongoal">Non-goal</span>Absent and declared out of scope in the README's model-boundary section.</div>
+    </div>
+
+    <p class="lede" style="margin-top:22px">
+      Effort figures are rough engineer-months for one experienced C++/OCCT developer,
+      to a shippable rather than a demo standard. They are estimates, not quotes.
+    </p>
+  </section>
+
+  <!-- ============ 01 GEOMETRY ============ -->
+  <section id="geometry">
+    <div class="sec-head">
+      <span class="sec-num">01</span>
+      <h2>Geometry and modeling</h2>
+    </div>
+    <p class="lede">
+      The widest gap in the report, and the one that gates everything downstream: an
+      optimizer with nothing to vary and a receiver with nothing to measure are both
+      consequences of not being able to draw the part.
+    </p>
+
+    <div class="matrix-scroll">
+      <table>
+        <colgroup><col class="c-cap"><col class="c-lt"><col class="c-lx"><col class="c-vd"><col class="c-ef"></colgroup>
+        <thead>
+          <tr><th>Capability</th><th>LightTools</th><th>LuxTrace today</th><th>Verdict</th><th>Effort</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Interactive solid modeling</td>
+            <td>Full 3D graphical solid modeler; unlimited elements; Union, Subtract, Intersect, Trim exposed to the user</td>
+            <td>OCCT Booleans exist but only inside hard-coded scene builders (<code>GeometryProvider.cpp</code>, <code>SceneDocument.cpp</code>). The user gets 17 fixed primitive types and a transform gizmo</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">6–9 mo</td>
+          </tr>
+          <tr>
+            <td>Optical surface shape library</td>
+            <td>Plane, sphere, conic, cylinder, toroid, polynomial asphere, anamorphic asphere, Zernike, XY polynomial, superconic, swept spline, spline patch</td>
+            <td>Sphere, paraboloid, cone, cylinder, plane, plus a stepped Fresnel profile. No conic constant, no aspheric coefficients anywhere in the codebase</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">3–4 mo</td>
+          </tr>
+          <tr>
+            <td>Freeform surfaces</td>
+            <td>Advanced Design Module: reflective and refractive freeform optics in single-surface and segmented configurations</td>
+            <td>None</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">9–12 mo</td>
+          </tr>
+          <tr>
+            <td>Surface textures and micro-structures</td>
+            <td>Prism arrays, dot patterns and lenslet grids applied as a texture to an arbitrary host surface — the core workflow for backlights, light guides and automotive lamps</td>
+            <td>A 5×5 microlens array and a stepped Fresnel lens exist as two fixed scenes. There is no mechanism to pattern a surface the user chose</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">6–9 mo</td>
+          </tr>
+          <tr>
+            <td>Parametric expressions</td>
+            <td>Data tables and equation series feeding parametric expressions for geometry, optimization and simulation</td>
+            <td>Plain doubles. <code>SceneParams</code> is capped at four; <code>SceneObject</code> at eight. No expression language, no inter-parameter relations</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">1–2 mo</td>
+          </tr>
+          <tr>
+            <td>Assembly tree, groups, transforms</td>
+            <td>Hierarchical model tree with grouped transforms</td>
+            <td><code>SceneDocument</code>: flat object list with parent ids, group folders, world placement folding, move/rotate/scale gizmo writing straight into placement</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Instancing of repeated parts</td>
+            <td>Arrays and repeated entities</td>
+            <td>One mesh, one BVH, many <code>gp_Trsf</code>. The microlens array is one lenslet and 25 transforms</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Layers and view management</td>
+            <td>32 layers, unlimited views</td>
+            <td>Per-object visibility with ancestor folding, one clipping plane, one 3D view</td>
+            <td class="verdict v-partial"><span class="chip partial">Partial</span></td>
+            <td class="effort">0.5–1 mo</td>
+          </tr>
+          <tr>
+            <td>Exact-surface intersection</td>
+            <td>Ray-surface intersection against the analytic surface</td>
+            <td>Intersection is against the tessellation. Normals are exact (read off the B-Rep, barycentrically interpolated) so direction error is gone; hit <em>position</em> is still mesh-limited</td>
+            <td class="verdict v-partial"><span class="chip partial">Partial</span></td>
+            <td class="effort">3–5 mo</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 02 MATERIALS ============ -->
+  <section id="materials">
+    <div class="sec-head">
+      <span class="sec-num">02</span>
+      <h2>Materials and optical properties</h2>
+    </div>
+    <p class="lede">
+      The strongest domain in the report. Everything an illumination engineer sets on a
+      surface, LuxTrace can set, and the numbers are pinned against published catalogue
+      values rather than against another simulation.
+    </p>
+
+    <div class="matrix-scroll">
+      <table>
+        <colgroup><col class="c-cap"><col class="c-lt"><col class="c-lx"><col class="c-vd"><col class="c-ef"></colgroup>
+        <thead>
+          <tr><th>Capability</th><th>LightTools</th><th>LuxTrace today</th><th>Verdict</th><th>Effort</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Glass catalogues</td>
+            <td>Schott, Ohara, Hoya, Chance, Corning, Kodak, Bausch &amp; Lomb; SmartStart Library Module adds index and absorption data</td>
+            <td>Zemax <code>.agf</code> import (Schott, Ohara, CDGM, Hoya, Sumita) and refractiveindex.info <code>.yml</code>, plus ten built-ins. Non-Sellmeier formulas resample onto a table model rather than being dropped</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Fresnel and dispersion</td>
+            <td>Calculated transmittance/reflectance; catalogue dispersion</td>
+            <td>Unpolarised <code>R = (Rs+Rp)/2</code> from angle of incidence, exact TIR, Sellmeier/Cauchy/tabulated, complex-index Fresnel for Al/Ag/Au</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Bulk absorption</td>
+            <td>Absorption coefficient per material</td>
+            <td>Beer–Lambert over the distance actually travelled, with medium identity tracked along the path; reported separately from surface absorption</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Thin-film coatings</td>
+            <td>Coating definitions on optical surfaces</td>
+            <td>Three tiers: ideal residual with angular roll-off, measured R(λ) table, characteristic-matrix multilayer solver. Tested against an analytic quarter-wave stack</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Scatter models</td>
+            <td>Lambertian, Gaussian, cos<sup>n</sup>, ABg, measured BSDF, Microfacet</td>
+            <td>GGX microfacet with Smith masking, ABg / Harvey–Shack, measured BSDF table, Lambertian. <code>cos<sup>n</sup></code> is the only missing member</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">&lt;0.25 mo</td>
+          </tr>
+          <tr>
+            <td>Volume scattering</td>
+            <td>Volume scattering models, GPU-supported</td>
+            <td>Scattering coefficient plus Henyey–Greenstein phase function inside a medium. No dependent scattering at high particle density</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Optical contact / cementing</td>
+            <td>Explicit optical-contact handling, GPU-supported</td>
+            <td>Medium stack with integer priorities resolving overlap — the FRED/TracePro convention. Cemented doublets refract glass against glass</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>User-defined optical properties</td>
+            <td>Advanced Physics Module: user-defined properties; RSoft UDOP for grating-level BSDFs</td>
+            <td>No plugin or scripting hook on the interaction path. A new BSDF means editing <code>Bsdf.cpp</code> and recompiling</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">1–2 mo</td>
+          </tr>
+          <tr>
+            <td>Temperature-dependent properties</td>
+            <td>Thermal-optical coupling</td>
+            <td>None. Declared out of scope in the README</td>
+            <td class="verdict v-nongoal"><span class="chip nongoal">Non-goal</span></td>
+            <td class="effort">—</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 03 SOURCES ============ -->
+  <section id="sources">
+    <div class="sec-head">
+      <span class="sec-num">03</span>
+      <h2>Sources and emitters</h2>
+    </div>
+    <p class="lede">
+      Close to parity, with one exception that matters more than its size: LuxTrace can
+      read a measured ray set but cannot read the near-field or angular file formats that
+      LED vendors publish alongside them, and cannot emit from a volume.
+    </p>
+
+    <div class="matrix-scroll">
+      <table>
+        <colgroup><col class="c-cap"><col class="c-lt"><col class="c-lx"><col class="c-vd"><col class="c-ef"></colgroup>
+        <thead>
+          <tr><th>Capability</th><th>LightTools</th><th>LuxTrace today</th><th>Verdict</th><th>Effort</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Emitter geometry</td>
+            <td>Point, surface and volume emitters with customizable spatial distribution</td>
+            <td>Point, Lambertian and collimated over a real emitting area. No volume emitters, no user-supplied spatial map</td>
+            <td class="verdict v-partial"><span class="chip partial">Partial</span></td>
+            <td class="effort">1–2 mo</td>
+          </tr>
+          <tr>
+            <td>Angular distribution</td>
+            <td>Lambertian, uniform, or user-defined angular distribution</td>
+            <td>Lambertian, isotropic, and a cone half-angle. A user-defined I(θ,φ) table cannot be supplied</td>
+            <td class="verdict v-partial"><span class="chip partial">Partial</span></td>
+            <td class="effort">0.5 mo</td>
+          </tr>
+          <tr>
+            <td>Measured ray sets</td>
+            <td>Radiant Imaging source data</td>
+            <td>Zemax binary <code>.dat</code>, ASAP <code>.dis</code>, TracePro text. Dispatches on content not extension; capped loads take an evenly strided subset, not the leading block</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Photometric file as a source</td>
+            <td>IES/EULUMDAT intensity distributions usable as emitters</td>
+            <td>IES LM-63 and EULUMDAT are export-only. Nothing reads one back in</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">0.5 mo</td>
+          </tr>
+          <tr>
+            <td>Multiple sources</td>
+            <td>Unlimited sources</td>
+            <td>Any number, each placed relative to the scene emitter, with per-source arrival tagging and a power-proportional ray budget — the variance-optimal split</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Spectral definition</td>
+            <td>Unlimited wavelengths</td>
+            <td>Monochromatic, RGB lines, blackbody, phosphor-converted white LED, CIE D65, measured SPD. One wavelength sampled per ray, so spectral costs what monochromatic costs</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Absolute flux and units</td>
+            <td>Radiometric and photometric units</td>
+            <td>Watts or lumens on the source; W/m² or lux at the receiver; W/sr or candela in the far field, through the CIE V(λ) curve</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Environment sources</td>
+            <td>Environment sources with automatic aiming for scatter surfaces (VisionSym)</td>
+            <td>None. Only meaningful alongside a backward renderer, so it is downstream of that decision</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">1 mo</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 04 ENGINE ============ -->
+  <section id="engine">
+    <div class="sec-head">
+      <span class="sec-num">04</span>
+      <h2>Ray tracing engine</h2>
+    </div>
+    <p class="lede">
+      Where LuxTrace is most competitive on quality and least competitive on scale.
+      Its estimator work buys error bars 1.5× to 28× tighter at the same ray count —
+      an effect comparable to a hardware speedup — but LightTools 2026 has both, and adds
+      distribution across machines.
+    </p>
+
+    <div class="matrix-scroll">
+      <table>
+        <colgroup><col class="c-cap"><col class="c-lt"><col class="c-lx"><col class="c-vd"><col class="c-ef"></colgroup>
+        <thead>
+          <tr><th>Capability</th><th>LightTools</th><th>LuxTrace today</th><th>Verdict</th><th>Effort</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Non-sequential Monte Carlo</td>
+            <td>Fully non-sequential forward ray tracing</td>
+            <td>Same model: SAH BVH over flattened triangles, thread pool over 512-ray chunks, cached geometry/mesh/BVH per parameter set</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>GPU acceleration</td>
+            <td>10× to 50× on forward tracing, covering point/surface sources, receivers, volume scatter, measured BSDF, microfacet, optical contact</td>
+            <td>CPU only: multithreaded plus a 4-wide AVX2 leaf intersection, probed at run time and bit-identical to the scalar kernel</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">6–12 mo</td>
+          </tr>
+          <tr>
+            <td>Backward / hybrid tracing</td>
+            <td>VisionSym GPU backward trace, 10–30× over CPU, with progressive refinement during interactive viewing</td>
+            <td>Next-event estimation at diffuse bounces is a partial analogue — a deterministic connection to the receiver — but there is no camera-side trace</td>
+            <td class="verdict v-partial"><span class="chip partial">Partial</span></td>
+            <td class="effort">3–6 mo</td>
+          </tr>
+          <tr>
+            <td>Distributed simulation</td>
+            <td>Distributed Simulation Module: one trace spread across many machines</td>
+            <td>Single process. The JSON stdio API would make a crude scatter/gather feasible, but nothing does it</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">1–2 mo</td>
+          </tr>
+          <tr>
+            <td>Variance reduction</td>
+            <td>Standard importance sampling</td>
+            <td>Owen-scrambled Sobol emission with replicated scrambling, emission aiming, next-event estimation, Russian roulette, branch collapsing. 28× tighter error bar on the elliptical reflector</td>
+            <td class="verdict v-lead"><span class="chip lead">Leads</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Reproducibility</td>
+            <td>Not advertised as bit-deterministic</td>
+            <td>Bit-identical regardless of thread count. Every ray seeds its own RNG from its index; scalar totals reduce in chunk order. Asserted in CI by <code>--bench</code></td>
+            <td class="verdict v-lead"><span class="chip lead">Leads</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Energy accounting</td>
+            <td>Power budgets per receiver</td>
+            <td><code>detected + absorbed + escaped + truncated == emitted</code> to 1e-9 in every scene, with variance-reduction residuals booked to their own bucket</td>
+            <td class="verdict v-lead"><span class="chip lead">Leads</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Ray path recording and filtering</td>
+            <td>Ray Path Analyzer records every path; ray path file import/export; rays-per-path limits; Compute Filtered Mesh Data; Surface Sets grouping physical surfaces</td>
+            <td>Ray paths are recorded for the 3D view only, bounded at ~6 000 legs, and not attributed to a bounce chain. The README states this explicitly</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">2–3 mo</td>
+          </tr>
+          <tr>
+            <td>Progressive results</td>
+            <td>Progressive refinement in the VisionSym viewer</td>
+            <td>Snapshot every ~200 ms during the trace: the heatmap fills in and the error bar visibly shrinks, and the run can be stopped when the answer is good enough</td>
+            <td class="verdict v-lead"><span class="chip lead">Leads</span></td>
+            <td class="effort">—</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 05 RECEIVERS ============ -->
+  <section id="receivers">
+    <div class="sec-head">
+      <span class="sec-num">05</span>
+      <h2>Receivers and analysis</h2>
+    </div>
+    <p class="lede">
+      Good coverage of the planar case, nothing outside it. Two limits documented in the
+      README are close to blocking: the far field bins uniformly in θ, so a 1.3° beam is
+      resolved by less than one bin, and per-thread detector grids cost 8&nbsp;MB per thread
+      at 1024².
+    </p>
+
+    <div class="matrix-scroll">
+      <table>
+        <colgroup><col class="c-cap"><col class="c-lt"><col class="c-lx"><col class="c-vd"><col class="c-ef"></colgroup>
+        <thead>
+          <tr><th>Capability</th><th>LightTools</th><th>LuxTrace today</th><th>Verdict</th><th>Effort</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Planar surface receiver</td>
+            <td>Surface receivers with configurable mesh bins or bin size</td>
+            <td>Any number of detectors, each with its own frame, resolution and acceptance cone; refused flux booked to its own channel rather than to absorption</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Conformal / curved receivers</td>
+            <td>Receivers on non-planar surfaces with spherical and UV mesh mapping — no projection onto a plane required</td>
+            <td>Planar rectangular grids only</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">1–2 mo</td>
+          </tr>
+          <tr>
+            <td>Far-field / intensity receiver</td>
+            <td>Far-field receivers; luminous intensity of a source</td>
+            <td>θ/φ grid divided by cell solid angle, totalling exactly <code>escaped + detector</code>. But θ is binned uniformly, so narrow beams and polar cells are starved. Equal-solid-angle binning is the known fix</td>
+            <td class="verdict v-partial"><span class="chip partial">Partial</span></td>
+            <td class="effort">0.5 mo</td>
+          </tr>
+          <tr>
+            <td>Luminance camera / rendering</td>
+            <td>Luminance Camera Receiver; VisionSym photorealistic rendering</td>
+            <td>None. The 3D view is OCCT shaded display, not a physically-based render</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">6–12 mo</td>
+          </tr>
+          <tr>
+            <td>Dynamic re-binning and re-focusing</td>
+            <td>Both, without re-tracing</td>
+            <td>Through-focus is a genuine post-process — arrivals carry their incoming direction and propagate analytically, with the minimum refined by a parabolic fit. Re-binning requires a re-trace</td>
+            <td class="verdict v-partial"><span class="chip partial">Partial</span></td>
+            <td class="effort">0.5–1 mo</td>
+          </tr>
+          <tr>
+            <td>Illuminance / intensity / encircled flux</td>
+            <td>All three, plus spot diagrams</td>
+            <td>Peak, mean, min/peak and mean/peak uniformity, flux centroid, RMS radius, D50/D86 encircled energy, FWHM through the centroid — computed as densities so they survive re-binning</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Colour analysis</td>
+            <td>CIE coordinates as constrainable analysis results; colour uniformity workflows</td>
+            <td>CIE 1931 chromaticity and correlated colour temperature over the spot. No colour-over-angle map, no colour-difference metric, no CRI</td>
+            <td class="verdict v-partial"><span class="chip partial">Partial</span></td>
+            <td class="effort">0.75 mo</td>
+          </tr>
+          <tr>
+            <td>Imaging metrics</td>
+            <td>Imaging Path Module: aberrations, magnification, spot diagrams, ray aberration curves</td>
+            <td>MTF from the line spread function with the diffraction limit overlaid, OPD map, RMS wavefront error, Strehl (flagged past the quarter wave). No ray-fan or aberration curves, no paraxial layout table</td>
+            <td class="verdict v-partial"><span class="chip partial">Partial</span></td>
+            <td class="effort">0.5–0.75 mo</td>
+          </tr>
+          <tr>
+            <td>Stray light and ghost analysis</td>
+            <td>Dedicated stray light workflow; ghost image analysis; per-path power attribution</td>
+            <td>The geometry is traced, so ghosts land on the receiver — but arrivals are not attributed to an interface chain. You get the spot and the flux, not which surface produced it</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">2–3 mo</td>
+          </tr>
+          <tr>
+            <td>Photometric export</td>
+            <td>Tab-delimited spreadsheet, PostScript</td>
+            <td>IES LM-63 and EULUMDAT straight into DIALux, AGi32 and Relux; CSV for irradiance, intensity, metrics and ensembles; PNG; one-click HTML report with the seed stamped on it</td>
+            <td class="verdict v-lead"><span class="chip lead">Leads</span></td>
+            <td class="effort">—</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 06 OPTIMIZATION ============ -->
+  <section id="optimization">
+    <div class="sec-head">
+      <span class="sec-num">06</span>
+      <h2>Optimization and design synthesis</h2>
+    </div>
+    <p class="lede">
+      The commercially decisive domain. LightTools' pitch is that it will improve a design
+      for you: "hundreds of system parameters" as variables, a weighted-sum-of-squares merit
+      function, constraints expressed as relations on model parameters <em>and</em> analysis
+      results, and — in the Advanced Design Module — geometry synthesized directly from a
+      target illuminance or intensity pattern using LucidShape algorithms.
+    </p>
+
+    <div class="matrix-scroll">
+      <table>
+        <colgroup><col class="c-cap"><col class="c-lt"><col class="c-lx"><col class="c-vd"><col class="c-ef"></colgroup>
+        <thead>
+          <tr><th>Capability</th><th>LightTools</th><th>LuxTrace today</th><th>Verdict</th><th>Effort</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Merit function</td>
+            <td>User-defined weighted sum of squares over many performance criteria</td>
+            <td>A single <code>Studies::Metric</code> from a list of ten, with goal maximise / minimise / target. No weighting, no composition</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">1–2 mo</td>
+          </tr>
+          <tr>
+            <td>Variable count and kind</td>
+            <td>Hundreds of parameters, including positions and orientations of any entity</td>
+            <td>Geometry parameter slots of one scene — four, or eight for a document object. Placements are not optimizable at all</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">2–3 mo</td>
+          </tr>
+          <tr>
+            <td>Constraints</td>
+            <td>&lt;, =, &gt; relations on model parameters and on analysis results (receiver total power, CIE coordinates)</td>
+            <td>Box bounds on each parameter only. No relational constraints, no penalty terms</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">1 mo</td>
+          </tr>
+          <tr>
+            <td>Optimization engines</td>
+            <td>Local engines plus a global engine (2024.03) for broader solution-space exploration</td>
+            <td>Nelder–Mead (local) and CMA-ES (global). Both tested to improve on their starting design</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Noise-tolerant search</td>
+            <td>Algorithms adapted to work in statistically noisy Monte Carlo conditions</td>
+            <td>Every metric carries a standard error, and sweeps plot error bars so a bump can be told from noise. CMA-ES is intrinsically noise-tolerant</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Design synthesis from a target</td>
+            <td>Advanced Design Module: LucidShape algorithms construct optical geometry from a user-defined illuminance or intensity pattern</td>
+            <td>None. This is inverse design, not search, and nothing in the codebase addresses it</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">9–12 mo</td>
+          </tr>
+          <tr>
+            <td>Parameter sweeps</td>
+            <td>Parametric studies</td>
+            <td>1D and 2D sweeps with error bars, CSV export and a UI plot</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Optimizing an imported or assembled model</td>
+            <td>Any entity in the model is a candidate variable</td>
+            <td>Studies decline on imported CAD, because a STEP solid declares no dimensions. Assembled scenes detach from the tutorial parameter block on the first structural edit and lose their sweep variables with it</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">2 mo</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <span class="label">Read this one twice</span>
+      <p>
+        A merit function, constraints, and placement-as-variable are the three items that
+        turn LuxTrace's existing optimizer from a demonstration into a tool. They are
+        roughly four engineer-months combined, they need no new physics, and they are
+        blocked mainly by the four-double <code>SceneParams</code> cap. This is the highest
+        value-per-month work in the report.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============ 07 TOLERANCING ============ -->
+  <section id="tolerancing">
+    <div class="sec-head">
+      <span class="sec-num">07</span>
+      <h2>Tolerancing and design for manufacture</h2>
+    </div>
+    <p class="lede">
+      A rare domain where LuxTrace ships something complete. The gap is coupling, not
+      capability: tolerancing and optimization are two separate commands rather than one
+      loop.
+    </p>
+
+    <div class="matrix-scroll">
+      <table>
+        <colgroup><col class="c-cap"><col class="c-lt"><col class="c-lx"><col class="c-vd"><col class="c-ef"></colgroup>
+        <thead>
+          <tr><th>Capability</th><th>LightTools</th><th>LuxTrace today</th><th>Verdict</th><th>Effort</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Monte Carlo tolerance analysis</td>
+            <td>Simulated production runs with yield against a specification</td>
+            <td>Perturbs every dimension by its limit, traces the ensemble, reports the passing fraction. The same seed reproduces the same production run</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Sensitivity ranking</td>
+            <td>Contribution analysis per parameter</td>
+            <td>Ranks dimensions by how much of the spread each causes — the answer is which one to tighten, not only that the design is fragile</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Distribution shapes</td>
+            <td>Standard statistical distributions</td>
+            <td><code>Tolerance::Shape</code> carries the distribution per dimension</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Tolerance-aware optimization</td>
+            <td>Optimize-for-manufacturing: yield folded into the objective</td>
+            <td>Two independent commands. Nothing optimizes for expected yield rather than nominal performance</td>
+            <td class="verdict v-partial"><span class="chip partial">Partial</span></td>
+            <td class="effort">1 mo</td>
+          </tr>
+          <tr>
+            <td>Reproducible ensembles</td>
+            <td>Not advertised</td>
+            <td>Seeded and bit-reproducible, which most tolerancing tools do not manage</td>
+            <td class="verdict v-lead"><span class="chip lead">Leads</span></td>
+            <td class="effort">—</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 08 PHYSICS ============ -->
+  <section id="physics">
+    <div class="sec-head">
+      <span class="sec-num">08</span>
+      <h2>Advanced physics</h2>
+    </div>
+    <p class="lede">
+      LightTools sells this as two modules — Advanced Physics (phosphors, GRIN,
+      user-defined properties, birefringence) and MetaOptic Design — plus the AR Waveguide
+      Designer. LuxTrace has one item from the set, and it is a good one: a complete
+      Stokes/Mueller polarisation model behind a switch. Everything else is absent, and the
+      README declares three of them out of scope rather than pending.
+    </p>
+
+    <div class="matrix-scroll">
+      <table>
+        <colgroup><col class="c-cap"><col class="c-lt"><col class="c-lx"><col class="c-vd"><col class="c-ef"></colgroup>
+        <thead>
+          <tr><th>Capability</th><th>LightTools</th><th>LuxTrace today</th><th>Verdict</th><th>Effort</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Polarisation</td>
+            <td>Polarizing properties; polarization-dependent surface models</td>
+            <td>Stokes vectors and Mueller matrices behind a switch, at ~4× the per-ray state. Tested on Brewster's angle, Malus's law, crossed polarisers, quarter-wave plates and the phase of TIR</td>
+            <td class="verdict v-parity"><span class="chip parity">Parity</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Gradient index media</td>
+            <td>Advanced Physics Module: gradient index materials</td>
+            <td>Index is constant per medium. A selfoc rod, where the index does the focusing, cannot be expressed</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">2–3 mo</td>
+          </tr>
+          <tr>
+            <td>Birefringence</td>
+            <td>Birefringent materials for AR/VR and biomedical work (since 9.0)</td>
+            <td>Polarisation over a single isotropic index. No index anisotropy, no fast/slow axis</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">3–4 mo</td>
+          </tr>
+          <tr>
+            <td>Phosphor / fluorescence</td>
+            <td>Phosphor modeling for LED systems</td>
+            <td>A phosphor exists only as a source spectrum. Blue is not converted to yellow inside a material — the real limit for white-LED work</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">2–3 mo</td>
+          </tr>
+          <tr>
+            <td>Gratings and diffractive optics</td>
+            <td>Surface relief gratings, Volume Bragg Gratings, RSoft UDOP-derived BSDFs</td>
+            <td>None</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">3–6 mo</td>
+          </tr>
+          <tr>
+            <td>Meta-optics</td>
+            <td>MetaOptic Design Module: system-level meta-lens simulation via extended, wavelength- and polarization-dependent BSDF surfaces</td>
+            <td>None. The extended-BSDF plumbing is closer than it looks — <code>bsdf::Surface</code> already dispatches per interaction — but nothing supplies the data</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">3–6 mo</td>
+          </tr>
+          <tr>
+            <td>AR waveguide design</td>
+            <td>Structured environment with k-space setup and automatic generation of Input Couplers, Eye Pupil Expanders and Output Couplers</td>
+            <td>None, and it presupposes gratings, birefringence and a luminance camera. A three-module dependency, not a feature</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">12+ mo</td>
+          </tr>
+          <tr>
+            <td>Wave propagation / physical diffraction</td>
+            <td>Available through the CODE V link and imaging modules</td>
+            <td>No computed PSF. The diffraction limit is drawn as an overlay beside the measured MTF; Strehl comes from Maréchal's approximation and is flagged past the quarter wave</td>
+            <td class="verdict v-nongoal"><span class="chip nongoal">Non-goal</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Thermal coupling</td>
+            <td>Thermal-optical workflows</td>
+            <td>Declared out of scope</td>
+            <td class="verdict v-nongoal"><span class="chip nongoal">Non-goal</span></td>
+            <td class="effort">—</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 09 INTEROP ============ -->
+  <section id="interop">
+    <div class="sec-head">
+      <span class="sec-num">09</span>
+      <h2>Interoperability and data exchange</h2>
+    </div>
+    <p class="lede">
+      LightTools sells CAD exchange as its own module and a live SOLIDWORKS link as another.
+      LuxTrace reads what OCCT reads, which is STEP and IGES — respectable, but two formats
+      against eight, with no live link and no geometry export at all. One item here is a
+      bug-shaped gap rather than a feature gap: imported CAD does not survive a save.
+    </p>
+
+    <div class="matrix-scroll">
+      <table>
+        <colgroup><col class="c-cap"><col class="c-lt"><col class="c-lx"><col class="c-vd"><col class="c-ef"></colgroup>
+        <thead>
+          <tr><th>Capability</th><th>LightTools</th><th>LuxTrace today</th><th>Verdict</th><th>Effort</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>CAD import formats</td>
+            <td>IGES, STEP, SAT, CATIA V4/V5, Parasolid, and as of 2026 NX, Creo and Rhino</td>
+            <td>STEP and IGES via OCCT, with unit conversion and assembly splitting into parts. Everything else is licensing-bound, not effort-bound</td>
+            <td class="verdict v-partial"><span class="chip partial">Partial</span></td>
+            <td class="effort">2–6 mo</td>
+          </tr>
+          <tr>
+            <td>Import fidelity</td>
+            <td>Preserves assembly hierarchy, part names, object colours and optical property assignments</td>
+            <td>Parts split out with per-part and per-face optics; names carried. Colours and pre-assigned optical properties are not read</td>
+            <td class="verdict v-partial"><span class="chip partial">Partial</span></td>
+            <td class="effort">0.5 mo</td>
+          </tr>
+          <tr>
+            <td>Imported geometry persistence</td>
+            <td>Model file holds the geometry</td>
+            <td>Not persisted. A saved config records the selected scene, not the file, and touching any geometry parameter discards the import — it must be re-imported by hand</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">0.5 mo</td>
+          </tr>
+          <tr>
+            <td>Live CAD link</td>
+            <td>SOLIDWORKS Link Module: mechanical model driven from SOLIDWORKS</td>
+            <td>None</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">3–6 mo</td>
+          </tr>
+          <tr>
+            <td>Lens design link</td>
+            <td>CODE V lens data import and export; Imaging Path and Imaging Analysis modules for sequential tracing</td>
+            <td>None. No sequential mode, no lens prescription table, no Zemax/CODE V exchange</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">3–6 mo</td>
+          </tr>
+          <tr>
+            <td>Geometry export</td>
+            <td>IGES, DXF, VRML, CODE V, PostScript, LightTools script</td>
+            <td>None. Exports are data and pictures — CSV, PNG, IES, EULUMDAT, HTML — never geometry, so an optimized design cannot leave the tool as a solid</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">0.5–1 mo</td>
+          </tr>
+          <tr>
+            <td>Scripting and automation</td>
+            <td>Macro language</td>
+            <td><code>--serve</code> speaks JSON over stdio, one operation per line, with thirteen operations and a Python client. stdout carries JSON and nothing else, so a host process can pipe it safely. Cleaner and more testable than a bespoke macro language</td>
+            <td class="verdict v-lead"><span class="chip lead">Leads</span></td>
+            <td class="effort">—</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 10 PLATFORM ============ -->
+  <section id="platform">
+    <div class="sec-head">
+      <span class="sec-num">10</span>
+      <h2>Platform and workflow</h2>
+    </div>
+    <p class="lede">
+      Cheap gaps, mostly. Four of the six absences below are under a month each and three
+      of them are the kind of thing a first-time evaluator hits within ten minutes.
+    </p>
+
+    <div class="matrix-scroll">
+      <table>
+        <colgroup><col class="c-cap"><col class="c-lt"><col class="c-lx"><col class="c-vd"><col class="c-ef"></colgroup>
+        <thead>
+          <tr><th>Capability</th><th>LightTools</th><th>LuxTrace today</th><th>Verdict</th><th>Effort</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Undo / redo</td>
+            <td>Standard in the modeling environment</td>
+            <td>None. No <code>QUndoStack</code> anywhere in <code>src/</code>, and the scene editor is now edit-heavy enough that this is felt</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">0.5–0.75 mo</td>
+          </tr>
+          <tr>
+            <td>Document format versioning</td>
+            <td>Model files migrate across releases</td>
+            <td>The JSON config carries no version field and has no migration path. Any schema change silently breaks saved setups</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">0.25 mo</td>
+          </tr>
+          <tr>
+            <td>Logging and diagnostics</td>
+            <td>Standard</td>
+            <td>None. A failing run leaves nothing behind to send to a maintainer</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">0.25 mo</td>
+          </tr>
+          <tr>
+            <td>Operating systems</td>
+            <td>Windows and Linux</td>
+            <td>Windows and MSVC only. Qt and OCCT are both portable, so this is build and CI work rather than porting work</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">1–2 mo</td>
+          </tr>
+          <tr>
+            <td>Receiver memory scaling</td>
+            <td>Fine meshes routine</td>
+            <td>Per-thread detector grids: 32 KB per thread at 64², 8 MB per thread at 1024², and a progressive snapshot copies them. Fine receivers will not scale</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">0.5 mo</td>
+          </tr>
+          <tr>
+            <td>Reporting</td>
+            <td>Spreadsheet and PostScript export</td>
+            <td>One HTML document with the scene, parameters, derived quantities, energy budget, every plot, the metrics, the studies and the seed — so the numbers can be regenerated, not merely read</td>
+            <td class="verdict v-lead"><span class="chip lead">Leads</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Comparison workflow</td>
+            <td>Not advertised</td>
+            <td>Pin a run and the plots overlay it, the map shows the difference, and every metric delta is annotated with whether it clears the error bars</td>
+            <td class="verdict v-lead"><span class="chip lead">Leads</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Licensing and distribution</td>
+            <td>Commercial per-module licences</td>
+            <td>PolyForm Noncommercial 1.0.0 — study, teaching and research granted; all commercial and internal for-profit use withheld. This is a positioning fact, not a defect, but it excludes the entire LightTools customer base as-is</td>
+            <td class="verdict v-nongoal"><span class="chip nongoal">Non-goal</span></td>
+            <td class="effort">—</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 11 TRUST ============ -->
+  <section id="trust">
+    <div class="sec-head">
+      <span class="sec-num">11</span>
+      <h2>Verification and trust</h2>
+    </div>
+    <p class="lede">
+      The domain LuxTrace wins outright, and the one worth building the pitch around. A
+      commercial tool asks to be trusted on reputation; LuxTrace checks itself against
+      arithmetic derived outside it, in CI, on every push.
+    </p>
+
+    <div class="matrix-scroll">
+      <table>
+        <colgroup><col class="c-cap"><col class="c-lt"><col class="c-lx"><col class="c-vd"><col class="c-ef"></colgroup>
+        <thead>
+          <tr><th>Capability</th><th>LightTools</th><th>LuxTrace today</th><th>Verdict</th><th>Effort</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Closed-form validation</td>
+            <td>Not published as a runnable suite</td>
+            <td><code>--validate</code> checks the tracer against seven closed forms derived entirely outside it — lensmaker's equation, integrating-sphere multiplier, inverse-square cosine law, flux subtended by a square receiver, CPC concentration limit, prism minimum deviation, Lambert's cosine law — and prints residuals of 0.00–0.35 %. Run in CI</td>
+            <td class="verdict v-lead"><span class="chip lead">Leads</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Reported uncertainty</td>
+            <td>Monte Carlo noise is acknowledged; per-run error bars are not the headline output</td>
+            <td>Every run reports one standard error, measured across sixteen independent scrambles rather than from ray-to-ray spread — the correct estimator for a low-discrepancy sequence — and a test checks it against the spread over twelve independent seeds</td>
+            <td class="verdict v-lead"><span class="chip lead">Leads</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Regression protection</td>
+            <td>Vendor-internal</td>
+            <td>290 tests in 58 suites with no external framework, plus a reference corpus and a drift comparison, run on every push alongside the physics and determinism checks as three separately reported failures</td>
+            <td class="verdict v-lead"><span class="chip lead">Leads</span></td>
+            <td class="effort">—</td>
+          </tr>
+          <tr>
+            <td>Cross-tool benchmark</td>
+            <td>Not applicable</td>
+            <td>None. No shared model has been traced in LuxTrace and in LightTools or TracePro and the numbers compared. This is the single highest-credibility, lowest-cost item in the entire report</td>
+            <td class="verdict v-gap"><span class="chip gap">Gap</span></td>
+            <td class="effort">0.5–1 mo</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ ROADMAP ============ -->
+  <section id="roadmap">
+    <div class="sec-head">
+      <span class="sec-num">→</span>
+      <h2>What to close, in order</h2>
+    </div>
+    <p class="lede">
+      Ordered by value per engineer-month, not by size of gap. The tiers are sequential:
+      each one is worth less if the one before it is skipped, because credibility gates
+      usability and usability gates the design-automation pitch.
+    </p>
+
+    <div class="tiers">
+
+      <div class="tier">
+        <div class="tier-head">
+          <span class="tier-tag">Tier 0</span>
+          <h3>Stop the evaluator bouncing</h3>
+          <span class="horizon">≈ 3 engineer-months</span>
+        </div>
+        <p class="why">
+          None of these are competitive features. All of them are things a serious evaluator
+          hits in the first session, and each one currently reads as "unfinished" rather
+          than "scoped".
+        </p>
+        <ul>
+          <li><b>Persist imported CAD in the saved document.</b> Today an import evaporates on save or on any parameter edit. Nothing else in the report is this cheap or this visible.</li>
+          <li><b>Undo / redo across the scene editor.</b> The document model is already a flat object list with stable ids, which is close to the ideal shape for a command stack.</li>
+          <li><b>Version and migrate the config format.</b> One field now, or a compatibility break later.</li>
+          <li><b>Equal-solid-angle far-field binning.</b> A 1.3° beam currently falls inside a single 2° bin — the app's own flagship result is under-resolved by its own analysis.</li>
+          <li><b>Bounded receiver memory.</b> Tile or atomically accumulate instead of one full grid per thread.</li>
+          <li><b>Logging and a crash/diagnostic dump.</b></li>
+          <li><b>A published cross-tool benchmark.</b> One shared model, traced here and in a commercial tool, with the residuals printed. This converts "well tested" into "demonstrably agrees".</li>
+        </ul>
+      </div>
+
+      <div class="tier">
+        <div class="tier-head">
+          <span class="tier-tag">Tier 1</span>
+          <h3>Become a modeler</h3>
+          <span class="horizon">≈ 8–12 engineer-months</span>
+        </div>
+        <p class="why">
+          Everything downstream is gated on being able to express the part. Aspheres first,
+          because a conic constant and six coefficients unlock more real optics per line of
+          code than any other geometry work.
+        </p>
+        <ul>
+          <li><b>Aspheric and conic surfaces</b> — conic constant plus even-order polynomial terms, then Zernike and XY polynomial. This is a surface-generation problem in OCCT, not a tracer problem.</li>
+          <li><b>User-facing Boolean operations and sweeps</b> on scene objects; the OCCT calls are already in <code>SceneDocument.cpp</code>, just not exposed.</li>
+          <li><b>Lift the parameter caps.</b> Four doubles cannot describe a doublet; the README already names this.</li>
+          <li><b>Parametric expressions</b> so one dimension can drive another.</li>
+          <li><b>User-defined source angular distributions</b>, plus IES/EULUMDAT read back in as an emitter.</li>
+          <li><b>Colour-over-angle receiver maps</b> — cheap given the spectrum machinery already there, and the metric white-LED and automotive work is specified in.</li>
+        </ul>
+      </div>
+
+      <div class="tier">
+        <div class="tier-head">
+          <span class="tier-tag">Tier 2</span>
+          <h3>Become a design tool</h3>
+          <span class="horizon">≈ 10–14 engineer-months</span>
+        </div>
+        <p class="why">
+          This is where the product stops answering "what does this do" and starts answering
+          "what should I build". It is also where LightTools' own module pricing concentrates.
+        </p>
+        <ul>
+          <li><b>A real merit function</b> — weighted sum of squares over several criteria, on several receivers.</li>
+          <li><b>Constraints</b> as relations on model parameters and on analysis results.</li>
+          <li><b>Placements and orientations as optimization variables</b>, so an assembled scene is optimizable at all.</li>
+          <li><b>Ray path recording, filtering and attribution</b> — the basis of every stray-light and ghost study, and the one analysis gap that customers name unprompted.</li>
+          <li><b>Conformal receivers</b> on curved and freeform surfaces.</li>
+          <li><b>Surface textures</b> — patterned micro-structures on a host surface. Large, but it is the entry ticket to backlight, display and automotive lighting work.</li>
+          <li><b>Tolerance-aware optimization</b>: optimize expected yield, not nominal performance. Both halves already exist.</li>
+        </ul>
+      </div>
+
+      <div class="tier">
+        <div class="tier-head">
+          <span class="tier-tag">Tier 3</span>
+          <h3>Pick exactly one structural bet</h3>
+          <span class="horizon">12+ engineer-months each</span>
+        </div>
+        <p class="why">
+          These are mutually exclusive at any realistic team size. Each defines a different
+          product. Choosing two is how a project this size stalls.
+        </p>
+        <ul>
+          <li><b>Speed:</b> GPU forward tracing, or distributed simulation as the cheap approximation of it (the JSON stdio API makes scatter/gather nearly free).</li>
+          <li><b>Appearance:</b> backward tracing with a luminance camera and a physically-based render — the VisionSym answer.</li>
+          <li><b>Synthesis:</b> freeform geometry computed from a target illuminance pattern — the Advanced Design / LucidShape answer, and the most defensible differentiator for a small team.</li>
+          <li><b>Physics depth:</b> GRIN, then phosphor conversion, then gratings — in that order, since each is independently useful and phosphor is the one white-LED work actually blocks on.</li>
+        </ul>
+      </div>
+
+    </div>
+
+    <div class="twoup">
+      <div class="panel">
+        <h3>Deliberately not worth chasing</h3>
+        <ul>
+          <li><b>AR Waveguide Designer.</b> Presupposes gratings, birefringence and a luminance camera. Three modules of prerequisite for one vertical.</li>
+          <li><b>Wave propagation.</b> Already declared out of scope, and the diffraction-limit overlay is the honest treatment. Changing this changes what the product is.</li>
+          <li><b>CATIA / NX / Parasolid translators.</b> Licensing cost, not engineering merit. STEP covers the interchange case.</li>
+          <li><b>Sequential imaging mode and a CODE V link.</b> A different product with different competitors; the imaging metrics already present are the right amount of imaging.</li>
+          <li><b>Thermal coupling.</b> Out of scope and correctly so.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3>What to lead the pitch with</h3>
+        <ul>
+          <li><b>Every answer arrives with an error bar</b>, estimated correctly for a low-discrepancy sequence and tested against independent seeds.</li>
+          <li><b>Bit-identical results</b> regardless of thread count, asserted in CI.</li>
+          <li><b>Seven closed-form checks</b> derived outside the tracer, with residuals published on every build.</li>
+          <li><b>Energy closes to 1e-9</b> in every scene, variance-reduction residuals included.</li>
+          <li><b>An error bar 16× tighter is 256× fewer rays</b> — the estimator work is a speedup by another name.</li>
+          <li><b>A scriptable JSON API and a reproducible HTML report</b> with the seed stamped on it.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ METHOD & SOURCES ============ -->
+  <section id="sources-list">
+    <div class="sec-head">
+      <span class="sec-num">§</span>
+      <h2>Method and sources</h2>
+    </div>
+    <p class="lede">
+      The LuxTrace column is from a direct read of the working tree at commit
+      <code>91ea0c5</code> — headers, the README's capability and limits sections, and the
+      test manifest — not from marketing copy. The LightTools column is from Keysight and
+      Synopsys published collateral, which is marketing copy, and should be read as the
+      vendor's claim rather than as verified behaviour. Where a LightTools feature is
+      quoted it is quoted verbatim.
+    </p>
+    <p class="lede">
+      Two honest caveats. First, no LightTools licence was exercised for this comparison, so
+      depth-of-implementation on the LightTools side is taken on trust. Second, the
+      parity/partial/gap calls are judgements about whether a capability does the same
+      <em>job</em>, not a feature-checkbox count — a domain scored parity can still be far
+      narrower in breadth.
+    </p>
+    <ul class="sources">
+      <li><a href="https://www.keysight.com/us/en/products/software/optical-solutions-software/optical-design-solutions/lighttools.html">LightTools Illumination Design Software — Keysight</a> (product page, module list, surface types, file formats)</li>
+      <li><a href="https://www.keysight.com/blogs/en/tech/sim-des/lighttools-2026-advancing-optical-system-simulation-with-gpu-acceleration-visionsym-integration-and-stray-light-ar-waveguide-meta-optic-lens-and-cad-import-workflow-enhancements">LightTools 2026: GPU acceleration, VisionSym, stray light, AR waveguide, meta-optic lens, CAD import — Keysight</a></li>
+      <li><a href="https://www.synopsys.com/optical-solutions/support/training/lighttools-advanced.html">Advanced Features in LightTools Training — ray path analysis, region analysis, backward and hybrid ray tracing</a></li>
+      <li><a href="https://www.synopsys.com/content/dam/synopsys/optical-solutions/documents/datasheets/illumination-optimization-ds.pdf">LightTools Illumination Optimization datasheet</a> (merit function, variables, constraints)</li>
+      <li><a href="https://www.synopsys.com/blogs/optical-photonic/lighttools-global-optimization-advanced-design.html">Optimize Design for Manufacturing with LightTools</a> (global optimization engine, LucidShape algorithms in the Advanced Design Module)</li>
+      <li><a href="https://news.synopsys.com/2015-07-08-Synopsys-LightTools-Delivers-Innovative-Modeling-Capabilities-for-Freeform-Optics-in-Illumination-Systems">Freeform optics modeling in LightTools</a> (Advanced Design Module, single-surface and segmented freeforms)</li>
+      <li><a href="https://news.synopsys.com/2017-03-14-Synopsys-Releases-LightTools-8-5-with-New-Tools-to-Increase-Illumination-Optical-System-Efficiency-and-Performance">LightTools 8.5 release notes</a> (conformal receivers, spherical and UV mesh mapping)</li>
+      <li><a href="https://www.led-professional.com/resources-1/led-simulation-tools/updated-lighttools-8.3-speeds-the-design-of-luminaires-with-a-new-advanced-design-module">LightTools 8.3 — Advanced Design Module and phosphor modeling</a></li>
+      <li><a href="https://edstechnologies.com/wp-content/uploads/2026/01/LightTools-Modules.pdf">LightTools Modules datasheet</a> (module breakdown)</li>
+    </ul>
+  </section>
+
+  <footer>
+    LuxTrace © 2026 Kutay Gunal · PolyForm Noncommercial 1.0.0<br>
+    Assessment prepared 29 August 2026 against the working tree at commit 91ea0c5.<br>
+    Effort figures are estimates for one experienced C++/OCCT developer, not quotes.
+  </footer>
+
+</div>

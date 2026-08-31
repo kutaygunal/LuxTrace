@@ -204,10 +204,10 @@ accounted for exactly in every scene: `detected + absorbed + escaped + truncated
 == emitted` to 1e-9.
 
 ### Determinism
-A run is bit-identical no matter how many threads execute it. Every ray seeds
-its own RNG from its index — for its emission direction, its emitting-area
-sample and its scatter/roughness draws alike — and the scalar totals reduce in
-chunk order rather than thread order. `--bench` checks this on every
+Every ray seeds its own RNG from its index — for its emission direction, its
+emitting-area sample and its scatter/roughness draws alike — and the scalar
+totals reduce in chunk order rather than thread order, so a run's efficiency and
+energy budget do not depend on the thread count. `--bench` checks that on every
 scene/source combination.
 
 ## Interoperation: measured data in
@@ -418,7 +418,7 @@ OCCT under test is the one the developer box has.
 ctest --preset release
 ```
 
-390 tests in 70 suites, no external framework. The scene and test counts are
+415 tests in 72 suites, no external framework. The scene and test counts are
 derived, not retyped: `python tools/regenerate_counts.py` regenerates them from
 `--smoke` and the test binary's own totals. Beyond the original coverage
 (Moller-Trumbore branches, BVH vs brute force, energy conservation, TIR critical
@@ -738,13 +738,16 @@ src/
     Mesh                the flat triangle mesh the tracer walks
     TraceScene          flattened triangles, SAH BVH, instancing, intersection
     TraceSceneSimd      the four-wide AVX2 leaf, probed at run time
-    RayTracer           Monte Carlo tracing, threaded and deterministic
+    RayTracer           Monte Carlo tracing, threaded; the scalar totals
+                        reduce in chunk order, so they do not depend on it
     ThreadPool          the worker pool the tracer schedules rays onto
     SimulationResult    irradiance grid, far field, arrivals, energy accounting
     Report              the one-click HTML document
     Simulation          facade: geometry -> mesh -> BVH (cached) -> trace
     Analysis            spot metrics, profiles, encircled energy, CSV export
     Studies             convergence and through-focus sweeps
+    MultiEditFields     which field a multi-object edit touched, and the
+                        copies that write only that field
     ConfigIO             JSON save/load of a whole setup
     JobRunner            --job/--serve: operations in as JSON, envelopes out on stdout
     PythonEnv           finding the interpreter the Python panel runs scripts with
@@ -753,7 +756,10 @@ src/
     StudyWorker         the same, for a convergence sweep
     GeometryWorker      the same, for a geometry build
   ui/
-    MainWindow          layout, tabs, menus, exports
+    MainWindow          layout, tabs, menus, exports. One class over five
+                        translation units -- MainWindow.cpp plus Studies,
+                        Appearance, Scene and IO, which share
+                        MainWindowInternal.h
     ControlsPanel       scene, geometry parameters, source, physics, run
     OcctViewWidget      OCCT viewport: navigation, ray colouring, clipping, picking
     HeatmapWidget       irradiance map with colour maps, scaling and a cut line
@@ -764,6 +770,15 @@ src/
 test/
   TestMain.cpp          harness + the original suites
   NewTests.inc          physics, analysis and workflow suites
+  AuditTests.inc        the engine audit's own regression corpus
+  SceneDocTests.inc     the scene document: objects, groups, compile
+  MultiEditTests.inc    multi-object editing writes one field, not a form
+  AtomicGridTests.inc   the shared atomic receiver grid above 65536 cells
+  AppearanceTests.inc   material translation, emitters, radiance, export
+  ThetaBinTests.inc     beam-adaptive far-field theta binning
+  MeasuredDataTests.inc measured coating / index / BSDF tables
+  SceneParamsTests.inc  the geometry parameter vector
+  AdaptiveMeshTests.inc curvature-driven per-face meshing
 tools/
   regenerate_counts.py  derive the scene and test counts the README quotes
 resources/
@@ -836,9 +851,6 @@ python resources/make_icon.py
   the file; and studies that vary a dimension decline on it, since an imported
   solid declares none. The source origin and axis are fixed at import rather
   than editable afterwards.
-- Per-thread detector grids will not scale past a fine receiver. At 64 x 64 they
-  cost 32 KB per thread; at 1024 x 1024 they are 8 MB per thread, and a
-  progressive snapshot copies them.
 - The Appearance preview is a picture, not a measurement, and the boundary is
   sharper than it looks. OCCT's path tracer is an RGB graphics renderer with its
   own two-layer BSDF: it does not read `SurfaceOptics`' scatter model, `Coating`'s

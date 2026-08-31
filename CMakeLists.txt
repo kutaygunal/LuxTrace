@@ -76,6 +76,10 @@ add_library(optics_core STATIC
     src/core/Mesh.h src/core/Mesh.cpp
     src/core/GeometryProvider.h src/core/GeometryProvider.cpp
     src/core/SceneDocument.h src/core/SceneDocument.cpp
+    # The field-flag copies behind multi-object editing. Core rather than UI:
+    # nothing here needs Qt Widgets, and "an edit to one number stays an edit
+    # to one number" is a correctness property a headless test can assert.
+    src/core/MultiEditFields.h src/core/MultiEditFields.cpp
     src/core/CadImport.h src/core/CadImport.cpp
     src/core/MeshBuilder.h src/core/MeshBuilder.cpp
     src/core/TraceScene.h src/core/TraceScene.cpp
@@ -141,6 +145,7 @@ qt_add_executable(LuxTrace
     src/ui/RayDiagramWidget.h src/ui/RayDiagramWidget.cpp
     src/ui/ControlsPanel.h src/ui/ControlsPanel.cpp
     src/ui/ImportDialog.h src/ui/ImportDialog.cpp
+    src/ui/MultiEdit.h src/ui/MultiEdit.cpp
     src/ui/SurfaceInspector.h src/ui/SurfaceInspector.cpp
     src/ui/ObjectLibraryPanel.h src/ui/ObjectLibraryPanel.cpp
     src/ui/SceneTreePanel.h src/ui/SceneTreePanel.cpp
@@ -150,7 +155,15 @@ qt_add_executable(LuxTrace
     src/ui/SourceDialog.h src/ui/SourceDialog.cpp
     src/ui/OcctViewWidget.h src/ui/OcctViewWidget.cpp
     src/render/AppearanceView.h src/render/AppearanceView.cpp
-    src/ui/MainWindow.h src/ui/MainWindow.cpp
+    # MainWindow is one class across several translation units. The header and
+    # every call site are unchanged; the split is a file boundary, drawn where
+    # the window already has seams -- studies, appearance, the scene document,
+    # and file I/O are four areas that do not call into each other.
+    src/ui/MainWindow.h src/ui/MainWindowInternal.h src/ui/MainWindow.cpp
+    src/ui/MainWindowStudies.cpp
+    src/ui/MainWindowAppearance.cpp
+    src/ui/MainWindowScene.cpp
+    src/ui/MainWindowIO.cpp
 )
 
 # The Windows resource script carries the executable's own icon and its version
@@ -184,6 +197,40 @@ if(MSVC)
 else()
     set_source_files_properties(src/core/TraceSceneSimd.cpp PROPERTIES
         COMPILE_OPTIONS "-mavx2;-ffp-contract=off")
+endif()
+
+# ---------------------------------------------------------------------------
+# Sanitizers. Off by default; -DLUXTRACE_SANITIZE=thread is what CI's TSan job
+# turns on.
+#
+# The tracer's claim is about threads: a shared atomic receiver grid written by
+# a relaxed compare-exchange loop, an acquire/release publication counter, and a
+# condition-variable pool. None of that is checked by comparing two runs'
+# floats -- a race can produce the same number a thousand times and a different
+# one on the machine that matters. ThreadSanitizer is the check that actually
+# looks at the memory model, so it gets a build option rather than a hand-rolled
+# set of flags in a workflow file.
+#
+# MSVC has no TSan, so this is a Clang/GCC-only build and the CI job that uses
+# it runs on Linux. Everything is compiled with it, not just the core: a race
+# between a worker and the thread that reads its result is exactly the kind
+# these three suites are pointed at.
+set(LUXTRACE_SANITIZE "" CACHE STRING
+    "Sanitizer to build with: thread, address, undefined, or empty for none")
+set_property(CACHE LUXTRACE_SANITIZE PROPERTY STRINGS "" thread address undefined)
+
+if(LUXTRACE_SANITIZE)
+    if(MSVC)
+        message(FATAL_ERROR
+            "LUXTRACE_SANITIZE=${LUXTRACE_SANITIZE} needs Clang or GCC; MSVC ships "
+            "no ThreadSanitizer. Configure with clang++ instead.")
+    endif()
+    # -O1 and frame pointers: a sanitizer report is only useful with a readable
+    # stack, and -O0 makes the trace suites too slow to finish a CI job.
+    add_compile_options(-fsanitize=${LUXTRACE_SANITIZE}
+                        -fno-omit-frame-pointer -g -O1)
+    add_link_options(-fsanitize=${LUXTRACE_SANITIZE})
+    message(STATUS "Building with -fsanitize=${LUXTRACE_SANITIZE}")
 endif()
 
 if(MSVC)

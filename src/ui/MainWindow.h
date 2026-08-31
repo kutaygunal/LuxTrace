@@ -99,6 +99,15 @@ private slots:
     void onObjectOpticsEdited(int id);
     void onObjectOpticsReset(int id);
 
+    // The same four edits, against every selected object rather than one.
+    // `fields` names the multiedit:: flags the user actually answered, and
+    // nothing outside that mask is touched -- which is what lets four objects
+    // with four different positions keep them while their shared Z is set once.
+    void onMultiPlacementEdited(quint32 fields);
+    void onMultiParametersEdited(quint32 fields);
+    void onMultiSourceEdited(quint32 fields);
+    void onMultiOpticsEdited(quint32 fields);
+
     void onRunConvergence();
     void onConvergenceReady(const std::vector<studies::ConvergencePoint>& points);
     void onFocusSweep();
@@ -179,6 +188,27 @@ private:
     // selected and which emitter does. Safe to call while the panel is being
     // edited, because it does not touch the panel.
     void refreshSelectionHighlight();
+    // What an edit from the property panel acts on: the primary first, then the
+    // rest of the selection, and only objects the document still has.
+    //
+    // The primary is put in by hand rather than trusted to be in the set. It
+    // always is, coming from the tree -- but a selection that silently dropped
+    // the one object whose name is at the top of the panel would be the worst
+    // possible way for that to stop being true.
+    QList<int> editSelection() const;
+    // Asks the user to confirm that an edit is about to be written to every
+    // selected object, and answers whether to go ahead.
+    //
+    // Asked once per selection rather than once per keystroke: a spin box
+    // reports every step it takes, and a dialog on each of them would be a
+    // dialog nobody reads. "Do not ask again" silences it for the rest of the
+    // session -- this instance only, deliberately: nothing about it is written
+    // to disk, so a habit formed in one sitting cannot quietly disarm the
+    // warning in the next one.
+    //
+    // Declining puts the panel back to what the document says, so a refused
+    // edit leaves no number on screen that is not in the scene.
+    bool confirmMultiEdit();
     // Asks the user to confirm removing `ids` and everything under them, then
     // removes them if they agree. Shared by the tree's Delete and the
     // viewport's Delete key, so both ask the same question and do the same
@@ -200,6 +230,10 @@ private:
     QToolButton* m_scaleTool  = nullptr;
 
     bool m_inspectorEditing = false;
+    // Whether this selection has already been confirmed for multi-editing, and
+    // whether the question is still being asked at all this session.
+    bool m_multiEditConfirmed = false;
+    bool m_multiEditAsk       = true;
     // Sets that flag for the length of a scope, exception or early return
     // included.
     struct InspectorEditScope {

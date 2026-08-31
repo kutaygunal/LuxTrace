@@ -1,4 +1,5 @@
 #include "SurfaceInspector.h"
+#include "MultiEdit.h"
 #include "PlotWidget.h"
 
 #include "core/Material.h"
@@ -19,13 +20,14 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace {
 
 QDoubleSpinBox* dspin(QWidget* p, double lo, double hi, double step, int decimals,
                       const QString& suffix = QString()) {
-    auto* s = new QDoubleSpinBox(p);
+    auto* s = new multiedit::DoubleSpinBox(p);
     s->setRange(lo, hi);
     s->setSingleStep(step);
     s->setDecimals(decimals);
@@ -101,7 +103,7 @@ SurfaceInspector::SurfaceInspector(QWidget* parent) : QWidget(parent) {
         "about 4 % at normal incidence for air/glass, rising to 1 at grazing "
         "and exactly 1 past the critical angle. Only meaningful with an index."));
 
-    m_priority = new QSpinBox(basicBox);
+    m_priority = new multiedit::SpinBox(basicBox);
     m_priority->setRange(-100, 100);
     m_priority->setToolTip(QStringLiteral(
         "Where two solids overlap, the higher priority wins: a ray inside both "
@@ -333,22 +335,24 @@ SurfaceInspector::SurfaceInspector(QWidget* parent) : QWidget(parent) {
         m_appearanceRgb[0] = picked.redF();
         m_appearanceRgb[1] = picked.greenF();
         m_appearanceRgb[2] = picked.blueF();
+        m_appearanceMixed = false;
         refreshAppearanceSwatch();
-        onEdit();
+        onEdit(multiedit::optic::Appearance);
     });
     connect(m_appearanceClear, &QPushButton::clicked, this, [this] {
         m_appearanceRgb[0] = m_appearanceRgb[1] = m_appearanceRgb[2] = -1.0;
+        m_appearanceMixed = false;
         refreshAppearanceSwatch();
-        onEdit();
+        onEdit(multiedit::optic::Appearance);
     });
 
     // ---- receiver -----------------------------------------------------------
     m_detectorBox = group(QStringLiteral("Receiver"), body);
     auto* detForm = new QFormLayout(m_detectorBox);
 
-    m_detNX = new QSpinBox(m_detectorBox);
+    m_detNX = new multiedit::SpinBox(m_detectorBox);
     m_detNX->setRange(0, 4096);
-    m_detNY = new QSpinBox(m_detectorBox);
+    m_detNY = new multiedit::SpinBox(m_detectorBox);
     m_detNY->setRange(0, 4096);
     for (QSpinBox* s : {m_detNX, m_detNY})
         s->setToolTip(QStringLiteral(
@@ -381,17 +385,63 @@ SurfaceInspector::SurfaceInspector(QWidget* parent) : QWidget(parent) {
     layout->addStretch(1);
 
     // ---- wiring -------------------------------------------------------------
-    for (QDoubleSpinBox* s : {m_reflectivity, m_transmissivity, m_index, m_absorption,
-                              m_coatingResidual, m_bsdfAlpha, m_bsdfFraction,
-                              m_abgA, m_abgB, m_abgG, m_scatter, m_roughness,
-                              m_volumeCoefficient, m_volumeAnisotropy, m_detAcceptance})
-        connect(s, &QDoubleSpinBox::valueChanged, this, [this](double) { onEdit(); });
-    for (QSpinBox* s : {m_priority, m_detNX, m_detNY})
-        connect(s, &QSpinBox::valueChanged, this, [this](int) { onEdit(); });
-    for (QCheckBox* c : {m_fresnel, m_coatingHigh})
-        connect(c, &QCheckBox::toggled, this, [this](bool) { onEdit(); });
-    for (QComboBox* c : {m_material, m_coatingModel, m_bsdfModel, m_detReject})
-        connect(c, &QComboBox::currentIndexChanged, this, [this](int) { onEdit(); });
+    //
+    // Tagged one by one rather than swept up in a loop, because each control
+    // now has to report *which* property it is: a multi-selection writes back
+    // only the fields somebody actually answered.
+    namespace F = multiedit::optic;
+
+    struct DoubleTag { QDoubleSpinBox* w; quint32 f; };
+    for (const DoubleTag& t : {DoubleTag{m_reflectivity,      F::Reflectivity},
+                               DoubleTag{m_transmissivity,    F::Transmissivity},
+                               DoubleTag{m_index,             F::Index},
+                               DoubleTag{m_absorption,        F::Absorption},
+                               DoubleTag{m_coatingResidual,   F::CoatingResidual},
+                               DoubleTag{m_bsdfAlpha,         F::BsdfAlpha},
+                               DoubleTag{m_bsdfFraction,      F::BsdfFraction},
+                               DoubleTag{m_abgA,              F::AbgA},
+                               DoubleTag{m_abgB,              F::AbgB},
+                               DoubleTag{m_abgG,              F::AbgG},
+                               DoubleTag{m_scatter,           F::Scatter},
+                               DoubleTag{m_roughness,         F::Roughness},
+                               DoubleTag{m_volumeCoefficient, F::VolumeCoefficient},
+                               DoubleTag{m_volumeAnisotropy,  F::VolumeAnisotropy},
+                               DoubleTag{m_detAcceptance,     F::DetAcceptance}}) {
+        const quint32 f = t.f;
+        connect(t.w, &QDoubleSpinBox::valueChanged, this, [this, f](double) { onEdit(f); });
+    }
+
+    struct IntTag { QSpinBox* w; quint32 f; };
+    for (const IntTag& t : {IntTag{m_priority, F::MediumPriority},
+                            IntTag{m_detNX,    F::DetNX},
+                            IntTag{m_detNY,    F::DetNY}}) {
+        const quint32 f = t.f;
+        connect(t.w, &QSpinBox::valueChanged, this, [this, f](int) { onEdit(f); });
+    }
+
+    struct CheckTag { QCheckBox* w; quint32 f; };
+    for (const CheckTag& t : {CheckTag{m_fresnel,     F::Fresnel},
+                              CheckTag{m_coatingHigh, F::CoatingHigh}}) {
+        QCheckBox* w = t.w;
+        const quint32 f = t.f;
+        connect(w, &QCheckBox::toggled, this, [this, w, f](bool) {
+            multiedit::clearMixed(w);
+            onEdit(f);
+        });
+    }
+
+    struct ComboTag { QComboBox* w; quint32 f; };
+    for (const ComboTag& t : {ComboTag{m_material,     F::MaterialChoice},
+                              ComboTag{m_coatingModel, F::CoatingModel},
+                              ComboTag{m_bsdfModel,    F::BsdfModel},
+                              ComboTag{m_detReject,    F::DetReject}}) {
+        QComboBox* w = t.w;
+        const quint32 f = t.f;
+        connect(w, &QComboBox::currentIndexChanged, this, [this, w, f](int) {
+            multiedit::clearMixed(w);
+            onEdit(f);
+        });
+    }
 
     // A preset rewrites the fields rather than living beside them, so what is on
     // screen after choosing one is what will actually be traced.
@@ -399,11 +449,16 @@ SurfaceInspector::SurfaceInspector(QWidget* parent) : QWidget(parent) {
         if (m_loading || i <= 0) return;
         const coating::Coating c = coating::at(i - 1);
         m_loading = true;
+        multiedit::clearMixed(m_coatingModel);
+        multiedit::clearMixed(m_coatingHigh);
         m_coatingModel->setCurrentIndex(std::clamp(int(c.model), 0, 3));
         m_coatingResidual->setValue(c.residual);
+        multiedit::setMixed(m_coatingResidual, false);
         m_coatingHigh->setChecked(c.highReflector);
         m_loading = false;
-        onEdit();
+        // One action, three fields: naming a coating answers all three at once,
+        // so all three go to every selected surface.
+        onEdit(F::CoatingPreset);
     });
     connect(m_material, &QComboBox::currentIndexChanged, this, [this](int i) {
         if (m_loading || i <= 0) return;
@@ -413,7 +468,11 @@ SurfaceInspector::SurfaceInspector(QWidget* parent) : QWidget(parent) {
         if (m.valid() && m.nd > 0.0 && !m.isMetal()) {
             m_loading = true;
             m_index->setValue(m.nd);
-            if (m.alpha > 0.0) m_absorption->setValue(m.alpha);
+            multiedit::setMixed(m_index, false);
+            if (m.alpha > 0.0) {
+                m_absorption->setValue(m.alpha);
+                multiedit::setMixed(m_absorption, false);
+            }
             m_loading = false;
         }
     });
@@ -423,14 +482,15 @@ SurfaceInspector::SurfaceInspector(QWidget* parent) : QWidget(parent) {
     clearSurface();
 }
 
-void SurfaceInspector::onEdit() {
+void SurfaceInspector::onEdit(quint32 fields) {
     if (m_loading || !m_haveSurface) return;
     refreshAll();
-    emit edited();
+    emit edited(fields);
 }
 
 void SurfaceInspector::clearSurface() {
-    m_haveSurface = false;
+    m_haveSurface  = false;
+    m_surfaceCount = 1;
     m_name->setText(QStringLiteral("No surface selected"));
     m_editedNote->clear();
     m_editedNote->setVisible(false);
@@ -439,9 +499,10 @@ void SurfaceInspector::clearSurface() {
 
 void SurfaceInspector::setSurface(const QString& label, const SurfaceOptics& o,
                                   const SurfaceOptics& sceneValue, bool edited) {
-    m_loading     = true;
-    m_haveSurface = true;
-    m_sceneValue  = sceneValue;
+    m_loading      = true;
+    m_haveSurface  = true;
+    m_surfaceCount = 1;
+    m_sceneValue   = sceneValue;
     setEnabled(true);
 
     m_name->setText(label.isEmpty() ? QStringLiteral("(unnamed surface)") : label);
@@ -450,20 +511,71 @@ void SurfaceInspector::setSurface(const QString& label, const SurfaceOptics& o,
                                                   "scene declares.")
                                  : QString());
 
+    showValues({o});
+
+    m_reset->setVisible(true);
+    m_reset->setEnabled(edited);
+    m_loading = false;
+    refreshAll();
+}
+
+void SurfaceInspector::setSurfaces(const QString& label,
+                                   const std::vector<SurfaceOptics>& values) {
+    if (values.empty()) { clearSurface(); return; }
+    if (values.size() == 1) {
+        setSurface(label, values.front(), values.front(), false);
+        return;
+    }
+
+    m_loading      = true;
+    m_haveSurface  = true;
+    m_surfaceCount = int(values.size());
+    // The primary's optics, which is what optics() starts from -- so a field
+    // this form does not expose, and every field left as a dash, keeps a real
+    // value rather than a zero.
+    m_sceneValue   = values.front();
+    setEnabled(true);
+
+    m_name->setText(label);
+    m_editedNote->setVisible(true);
+    m_editedNote->setText(
+        QStringLiteral("Editing %1 surfaces at once. A field they disagree on reads "
+                       "%2; answering it writes that answer to all %1.")
+            .arg(values.size())
+            .arg(multiedit::marker()));
+
+    showValues(values);
+
+    // Each of them has its own scene value, so there is no single thing this
+    // button could restore.
+    m_reset->setVisible(false);
+    m_loading = false;
+    refreshAll();
+}
+
+// Writes the primary's numbers into every widget, then marks the ones the rest
+// of the selection disagrees about. Two passes rather than one, because a field
+// showing a dash still has to carry a value for its arrows to step from.
+void SurfaceInspector::showValues(const std::vector<SurfaceOptics>& values) {
+    const SurfaceOptics& o = values.front();
+
     m_reflectivity->setValue(o.reflectivity);
     m_transmissivity->setValue(o.transmissivity);
     m_fresnel->setChecked(o.fresnel);
     m_priority->setValue(o.mediumPriority);
 
+    multiedit::setMixed(m_material, false);
     m_material->setCurrentIndex(catalogueIndexOf(o.material) + 1);
     m_index->setValue(o.index);
     m_absorption->setValue(o.absorption);
 
     m_coatingName->setCurrentIndex(0);
+    multiedit::setMixed(m_coatingModel, false);
     m_coatingModel->setCurrentIndex(std::clamp(int(o.coating.model), 0, 3));
     m_coatingResidual->setValue(o.coating.residual);
     m_coatingHigh->setChecked(o.coating.highReflector);
 
+    multiedit::setMixed(m_bsdfModel, false);
     m_bsdfModel->setCurrentIndex(std::clamp(int(o.bsdf.model), 0, 4));
     m_bsdfAlpha->setValue(o.bsdf.alpha);
     m_bsdfFraction->setValue(o.bsdf.fraction);
@@ -471,65 +583,152 @@ void SurfaceInspector::setSurface(const QString& label, const SurfaceOptics& o,
     m_abgB->setValue(o.bsdf.abgB);
     m_abgG->setValue(o.bsdf.abgG);
     m_scatter->setValue(o.scatter);
-    for (int i = 0; i < 3; ++i) m_appearanceRgb[i] = o.appearanceRgb[i];
-    refreshAppearanceSwatch();
     m_roughness->setValue(o.roughness);
+    for (int i = 0; i < 3; ++i) m_appearanceRgb[i] = o.appearanceRgb[i];
 
     m_volumeCoefficient->setValue(o.volume.coefficient);
     m_volumeAnisotropy->setValue(o.volume.anisotropy);
 
-    m_detectorBox->setVisible(o.isDetector);
+    // Shown when any of them is a receiver: a selection of four receivers and
+    // one mirror still has a bin grid worth setting on the four.
+    bool anyDetector = false;
+    for (const SurfaceOptics& v : values) anyDetector = anyDetector || v.isDetector;
+    m_detectorBox->setVisible(anyDetector);
     m_detNX->setValue(o.detNX);
     m_detNY->setValue(o.detNY);
     m_detAcceptance->setValue(o.detAcceptanceDeg);
+    multiedit::setMixed(m_detReject, false);
     m_detReject->setCurrentIndex(int(o.detRejectMode));
 
-    m_reset->setEnabled(edited);
-    m_loading = false;
-    refreshAll();
+    // ---- and now what they disagree about ----
+    const auto differs = [&values](auto get) {
+        for (std::size_t i = 1; i < values.size(); ++i)
+            if (!(get(values[i]) == get(values[0]))) return true;
+        return false;
+    };
+
+    multiedit::setMixed(m_reflectivity,
+        differs([](const SurfaceOptics& v) { return v.reflectivity; }));
+    multiedit::setMixed(m_transmissivity,
+        differs([](const SurfaceOptics& v) { return v.transmissivity; }));
+    multiedit::setMixed(m_fresnel,
+        differs([](const SurfaceOptics& v) { return v.fresnel; }));
+    multiedit::setMixed(m_priority,
+        differs([](const SurfaceOptics& v) { return v.mediumPriority; }));
+    multiedit::setMixed(m_material,
+        differs([](const SurfaceOptics& v) { return catalogueIndexOf(v.material); }));
+    multiedit::setMixed(m_index,
+        differs([](const SurfaceOptics& v) { return v.index; }));
+    multiedit::setMixed(m_absorption,
+        differs([](const SurfaceOptics& v) { return v.absorption; }));
+    multiedit::setMixed(m_coatingModel,
+        differs([](const SurfaceOptics& v) { return int(v.coating.model); }));
+    multiedit::setMixed(m_coatingResidual,
+        differs([](const SurfaceOptics& v) { return v.coating.residual; }));
+    multiedit::setMixed(m_coatingHigh,
+        differs([](const SurfaceOptics& v) { return v.coating.highReflector; }));
+    multiedit::setMixed(m_bsdfModel,
+        differs([](const SurfaceOptics& v) { return int(v.bsdf.model); }));
+    multiedit::setMixed(m_bsdfAlpha,
+        differs([](const SurfaceOptics& v) { return v.bsdf.alpha; }));
+    multiedit::setMixed(m_bsdfFraction,
+        differs([](const SurfaceOptics& v) { return v.bsdf.fraction; }));
+    multiedit::setMixed(m_abgA,
+        differs([](const SurfaceOptics& v) { return v.bsdf.abgA; }));
+    multiedit::setMixed(m_abgB,
+        differs([](const SurfaceOptics& v) { return v.bsdf.abgB; }));
+    multiedit::setMixed(m_abgG,
+        differs([](const SurfaceOptics& v) { return v.bsdf.abgG; }));
+    multiedit::setMixed(m_scatter,
+        differs([](const SurfaceOptics& v) { return v.scatter; }));
+    multiedit::setMixed(m_roughness,
+        differs([](const SurfaceOptics& v) { return v.roughness; }));
+    multiedit::setMixed(m_volumeCoefficient,
+        differs([](const SurfaceOptics& v) { return v.volume.coefficient; }));
+    multiedit::setMixed(m_volumeAnisotropy,
+        differs([](const SurfaceOptics& v) { return v.volume.anisotropy; }));
+    multiedit::setMixed(m_detNX,
+        differs([](const SurfaceOptics& v) { return v.detNX; }));
+    multiedit::setMixed(m_detNY,
+        differs([](const SurfaceOptics& v) { return v.detNY; }));
+    multiedit::setMixed(m_detAcceptance,
+        differs([](const SurfaceOptics& v) { return v.detAcceptanceDeg; }));
+    multiedit::setMixed(m_detReject,
+        differs([](const SurfaceOptics& v) { return int(v.detRejectMode); }));
+
+    m_appearanceMixed = differs([](const SurfaceOptics& v) {
+        return std::array<double, 3>{v.appearanceRgb[0], v.appearanceRgb[1],
+                                     v.appearanceRgb[2]};
+    });
+    refreshAppearanceSwatch();
 }
 
 SurfaceOptics SurfaceInspector::optics() const {
     // Start from what the scene declared, so anything this form does not expose
     // -- a measured coating table, a measured BSDF -- survives an edit to
     // something that it does.
+    //
+    // It is also where a field showing a dash gets its value from. A dash is
+    // the absence of an answer, so nothing is read out of one: the field keeps
+    // the primary selection's number here, and the caller's field mask makes
+    // sure it is never written anywhere. Reading a mixed combo would be worse
+    // than wrong -- its current row is the dash entry, past the end of the
+    // enum it maps onto.
     SurfaceOptics o = m_sceneValue;
 
-    o.reflectivity   = m_reflectivity->value();
-    o.transmissivity = m_transmissivity->value();
-    o.fresnel        = m_fresnel->isChecked();
-    o.mediumPriority = m_priority->value();
+    if (!multiedit::isMixed(m_reflectivity))   o.reflectivity   = m_reflectivity->value();
+    if (!multiedit::isMixed(m_transmissivity)) o.transmissivity = m_transmissivity->value();
+    if (!multiedit::isMixed(m_fresnel))        o.fresnel        = m_fresnel->isChecked();
+    if (!multiedit::isMixed(m_priority))       o.mediumPriority = m_priority->value();
 
-    const int mat = m_material->currentIndex() - 1;
-    o.material   = (mat >= 0) ? materials::at(mat) : OpticalMaterial{};
-    o.index      = m_index->value();
-    o.absorption = m_absorption->value();
+    if (!multiedit::isMixed(m_material)) {
+        const int mat = m_material->currentIndex() - 1;
+        o.material = (mat >= 0 && mat < materials::count()) ? materials::at(mat)
+                                                           : OpticalMaterial{};
+    }
+    if (!multiedit::isMixed(m_index))      o.index      = m_index->value();
+    if (!multiedit::isMixed(m_absorption)) o.absorption = m_absorption->value();
 
-    o.coating.model         = coating::Model(m_coatingModel->currentIndex());
-    o.coating.residual      = m_coatingResidual->value();
-    o.coating.highReflector = m_coatingHigh->isChecked();
+    if (!multiedit::isMixed(m_coatingModel))
+        o.coating.model = coating::Model(std::clamp(m_coatingModel->currentIndex(), 0, 3));
+    if (!multiedit::isMixed(m_coatingResidual))
+        o.coating.residual = m_coatingResidual->value();
+    if (!multiedit::isMixed(m_coatingHigh))
+        o.coating.highReflector = m_coatingHigh->isChecked();
 
-    o.bsdf.model    = bsdf::Model(m_bsdfModel->currentIndex());
-    o.bsdf.alpha    = m_bsdfAlpha->value();
-    o.bsdf.fraction = m_bsdfFraction->value();
-    o.bsdf.abgA     = m_abgA->value();
-    o.bsdf.abgB     = m_abgB->value();
-    o.bsdf.abgG     = m_abgG->value();
-    o.scatter       = m_scatter->value();
-    if (m_appearanceRgb[0] >= 0.0)
-        o.setAppearanceColour(m_appearanceRgb[0], m_appearanceRgb[1], m_appearanceRgb[2]);
-    else
-        o.clearAppearanceColour();
-    o.roughness     = m_roughness->value();
+    if (!multiedit::isMixed(m_bsdfModel))
+        o.bsdf.model = bsdf::Model(std::clamp(m_bsdfModel->currentIndex(), 0, 4));
+    if (!multiedit::isMixed(m_bsdfAlpha))    o.bsdf.alpha    = m_bsdfAlpha->value();
+    if (!multiedit::isMixed(m_bsdfFraction)) o.bsdf.fraction = m_bsdfFraction->value();
+    if (!multiedit::isMixed(m_abgA))         o.bsdf.abgA     = m_abgA->value();
+    if (!multiedit::isMixed(m_abgB))         o.bsdf.abgB     = m_abgB->value();
+    if (!multiedit::isMixed(m_abgG))         o.bsdf.abgG     = m_abgG->value();
+    if (!multiedit::isMixed(m_scatter))      o.scatter       = m_scatter->value();
+    if (!multiedit::isMixed(m_roughness))    o.roughness     = m_roughness->value();
 
-    o.volume.coefficient = m_volumeCoefficient->value();
-    o.volume.anisotropy  = m_volumeAnisotropy->value();
+    if (!m_appearanceMixed) {
+        if (m_appearanceRgb[0] >= 0.0)
+            o.setAppearanceColour(m_appearanceRgb[0], m_appearanceRgb[1],
+                                  m_appearanceRgb[2]);
+        else
+            o.clearAppearanceColour();
+    }
 
-    if (o.isDetector) {
-        o.detNX            = m_detNX->value();
-        o.detNY            = m_detNY->value();
-        o.detAcceptanceDeg = m_detAcceptance->value();
-        o.detRejectMode    = SurfaceOptics::RejectMode(m_detReject->currentIndex());
+    if (!multiedit::isMixed(m_volumeCoefficient))
+        o.volume.coefficient = m_volumeCoefficient->value();
+    if (!multiedit::isMixed(m_volumeAnisotropy))
+        o.volume.anisotropy = m_volumeAnisotropy->value();
+
+    // The receiver rows are shown whenever any of the selection is one, so they
+    // are read whenever they are shown -- a mask of receiver fields written
+    // onto a mirror is refused by applyOpticsFields, not here.
+    if (m_detectorBox->isVisible()) {
+        if (!multiedit::isMixed(m_detNX))         o.detNX            = m_detNX->value();
+        if (!multiedit::isMixed(m_detNY))         o.detNY            = m_detNY->value();
+        if (!multiedit::isMixed(m_detAcceptance)) o.detAcceptanceDeg = m_detAcceptance->value();
+        if (!multiedit::isMixed(m_detReject))
+            o.detRejectMode =
+                SurfaceOptics::RejectMode(std::clamp(m_detReject->currentIndex(), 0, 1));
     }
     return o;
 }
@@ -538,6 +737,13 @@ SurfaceOptics SurfaceInspector::optics() const {
 // beside a label repeating it.
 void SurfaceInspector::refreshAppearanceSwatch() {
     if (!m_appearance) return;
+
+    if (m_appearanceMixed) {
+        m_appearance->setStyleSheet(QString());
+        m_appearance->setText(multiedit::marker() + QStringLiteral("  (they differ)"));
+        if (m_appearanceClear) m_appearanceClear->setEnabled(true);
+        return;
+    }
 
     if (m_appearanceRgb[0] < 0.0) {
         m_appearance->setStyleSheet(QString());
@@ -567,12 +773,18 @@ void SurfaceInspector::refreshAll() {
 }
 
 void SurfaceInspector::syncEnabledState() {
-    const bool refracts = m_index->value() > 0.0;
-    const auto model    = bsdf::Model(m_bsdfModel->currentIndex());
+    // A dashed field says nothing about what to grey out, so it is read as the
+    // permissive answer: with several surfaces disagreeing about their index,
+    // the Fresnel box stays reachable rather than being disabled on the
+    // strength of whichever one happened to be primary.
+    const bool refracts = multiedit::isMixed(m_index) || m_index->value() > 0.0;
+    const auto model    = bsdf::Model(
+        multiedit::isMixed(m_bsdfModel) ? 0 : std::clamp(m_bsdfModel->currentIndex(), 0, 4));
 
+    const bool fresnelOn = !multiedit::isMixed(m_fresnel) && m_fresnel->isChecked();
     m_fresnel->setEnabled(refracts);
-    m_transmissivity->setEnabled(!m_fresnel->isChecked() || !refracts);
-    m_reflectivity->setEnabled(!m_fresnel->isChecked() || !refracts);
+    m_transmissivity->setEnabled(!fresnelOn || !refracts);
+    m_reflectivity->setEnabled(!fresnelOn || !refracts);
     m_absorption->setEnabled(refracts);
     // A coating modulates a refractive interface; on an opaque surface there is
     // no transmitted branch for it to act on.
@@ -588,18 +800,27 @@ void SurfaceInspector::syncEnabledState() {
     // read into one, and the BSDF wins.
     const bool shorthand = (model == bsdf::Model::Specular);
     m_scatter->setEnabled(shorthand);
-    m_roughness->setEnabled(shorthand && m_scatter->value() <= 0.0);
+    m_roughness->setEnabled(shorthand &&
+                            (multiedit::isMixed(m_scatter) || m_scatter->value() <= 0.0));
 
     m_bsdfTip->setText(bsdf::modelTip(model));
 
-    const bool coated = coating::Model(m_coatingModel->currentIndex()) != coating::Model::None;
+    const bool coated = multiedit::isMixed(m_coatingModel) ||
+                        coating::Model(std::clamp(m_coatingModel->currentIndex(), 0, 3)) !=
+                            coating::Model::None;
     m_coatingResidual->setEnabled(coated);
     m_coatingHigh->setEnabled(coated);
 }
 
 void SurfaceInspector::refreshMaterialReadout() {
+    if (multiedit::isMixed(m_material)) {
+        m_materialInfo->setText(QStringLiteral(
+            "The selected surfaces are not all the same material. Choosing one "
+            "here assigns it to every one of them."));
+        return;
+    }
     const int mat = m_material->currentIndex() - 1;
-    if (mat < 0) {
+    if (mat < 0 || mat >= materials::count()) {
         m_materialInfo->setText(QStringLiteral(
             "No catalogue material: the index above is used flat, or with the "
             "Cauchy shorthand the scene set."));

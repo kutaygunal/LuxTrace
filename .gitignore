@@ -23,8 +23,5 @@ Makefile
 # Logs
 *.log
 
-# Docs
-/docs/
-
 # Personal build paths: inherit from CMakePresets.json, keep them out of the repo
 CMakeUserPresets.json

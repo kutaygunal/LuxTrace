@@ -43,6 +43,7 @@
 #include "core/Report.h"
 #include "core/ConfigIO.h"
 #include "core/GeometryProvider.h"
+#include "core/MultiEditFields.h"
 #include "core/GeometryWorker.h"
 #include "core/MeshBuilder.h"
 #include "core/Bsdf.h"
@@ -1094,11 +1095,12 @@ TEST(patterns, retroreflectors_only_score_by_sending_light_back) {
 }
 
 #include "NewTests.inc"
-#include "NewTests_T3-001.inc"
-#include "NewTests_T3-002.inc"
-#include "NewTests_T3-003.inc"
-#include "NewTests_T3-004.inc"
-#include "NewTests_T3-005.inc"
+#include "ThetaBinTests.inc"
+#include "MeasuredDataTests.inc"
+#include "SceneParamsTests.inc"
+#include "AtomicGridTests.inc"
+#include "MultiEditTests.inc"
+#include "AdaptiveMeshTests.inc"
 #include "AuditTests.inc"
 
 // Tests for the assembled-scene document: the object model the scene tree, the

@@ -1,4 +1,4 @@
-// T3-001 -- beam-adaptive theta binning.
+// Beam-adaptive theta binning.
 //
 // The flat `180.0 / nTheta` partition was replaced by an equal-flux,
 // beam-adaptive bin. A fine master theta-ring flux histogram is reduced to the

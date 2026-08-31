@@ -1,8 +1,8 @@
-// T3-003 — SceneParams capacity (4 -> >= 6) as an inline vector, ADDITIVE-ONLY.
+// SceneParams capacity (4 -> >= 6), held as an inline vector.
 //
-// Own test module for the Senior C++ engineer. Registered via the shared TEST
-// macro so it self-registers with the same registry the runner walks; the
-// module is meant to be #include-d alongside NewTests.inc / AuditTests.inc.
+// Registered via the shared TEST macro so it self-registers with the same
+// registry the runner walks; #include-d alongside NewTests.inc / AuditTests.inc.
+// Suite "sceneparams".
 #include <cmath>
 #include <type_traits>
 
