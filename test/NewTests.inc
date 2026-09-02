@@ -3396,6 +3396,93 @@ TEST(bsdf, volume_scattering_sends_light_forward_or_back_as_asked) {
     CHECK_NEAR(meanCosine(-0.5), -0.5, 0.02);
 }
 
+TEST(bsdf, the_gegenbauer_kernel_is_henyey_greenstein_at_alpha_one_half) {
+    // The reason the second parameter is safe to add: at alpha = 1/2 the
+    // prefactor collapses to (1-g^2)/4pi and the exponent to 3/2, so every
+    // medium tuned against HG keeps the lobe it was tuned to.
+    for (double g : {-0.8, -0.3, 0.0, 0.25, 0.6, 0.9}) {
+        for (int i = 0; i <= 40; ++i) {
+            const double mu = -1.0 + 2.0 * double(i) / 40.0;
+            CHECK_NEAR(bsdf::gegenbauer(mu, g, 0.5), bsdf::henyeyGreenstein(mu, g), 1e-12);
+        }
+    }
+}
+
+TEST(bsdf, the_gegenbauer_kernel_integrates_to_one_at_every_shape) {
+    // Same requirement as HG, over the extra degree of freedom: a phase
+    // function that does not integrate to one is a medium that invents light.
+    for (double g : {-0.6, -0.2, 0.3, 0.8}) {
+        for (double a : {0.25, 0.5, 1.0, 2.0, 4.0}) {
+            constexpr int kN = 20000;
+            double total = 0.0;
+            for (int i = 0; i < kN; ++i) {
+                const double c0 = -1.0 + 2.0 * double(i) / kN;
+                const double c1 = -1.0 + 2.0 * double(i + 1) / kN;
+                total += bsdf::gegenbauer(0.5 * (c0 + c1), g, a) * 2.0 * kPi * (c1 - c0);
+            }
+            CHECK_NEAR(total, 1.0, 0.02);
+        }
+    }
+}
+
+TEST(bsdf, the_gegenbauer_sampler_draws_the_kernel_it_evaluates) {
+    // The sampler is an inverse CDF, so the check that matters is that the
+    // draws have the mean cosine the analytic lobe does -- computed here by
+    // quadrature over the same function, not against a second closed form that
+    // could be wrong in the same direction.
+    auto analyticMean = [](double g, double a) {
+        constexpr int kN = 20000;
+        double num = 0.0;
+        for (int i = 0; i < kN; ++i) {
+            const double c0 = -1.0 + 2.0 * double(i) / kN;
+            const double c1 = -1.0 + 2.0 * double(i + 1) / kN;
+            const double cm = 0.5 * (c0 + c1);
+            num += cm * bsdf::gegenbauer(cm, g, a) * 2.0 * kPi * (c1 - c0);
+        }
+        return num;
+    };
+    auto sampledMean = [](double g, double a) {
+        bsdf::Volume vol;
+        vol.coefficient = 0.1;
+        vol.anisotropy  = g;
+        vol.phase       = bsdf::Phase::Gegenbauer;
+        vol.alpha       = a;
+        const Vec3 d(0, 0, 1);
+        std::uint64_t rng = 909;
+        double sum = 0.0;
+        constexpr int kN = 200000;
+        for (int i = 0; i < kN; ++i) sum += vol.scatter(d, rng).dot(d);
+        return sum / kN;
+    };
+    for (double g : {0.3, 0.7, -0.5}) {
+        for (double a : {0.5, 1.5, 3.0}) {
+            CHECK_NEAR(sampledMean(g, a), analyticMean(g, a), 0.01);
+        }
+    }
+}
+
+TEST(bsdf, a_gegenbauer_medium_at_alpha_one_half_scatters_exactly_like_the_old_one) {
+    // Not "close to": the same RNG stream has to produce the same directions,
+    // or a scene switched to the new kernel at its HG-equivalent shape would
+    // quietly stop being the scene it was.
+    bsdf::Volume hg;
+    hg.coefficient = 0.1;
+    hg.anisotropy  = 0.65;
+    bsdf::Volume gk = hg;
+    gk.phase = bsdf::Phase::Gegenbauer;
+    gk.alpha = 0.5;
+
+    const Vec3 d(0.3, -0.5, 0.8);
+    std::uint64_t r1 = 4242, r2 = 4242;
+    for (int i = 0; i < 5000; ++i) {
+        const Vec3 a = hg.scatter(d, r1);
+        const Vec3 b = gk.scatter(d, r2);
+        CHECK_NEAR(a.x, b.x, 1e-12);
+        CHECK_NEAR(a.y, b.y, 1e-12);
+        CHECK_NEAR(a.z, b.z, 1e-12);
+    }
+}
+
 TEST(bsdf, the_free_path_is_exponentially_distributed) {
     // A mean free path of 1/sigma is what makes a scattering coefficient mean
     // anything.

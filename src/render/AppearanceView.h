@@ -6,6 +6,7 @@
 
 #include <AIS_InteractiveContext.hxx>
 #include <Graphic3d_GraphicDriver.hxx>
+#include "core/Vec3.h"
 #include <V3d_View.hxx>
 #include <V3d_Viewer.hxx>
 
@@ -145,6 +146,16 @@ public:
     // Eye to the centre of the scene, which is what focus distance 0 resolves
     // to. Zero when there is no camera and nothing to focus on.
     double autoFocalDistance() const;
+
+    // Where this view is standing, so a measurement can be made from the
+    // same place. `fovDeg` is the vertical field of view.
+    //
+    // The picture on this tab is not a measurement and its caption says so.
+    // What it is good at is *framing*: a user orbits until the part looks
+    // the way they want it to, and a luminance measurement of some other
+    // view would be a measurement of a different question. False when there
+    // is no view yet.
+    bool cameraPose(Vec3& eye, Vec3& target, Vec3& up, double& fovDeg) const;
 
     void fitAll();
     void resetView();

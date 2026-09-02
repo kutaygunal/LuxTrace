@@ -195,6 +195,11 @@ double Coating::reflectance_(double n1, double n2, double cosI, double lambda,
     return 0.5 * (rs + rp);
 }
 
+double tableReflectanceAt(const Coating& c, double lambdaNm) {
+    if (c.samples <= 0) return c.residual;
+    return interpolate(c.lambdaNm, c.reflectance, c.samples, lambdaNm);
+}
+
 void Coating::reflectanceSP(double n1, double n2, double cosI, double lambda,
                             double bareS, double bareP, double& rs, double& rp) const {
     rs = bareS;

@@ -2,6 +2,7 @@
 #include "Spectrum.h"
 
 #include <QFile>
+#include <QStringList>
 #include <QTextStream>
 #include <algorithm>
 #include <cmath>
@@ -601,6 +602,90 @@ Wavefront wavefrontError(const SimulationResult& res, int bins) {
 
     out.valid = true;
     return out;
+}
+
+QString strayPathCsv(const SimulationResult& res) {
+    QString out;
+    QTextStream ts(&out);
+    const char* fu = fluxUnitName(res.unit);
+
+    double listed = 0.0;
+    for (const StrayPath& p : res.strayPaths) listed += p.flux;
+
+    ts << "# Stray-light routes, " << fu << "\n";
+    ts << "# " << res.strayPaths.size() << " route(s) holding " << listed
+       << " of " << res.fluxDetector << " delivered\n";
+    ts << "# " << res.strayPathsDropped << " route(s) beyond the table, carrying "
+       << res.strayFluxDropped << "\n";
+    ts << "# route is for reading; ids is what reads back\n";
+    ts << "rank,flux,share_of_detected,rays,truncated,steps,route,ids\n";
+
+    for (std::size_t i = 0; i < res.strayPaths.size(); ++i) {
+        const StrayPath& p = res.strayPaths[i];
+        QString names, ids;
+        for (std::size_t k = 0; k < p.ids.size(); ++k) {
+            if (k) { names += QStringLiteral(" > "); ids += QLatin1Char('|'); }
+            // A label may hold a comma, so the readable column is quoted and
+            // any quote inside it is doubled -- which is what every reader
+            // expects and what makes the file survive a spreadsheet.
+            names += QString(res.strayName(p.ids[k]))
+                         .replace(QLatin1Char('"'), QStringLiteral("\"\""));
+            ids   += QString::number(p.ids[k]);
+        }
+        ts << (i + 1) << "," << p.flux << ","
+           << (res.fluxDetector > 0.0 ? p.flux / res.fluxDetector : 0.0) << ","
+           << p.rays << "," << (p.truncated ? 1 : 0) << "," << p.ids.size()
+           << ",\"" << names << "\"," << ids << "\n";
+    }
+    return out;
+}
+
+bool readStrayPathCsv(const QString& text, std::vector<StrayPath>& out, QString* errorOut) {
+    out.clear();
+    const QStringList lines = text.split(QLatin1Char('\n'));
+    bool sawHeader = false;
+    for (const QString& raw : lines) {
+        const QString line = raw.trimmed();
+        if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) continue;
+        if (!sawHeader) {
+            if (!line.startsWith(QStringLiteral("rank,"))) {
+                if (errorOut) *errorOut = QStringLiteral("not a route file: no rank header");
+                return false;
+            }
+            sawHeader = true;
+            continue;
+        }
+        // The ids column is last and holds no comma, so it is read from the
+        // right -- which sidesteps the quoted name column entirely rather
+        // than writing a CSV parser to get past it.
+        const int cut = line.lastIndexOf(QLatin1Char(','));
+        if (cut < 0) continue;
+        const QString idText = line.mid(cut + 1).trimmed();
+
+        const QStringList head = line.left(cut).split(QLatin1Char(','));
+        if (head.size() < 6) continue;
+
+        StrayPath p;
+        p.flux      = head[1].toDouble();
+        p.rays      = std::size_t(std::max(0LL, head[3].toLongLong()));
+        p.truncated = head[4].toInt() != 0;
+        for (const QString& tok : idText.split(QLatin1Char('|'), Qt::SkipEmptyParts)) {
+            bool ok = false;
+            const int v = tok.toInt(&ok);
+            if (!ok) {
+                if (errorOut)
+                    *errorOut = QStringLiteral("route id '%1' is not a number").arg(tok);
+                return false;
+            }
+            p.ids.push_back(v);
+        }
+        out.push_back(std::move(p));
+    }
+    if (!sawHeader) {
+        if (errorOut) *errorOut = QStringLiteral("not a route file: no rank header");
+        return false;
+    }
+    return true;
 }
 
 QString irradianceCsv(const SimulationResult& res) {

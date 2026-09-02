@@ -192,6 +192,41 @@ struct EstimatorOptions {
     int replicas = 16;
 };
 
+// Stray-light path analysis: which sequences of surfaces deliver light to the
+// receiver, and how much each one carries.
+//
+// "Where is the veiling glare coming from" is not answerable from an irradiance
+// map, because the map is the sum over every route the light took. It is
+// answerable from a ranked list of routes, which is what a stray-light review
+// actually reads, and it is the one analysis this tracer had the machinery for
+// and no way to ask for: every interaction was already visited, and the surface
+// index at each one was already resolved.
+struct StrayPathOptions {
+    bool enabled = false;
+
+    // Which contributor each surface counts as, indexed by surface. A negative
+    // entry -- or an index past the end -- leaves the surface as its own.
+    //
+    // This is what keeps the list readable. A light guide's wall is one surface
+    // hit ninety times and a baffle stack is forty surfaces doing one job; both
+    // produce thousands of distinct sequences that mean the same thing. Grouping
+    // them collapses those to one, and consecutive hits within a set collapse to
+    // a single step, which is the difference between a list a person can read
+    // and a list nobody can.
+    std::vector<int> surfaceSet;
+    // Display names for the sets, indexed by set id.
+    std::vector<QString> setNames;
+
+    // How many distinct routes to keep. Beyond it, arrivals are counted into
+    // the result's `strayPathsDropped` rather than silently discarded.
+    std::size_t maxPaths = 4096;
+
+    int setOf(int surface) const {
+        return (surface >= 0 && surface < int(surfaceSet.size())) ? surfaceSet[std::size_t(surface)]
+                                                                  : -1;
+    }
+};
+
 // A change to one surface's optics, applied for the length of a run.
 //
 // Roughness, scatter and absorption used to be adjustable only as blunt
@@ -225,7 +260,13 @@ struct SurfaceOverride {
 
 // Knobs that trade run time against fidelity of the diagram overlay.
 struct TraceOptions {
-    // 0 == use every hardware thread. Results do not depend on this value.
+    // 0 == use every hardware thread.
+    //
+    // Every scalar the run reports -- efficiency, the energy budget, the flux
+    // per receiver and per source -- reduces in chunk order and is bit-identical
+    // whatever this is set to. The binned grids reduce per thread, so a single
+    // bin can differ in its last place between two thread counts; see
+    // `SimulationResult::gridsReduceInThreadOrder`.
     unsigned      threads     = 0;
     // Only the first `segmentRays` rays have their paths recorded; the diagram
     // subsamples anyway, and recording every path dominates the run otherwise.
@@ -247,6 +288,23 @@ struct TraceOptions {
     // Per-surface optical edits, applied over the scene's own values for this
     // run only. The scene itself is shared between runs and never modified.
     std::vector<SurfaceOverride> surfaceOverrides;
+
+    // Stray-light path analysis. Off by default, and off it costs one
+    // predictable branch per interaction and nothing else.
+    StrayPathOptions strayPaths;
+
+    // Deal chunks to threads by a fixed stride, so which partial grid a ray
+    // lands in -- and therefore the last bit of every binned result -- does not
+    // depend on who asked for work first. Off, chunks come from a shared
+    // counter, which balances better under an oversubscribed machine and gives
+    // up run-to-run reproducibility of the grids. The scalars reduce per chunk
+    // and are unaffected either way.
+    // Accumulate a per-bin variance estimate for the receiver grid: the sum of
+    // the squares of the deposits. One more grid per thread and one
+    // multiply-add per deposit, so it is off unless asked for.
+    bool noiseMap = false;
+
+    bool deterministicGrids = true;
 };
 
 // Progress reporting, partial results and cooperative cancellation. `cancel` is
@@ -267,6 +325,44 @@ struct TraceControl {
     std::function<void(const SimulationResult& partial)> partial;
     int partialIntervalMs = 200;
 };
+
+// Resolves every surface's scattering into the one model a tracer reads: a real
+// BSDF where one is set, `scatter` as a Lambertian lobe, `roughness` as a GGX
+// microfacet, the scene-wide overrides applied over all three, and the physics
+// switches gating each. Writes back over the caller's own copy of the surfaces.
+//
+// Exposed rather than private to the tracer because the preview backend has to
+// resolve them the same way. Two backends that disagree about what a surface
+// *is* cannot be compared, and a second copy of this decision would drift from
+// the first the moment either changed.
+void resolveScattering(std::vector<SceneSurface>& surfs, const PhysicsOptions& phys);
+
+// Copies each receiver frame onto a result, and splits the flat all-receivers
+// grid back out per receiver, mirroring the first into the irradiance grid the
+// plots read.
+//
+// Exposed for the same reason resolveScattering above is: the preview backend
+// accumulates into the same flat layout and has to unpack it the same way. Two
+// unpackings of one layout are two chances to disagree about which bin is which.
+// Which refractive solids contain `p`, outermost first.
+//
+// Parity along one probe ray settles it: a closed solid is crossed an odd
+// number of times by any ray leaving a point inside it, and an even number
+// from outside. A source inside a solid -- an LED die in its own encapsulant --
+// has to start its rays already in that solid rather than in vacuum, or the
+// first interface it meets refracts against the wrong pair of indices.
+//
+// Exposed because the preview backend has to seed its emission the same way,
+// and one walk per source per run is not a thing worth writing twice. Returned
+// as plain indices rather than as the tracer own stack type, which is private
+// to that translation unit.
+std::vector<int> mediaContainingPoint(const TraceScene& scene,
+                                      const std::vector<SceneSurface>& surfs,
+                                      const Vec3& p);
+
+void fillDetectorFrames(const TraceScene& scene, SimulationResult& out);
+void scatterDetectorGrids(const TraceScene& scene, const std::vector<double>& flat,
+                          SimulationResult& out);
 
 // Monte Carlo ray tracer. Intersects rays against the BVH of a TraceScene using
 // the Moller-Trumbore algorithm; applies Fresnel or fixed-split reflection,

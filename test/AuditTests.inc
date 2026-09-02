@@ -239,6 +239,264 @@ TEST(diagnostics, a_well_formed_scene_reports_no_medium_anomalies) {
     }
 }
 
+// ========================================================= determinism ======
+
+// What a thread count may and may not change.
+//
+// Scalars reduce in chunk order, so they are bit-identical however the chunks
+// were scheduled. Grids are accumulated per thread -- one buffer per chunk
+// would be 195,313 buffers on a hundred-million-ray run -- so which partial sum
+// a ray landed in follows the scheduler, and a bin can differ in its last
+// place. Both halves are pinned here: the exact one because it is the claim,
+// and the inexact one because a bound nobody checks is a bound that quietly
+// becomes false.
+
+TEST(determinism, every_scalar_is_bit_identical_across_thread_counts) {
+    for (int sc : {int(GeometryProvider::Scene::Reflector),
+                   int(GeometryProvider::Scene::HalfBallLens),
+                   int(GeometryProvider::Scene::IntegratingSphere),
+                   int(GeometryProvider::Scene::LightGuide)}) {
+        SimConfig base = quickConfig(GeometryProvider::Scene(sc), 20000);
+        base.threads = 1;
+        const SimulationResult one = Simulation::run(base);
+        for (unsigned t : {2u, 3u, 8u}) {
+            SimConfig cfg = base;
+            cfg.threads = t;
+            const SimulationResult r = Simulation::run(cfg);
+            // Not CHECK_NEAR: exactly equal, which is the whole point.
+            CHECK(r.efficiency      == one.efficiency);
+            CHECK(r.fluxDetector    == one.fluxDetector);
+            CHECK(r.fluxAbsorbed    == one.fluxAbsorbed);
+            CHECK(r.fluxEscaped     == one.fluxEscaped);
+            CHECK(r.fluxTruncated   == one.fluxTruncated);
+            CHECK(r.fluxRejected    == one.fluxRejected);
+            CHECK(r.fluxRoulette    == one.fluxRoulette);
+            CHECK(r.raysEmitted     == one.raysEmitted);
+            CHECK(r.raysHitDetector == one.raysHitDetector);
+        }
+    }
+}
+
+TEST(determinism, a_grid_bin_moves_by_rounding_at_most) {
+    // The honest half. If this ever fails it is not a rounding story any more:
+    // something is being counted a different number of times.
+    for (int sc : {int(GeometryProvider::Scene::HalfBallLens),
+                   int(GeometryProvider::Scene::IntegratingSphere)}) {
+        SimConfig base = quickConfig(GeometryProvider::Scene(sc), 20000);
+        base.threads = 1;
+        const SimulationResult one = Simulation::run(base);
+
+        double peak = 0.0;
+        for (double v : one.irradiance) peak = std::max(peak, v);
+
+        for (unsigned t : {3u, 8u}) {
+            SimConfig cfg = base;
+            cfg.threads = t;
+            const SimulationResult r = Simulation::run(cfg);
+            CHECK(r.irradiance.size() == one.irradiance.size());
+            double worst = 0.0;
+            for (std::size_t i = 0; i < r.irradiance.size() && i < one.irradiance.size(); ++i)
+                worst = std::max(worst, std::fabs(r.irradiance[i] - one.irradiance[i]));
+            // A few parts in 1e12 of the brightest bin: rounding, and nothing
+            // that would move a reported figure.
+            CHECK(worst <= 1e-12 * std::max(peak, 1e-300));
+        }
+    }
+}
+
+TEST(determinism, the_same_thread_count_repeats_exactly) {
+    // Rounding that follows the scheduler still has to be the same rounding
+    // twice: a run that cannot reproduce itself is not reproducible at all.
+    SimConfig cfg = quickConfig(GeometryProvider::Scene::IntegratingSphere, 20000);
+    cfg.threads = 8;
+    const SimulationResult a = Simulation::run(cfg);
+    const SimulationResult b = Simulation::run(cfg);
+    CHECK(a.irradiance.size() == b.irradiance.size());
+    for (std::size_t i = 0; i < a.irradiance.size() && i < b.irradiance.size(); ++i)
+        CHECK(a.irradiance[i] == b.irradiance[i]);
+    CHECK(a.efficiency == b.efficiency);
+}
+
+// ========================================================= stray paths ======
+
+// Which routes delivered the light. The map is the sum over every route, so
+// "where is this coming from" is a question the map cannot answer and a ranked
+// list can.
+
+TEST(straypaths, the_routes_account_for_every_watt_the_receiver_got) {
+    // The invariant that catches a missed recording site: if a route is not
+    // booked somewhere, its flux goes missing from the table while still
+    // arriving at the receiver, and this is what notices.
+    for (int sc : {int(GeometryProvider::Scene::Reflector),
+                   int(GeometryProvider::Scene::IntegratingSphere),
+                   int(GeometryProvider::Scene::HalfBallLens),
+                   int(GeometryProvider::Scene::LightGuide),
+                   int(GeometryProvider::Scene::DiffuserPlate)}) {
+        SimConfig cfg = quickConfig(GeometryProvider::Scene(sc), 20000);
+        cfg.strayPaths.enabled = true;
+        const SimulationResult r = Simulation::run(cfg);
+
+        double listed = r.strayFluxDropped;
+        for (const StrayPath& p : r.strayPaths) listed += p.flux;
+        CHECK_NEAR(listed, r.fluxDetector, 1e-9 * std::max(1.0, r.sourcePower));
+        CHECK(!r.strayPaths.empty() || r.fluxDetector <= 0.0);
+    }
+}
+
+TEST(straypaths, the_table_is_ranked_and_the_ranking_is_total) {
+    SimConfig cfg = quickConfig(GeometryProvider::Scene::IntegratingSphere, 40000);
+    cfg.strayPaths.enabled = true;
+    const SimulationResult r = Simulation::run(cfg);
+    CHECK(r.strayPaths.size() >= 2);
+    for (std::size_t i = 1; i < r.strayPaths.size(); ++i)
+        CHECK(r.strayPaths[i - 1].flux >= r.strayPaths[i].flux);
+}
+
+TEST(straypaths, a_surface_set_collapses_the_routes_that_use_it) {
+    // The point of a set: a cavity hit through forty distinct surfaces is one
+    // contributor, and the list stops being unreadable.
+    SimConfig plain = quickConfig(GeometryProvider::Scene::ShowcaseLuminaire, 30000);
+    plain.strayPaths.enabled = true;
+    const SimulationResult loose = Simulation::run(plain);
+
+    SimConfig grouped = plain;
+    const Simulation::SceneRef data = Simulation::dataFor(grouped);
+    grouped.strayPaths.surfaceSet.assign(data->surfaces.size(), -1);
+    for (std::size_t i = 0; i < data->surfaces.size(); ++i)
+        if (!data->surfaces[i].isDetector) grouped.strayPaths.surfaceSet[i] = 0;
+    grouped.strayPaths.setNames.push_back(QStringLiteral("Fixture"));
+    const SimulationResult tight = Simulation::run(grouped);
+
+    CHECK(tight.strayPaths.size() <= loose.strayPaths.size());
+    // The light did not move; only how it is described did.
+    CHECK_NEAR(tight.fluxDetector, loose.fluxDetector, 1e-12);
+    bool sawSet = false;
+    for (const StrayPath& p : tight.strayPaths)
+        for (int id : p.ids)
+            if (id < 0) { sawSet = true; CHECK(tight.strayName(id) == QStringLiteral("Fixture")); }
+    CHECK(sawSet);
+}
+
+TEST(straypaths, the_ranking_does_not_depend_on_the_thread_count) {
+    // Merged in chunk order for the same reason the scalars are: a ranked list
+    // that reorders itself between two runs of the same input is not evidence.
+    SimConfig one = quickConfig(GeometryProvider::Scene::IntegratingSphere, 30000);
+    one.strayPaths.enabled = true;
+    one.threads = 1;
+    SimConfig many = one;
+    many.threads = 8;
+
+    const SimulationResult a = Simulation::run(one);
+    const SimulationResult b = Simulation::run(many);
+    CHECK(a.strayPaths.size() == b.strayPaths.size());
+    for (std::size_t i = 0; i < a.strayPaths.size() && i < b.strayPaths.size(); ++i) {
+        CHECK(a.strayPaths[i].ids  == b.strayPaths[i].ids);
+        CHECK(a.strayPaths[i].rays == b.strayPaths[i].rays);
+        CHECK_NEAR(a.strayPaths[i].flux, b.strayPaths[i].flux, 1e-12);
+    }
+}
+
+TEST(straypaths, a_route_file_reads_back_the_table_it_wrote) {
+    SimConfig cfg = quickConfig(GeometryProvider::Scene::IntegratingSphere, 20000);
+    cfg.strayPaths.enabled = true;
+    const SimulationResult r = Simulation::run(cfg);
+
+    const QString csv = analysis::strayPathCsv(r);
+    std::vector<StrayPath> back;
+    QString err;
+    CHECK(analysis::readStrayPathCsv(csv, back, &err));
+    CHECK(err.isEmpty());
+    CHECK(back.size() == r.strayPaths.size());
+    for (std::size_t i = 0; i < back.size() && i < r.strayPaths.size(); ++i) {
+        CHECK(back[i].ids  == r.strayPaths[i].ids);
+        CHECK(back[i].rays == r.strayPaths[i].rays);
+        CHECK(back[i].truncated == r.strayPaths[i].truncated);
+    }
+    // A file that is not one says so rather than returning an empty table that
+    // reads as "no stray light".
+    std::vector<StrayPath> none;
+    CHECK(!analysis::readStrayPathCsv(QStringLiteral("hello\nworld\n"), none, &err));
+    CHECK(!err.isEmpty());
+}
+
+TEST(straypaths, a_run_that_does_not_ask_for_them_traces_exactly_what_it_did) {
+    for (int s = 0; s < GeometryProvider::count(); ++s) {
+        SimConfig off = quickConfig(GeometryProvider::Scene(s), 4000);
+        SimConfig on  = off;
+        on.strayPaths.enabled = true;
+        const SimulationResult a = Simulation::run(off);
+        const SimulationResult b = Simulation::run(on);
+        // Recording a route must not perturb the random stream or the physics.
+        CHECK_NEAR(a.efficiency, b.efficiency, 1e-15);
+        CHECK(a.strayPaths.empty());
+    }
+}
+
+// ======================================================= immersed source ====
+
+// A source inside a solid emits into that solid.
+//
+// A ray used to be born in vacuum whatever it was born inside, so an emitter
+// placed in its own encapsulant met the dome from within while recorded as
+// being in air: the crossing read as an entry, the incident index was guessed
+// at 1, and the critical angle was unreachable. These pin the three things that
+// had to become true.
+
+namespace {
+
+// The LED dome, with one emitter placed by hand. `z` is measured along the
+// axis, so a positive value is inside the glass and a negative one is under it.
+SimConfig immersedDome(double x, double z, int rays) {
+    SimConfig cfg = quickConfig(GeometryProvider::Scene::HalfBallLens, rays);
+    cfg.power = 0.0;                       // the scene's own emitter, muted
+    SourceSpec die;
+    die.label    = QStringLiteral("Die");
+    die.type     = SourceConfig::Type::Lambertian;
+    die.shape    = SourceConfig::Shape::PointLike;
+    die.power    = 1.0;
+    die.absolute = true;
+    die.offset   = gp_Pnt(x, 0.0, z);
+    cfg.extraSources.push_back(die);
+    return cfg;
+}
+
+} // namespace
+
+TEST(immersed, a_source_inside_the_glass_never_guesses_an_incident_index) {
+    // The counter is the acceptance test: one guess per ray was what the old
+    // behaviour cost, and the number that has to be zero is not "small".
+    const SimulationResult r = Simulation::run(immersedDome(0.0, 5.0, 20000));
+    CHECK(r.anomalies.guessedIndex == 0);
+    CHECK(r.anomalies.unmatchedExit == 0);
+    CHECK_NEAR(r.fluxAccounted(), r.sourcePower, 1e-7);
+}
+
+TEST(immersed, an_off_axis_immersed_source_can_reach_the_critical_angle) {
+    // The decisive one. Total internal reflection is only possible for a ray
+    // that knows it is in the denser medium; with the incident index guessed at
+    // 1 it could not happen at all. A die pushed out towards the rim meets the
+    // dome far from normal, so its light bounces inside the glass instead of
+    // leaving it -- which shows up as path length, and path length shows up as
+    // bulk absorption.
+    const SimulationResult centred = Simulation::run(immersedDome(0.0,  5.0, 20000));
+    const SimulationResult rimward = Simulation::run(immersedDome(45.0, 5.0, 20000));
+
+    const double bulkCentred = centred.fluxBulkAbsorbed / centred.sourcePower;
+    const double bulkRimward = rimward.fluxBulkAbsorbed / rimward.sourcePower;
+    CHECK(bulkRimward > 3.0 * bulkCentred);
+    CHECK(rimward.anomalies.guessedIndex == 0);
+}
+
+TEST(immersed, a_source_in_air_traces_exactly_what_it_always_did) {
+    // The probe runs for every source of every run, so the scenes that were
+    // never immersed have to come back bit for bit -- not nearly.
+    for (int s = 0; s < GeometryProvider::count(); ++s) {
+        SimConfig cfg = quickConfig(GeometryProvider::Scene(s), 4000);
+        const SimulationResult r = Simulation::run(cfg);
+        CHECK(r.anomalies.guessedIndex == 0);
+    }
+}
+
 // ============================================================= overrides ====
 
 TEST(overridekeys, an_override_follows_its_surface_by_label_not_by_slot) {

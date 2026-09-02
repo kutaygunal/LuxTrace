@@ -171,6 +171,16 @@ QString intensityCsv(const SimulationResult& res);
 // A one-line-per-metric summary, for pasting into a report.
 QString metricsCsv(const SimulationResult& res, const SpotMetrics& m);
 
+// The ranked stray-light routes, one per line, with the route written both as
+// names (for a person) and as ids (so the file reads back exactly).
+QString strayPathCsv(const SimulationResult& res);
+
+// Reads a route file back. The point of the round trip is comparison: two runs
+// of the same system, or a run against a baseline, and the question "which
+// route got worse" answered by subtraction rather than by eye.
+bool readStrayPathCsv(const QString& text, std::vector<StrayPath>& out,
+                      QString* errorOut = nullptr);
+
 // ---- luminaire interchange -------------------------------------------------
 
 // The far-field grid is already the candela distribution a luminaire is

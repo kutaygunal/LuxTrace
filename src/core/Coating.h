@@ -90,4 +90,14 @@ const QString&  description(int i);
 Coating         at(int i);
 Coating         byName(const QString& name);
 
+// The reflectance a measured table holds at one wavelength, before the angular
+// roll-off is applied to it.
+//
+// Exposed because a monochromatic backend can resolve the table once per run
+// rather than carrying it: reflectanceSP reads a table only to pick the target
+// it then rolls off exactly as the ideal model does, so one number is the whole
+// of what a fixed wavelength needs. Sharing the lookup rather than copying it
+// is what keeps the two from drifting apart about what the table says.
+double tableReflectanceAt(const Coating& c, double lambdaNm);
+
 } // namespace coating

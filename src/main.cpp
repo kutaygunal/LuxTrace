@@ -15,6 +15,8 @@
 #include <gp_Vec.hxx>
 
 #include "core/Analysis.h"
+#include "core/BackendCheck.h"
+#include "gpu/GpuTrace.h"
 #include "core/CadImport.h"
 #include "core/GeometryProvider.h"
 #include "core/JobRunner.h"
@@ -24,6 +26,8 @@
 #include "core/RayFile.h"
 #include "core/Report.h"
 #include "core/Simulation.h"
+#include "core/EnvironmentMap.h"
+#include "core/BackwardTracer.h"
 #include "core/Studies.h"
 #include "core/TraceScene.h"
 #include "ui/MainWindow.h"
@@ -140,6 +144,165 @@ int smokeTest(int rays, unsigned threads) {
     return 0;
 }
 
+// Compares one backend's answer against the reference backend's.
+//
+// With only the CPU tracer built, both sides are the CPU on different seeds --
+// which is not a placeholder but the calibration: two independent draws of the
+// same distribution are exactly the situation a correct preview backend is in,
+// and if the comparison cannot pass that, it cannot be trusted to fail anything
+// either. Once a GPU backend exists this is where it goes on the other side.
+int refCheck(int sceneIndex, int rays, bool useGpu, bool plain) {
+    QTextStream out(stdout);
+    if (sceneIndex < 0 || sceneIndex >= GeometryProvider::count()) {
+        out << "scene index out of range (0.." << GeometryProvider::count() - 1 << ")"
+            << Qt::endl;
+        return 2;
+    }
+    SimConfig a;
+    a.scene  = GeometryProvider::Scene(sceneIndex);
+    a.source = SourceConfig::Type::Lambertian;
+    a.rays   = rays;
+    a.seed   = 11111;
+    a.noiseMap = true;              // so the floor is measured, not guessed
+
+    out << "reference vs preview -- " << sceneName(sceneIndex) << ", " << rays
+        << " rays each" << Qt::endl;
+
+    // The reference. `plain` traces it through RayTracer directly with the
+    // estimator switches off, which is the experiment that separates "the
+    // preview is wrong" from "the two estimators disagree".
+    SimulationResult ref;
+    if (plain) {
+        const Simulation::SceneRef rd = Simulation::dataFor(a);
+        const std::vector<SourceConfig> rs = Simulation::sourcesFor(a, *rd);
+        TraceOptions ro;
+        ro.threads  = a.threads;
+        ro.seed     = a.seed;
+        ro.physics  = a.physics;
+        ro.nTheta   = a.nTheta;
+        ro.nPhi     = a.nPhi;
+        ro.noiseMap = true;
+        ro.estimator.lowDiscrepancy      = false;
+        ro.estimator.aimAtScene          = false;
+        ro.estimator.nextEventEstimation = false;
+        ro.physics.varianceReduction     = false;
+        RayTracer::trace(rd->scene, rs, ref, ro, TraceControl{});
+    } else {
+        ref = Simulation::run(a);
+    }
+
+    // The preview side: the GPU where it will take this scene, and the CPU on a
+    // second seed where it will not. The fallback is not a consolation prize --
+    // two draws of the reference are what calibrates the comparison, and a run
+    // that says which side it used cannot be mistaken for the other one.
+    SimulationResult prev;
+    QString how;
+    bool usedGpu = false;
+    if (useGpu) {
+        const Simulation::SceneRef data = Simulation::dataFor(a);
+        const std::vector<SourceConfig> srcs = Simulation::sourcesFor(a, *data);
+        TraceOptions opt;
+        opt.threads  = a.threads;
+        opt.seed     = 99999;
+        opt.physics  = a.physics;
+        opt.nTheta   = a.nTheta;
+        opt.nPhi     = a.nPhi;
+        opt.noiseMap = true;
+        opt.surfaceOverrides = a.surfaceOverrides;
+        QString err;
+        if (gputrace::trace(data->scene, data->scene.surfaces(), srcs, opt,
+                            a.power, a.fluxUnit, prev, &err)) {
+            usedGpu = true;
+            how = QStringLiteral("GPU: %1").arg(gputrace::deviceName());
+        } else {
+            how = QStringLiteral("CPU (second seed) -- %1").arg(err);
+        }
+    } else {
+        how = QStringLiteral("CPU (second seed)");
+    }
+    if (!usedGpu) {
+        SimConfig b = a;
+        b.seed = 99999;
+        prev = Simulation::run(b);
+    }
+
+    out << "reference: CPU, " << QString::number(ref.traceSeconds, 'f', 3) << " s" << Qt::endl;
+    out << "preview:   " << how << ", "
+        << QString::number(prev.traceSeconds, 'f', 3) << " s";
+    if (prev.traceSeconds > 0.0 && ref.traceSeconds > 0.0)
+        out << "  (" << QString::number(ref.traceSeconds / prev.traceSeconds, 'f', 1)
+            << "x)";
+    out << Qt::endl << Qt::endl;
+
+    const backendcheck::Report r = backendcheck::compare(ref, prev);
+    out << r.text() << Qt::endl;
+    return r.ok ? 0 : 1;
+}
+
+// Every scene through the preview backend, against the reference, in one table.
+//
+// The coverage claim is otherwise an assertion. This makes it a measurement
+// anybody can repeat, and it is the thing to run after touching the kernel: a
+// scene that moves from ok to DIFFERS is a regression, and a scene that moves
+// from refused to traced without being checked is worse.
+int refCheckAll(int rays) {
+    QTextStream out(stdout);
+    out << "preview backend: "
+        << (gputrace::available() ? gputrace::deviceName() : gputrace::unavailableReason())
+        << Qt::endl
+        << rays << " rays per scene, both sides" << Qt::endl << Qt::endl;
+    out << "scene                              speedup  verdict" << Qt::endl;
+    out << "------------------------------------------------------------------" << Qt::endl;
+
+    int traced = 0, ok = 0, refused = 0;
+    for (int i = 0; i < GeometryProvider::count(); ++i) {
+        SimConfig cfg;
+        cfg.scene    = GeometryProvider::Scene(i);
+        cfg.source   = SourceConfig::Type::Lambertian;
+        cfg.rays     = rays;
+        cfg.seed     = 11111;
+        cfg.noiseMap = true;
+
+        const SimulationResult ref = Simulation::run(cfg);
+        const Simulation::SceneRef data = Simulation::dataFor(cfg);
+        const std::vector<SourceConfig> srcs = Simulation::sourcesFor(cfg, *data);
+        TraceOptions opt;
+        opt.seed     = 99999;
+        opt.physics  = cfg.physics;
+        opt.nTheta   = cfg.nTheta;
+        opt.nPhi     = cfg.nPhi;
+        opt.noiseMap = true;
+        opt.surfaceOverrides = cfg.surfaceOverrides;
+
+        SimulationResult prev;
+        QString err;
+        out << sceneName(i).leftJustified(34);
+        if (!gputrace::trace(data->scene, data->scene.surfaces(), srcs, opt,
+                             cfg.power, cfg.fluxUnit, prev, &err)) {
+            ++refused;
+            QString why = err;
+            why.remove(QStringLiteral("the preview backend cannot take this scene: "));
+            out << QStringLiteral("      --  refused: ") << why << Qt::endl;
+            continue;
+        }
+        ++traced;
+        const backendcheck::Report r = backendcheck::compare(ref, prev);
+        if (r.ok) ++ok;
+        const double sp = prev.traceSeconds > 0.0 ? ref.traceSeconds / prev.traceSeconds : 0.0;
+        out << QString::number(sp, 'f', 1).rightJustified(8) << "x  "
+            << (r.ok ? QStringLiteral("ok") : QStringLiteral("DIFFERS"))
+            << QStringLiteral("  (worst %1 at %2 sigma)").arg(r.worstName)
+                   .arg(QString::number(r.worstSigma, 'f', 2))
+            << Qt::endl;
+        out.flush();
+    }
+    out << Qt::endl
+        << "traced " << traced << " of " << GeometryProvider::count()
+        << ", " << ok << " indistinguishable from the reference, "
+        << (traced - ok) << " differing, " << refused << " refused by name" << Qt::endl;
+    return (traced - ok) == 0 ? 0 : 1;
+}
+
 // Traces every scene x source combination, single-threaded and then with the
 // full thread pool, so a change in either can be compared at a glance. Exits
 // non-zero if any combination turns out to be thread-dependent: the timings are
@@ -165,8 +328,19 @@ int bench(int rays) {
             const SimulationResult one = Simulation::run(cfg);
             cfg.threads = 0;
             const SimulationResult all = Simulation::run(cfg);
+            // Twice at the same thread count, which is the weaker promise and
+            // the one a user actually leans on: run it again, get the same
+            // picture. The grids are accumulated per thread, so this held only
+            // once chunks were dealt by a fixed stride instead of taken from a
+            // shared counter.
+            const SimulationResult again = Simulation::run(cfg);
 
-            const bool same = std::fabs(one.efficiency - all.efficiency) < 1e-12;
+            const bool sameScalar = std::fabs(one.efficiency - all.efficiency) < 1e-12;
+            bool sameGrid = all.irradiance.size() == again.irradiance.size();
+            for (std::size_t i = 0; sameGrid && i < all.irradiance.size(); ++i)
+                sameGrid = all.irradiance[i] == again.irradiance[i];
+
+            const bool same = sameScalar && sameGrid;
             deterministic = deterministic && same;
 
             out << sceneName(s).leftJustified(32) << " " << srcNames[t] << " "
@@ -177,7 +351,8 @@ int bench(int rays) {
                                    'f', 1).rightJustified(6) << "x  "
                 << QString::number(100.0 * all.efficiency, 'f', 2).rightJustified(7) << "%"
                 << (same ? QStringLiteral("  [deterministic]")
-                         : QStringLiteral("  [THREAD-DEPENDENT!]"))
+                         : sameScalar ? QStringLiteral("  [GRID NOT REPRODUCIBLE!]")
+                                      : QStringLiteral("  [THREAD-DEPENDENT!]"))
                 << Qt::endl;
             out.flush();
         }
@@ -185,7 +360,11 @@ int bench(int rays) {
 
     if (!deterministic)
         out << Qt::endl
-            << "FAILED: at least one scene x source is thread-dependent."
+            << "FAILED: at least one scene x source did not reproduce -- either its"
+            << Qt::endl
+            << "efficiency moved with the thread count, or its irradiance grid did"
+            << Qt::endl
+            << "not repeat at a fixed one."
             << Qt::endl;
     out.flush();
     return deterministic ? 0 : 1;
@@ -781,6 +960,107 @@ int inspectRayFile(const QString& path, int scene, int rays) {
     return 0;
 }
 
+// What an observer sees, as opposed to where the light goes.
+//
+// The forward flags above all report a receiver: a flux, an efficiency, an
+// irradiance map. This reports luminance in cd/m^2 along the directions a camera
+// looks, which is the quantity a glare limit and a display specification are
+// written in and which no arrangement of receivers produces.
+//
+// The picture is written as a CSV of luminances rather than an image file, for
+// the same reason the irradiance grid is: a tone mapping is a display decision,
+// and a PNG has already thrown away the numbers somebody wanted.
+int camera(int sceneIndex, int px, int spp, const QString& csvPath,
+           const QString& envPath, double envNits) {
+    QTextStream out(stdout);
+    if (sceneIndex < 0 || sceneIndex >= GeometryProvider::count()) {
+        out << "scene index out of range (0.." << GeometryProvider::count() - 1 << ")"
+            << Qt::endl;
+        return 2;
+    }
+    SimConfig cfg;
+    cfg.scene  = GeometryProvider::Scene(sceneIndex);
+    cfg.source = SourceConfig::Type::Lambertian;
+
+    const Simulation::SceneRef data = Simulation::dataFor(cfg);
+    const std::vector<SourceConfig> srcs = Simulation::sourcesFor(cfg, *data);
+
+    backward::CameraConfig cam = backward::defaultView(data->scene, px, (px * 3) / 4);
+    cam.samplesPerPixel = std::max(1, spp);
+    // A dim room to look at the optic in. Most of this library is specular, and
+    // a mirror in a black room lit by a point source is a black rectangle --
+    // the right answer to a question nobody asked. 200 cd/m^2 is an ordinary
+    // interior; the fixture is orders of magnitude brighter and still reads as
+    // the bright thing in the picture.
+    cam.environmentLuminance = 200.0;
+
+    // Or a real room, if one was named. A map is directional where the
+    // uniform surround cannot be, which is what makes a reflective optic
+    // read as a shape rather than as a silhouette.
+    if (!envPath.isEmpty()) {
+        auto map = std::make_shared<envmap::EnvironmentMap>();
+        QString err;
+        if (!envmap::loadRadiance(envPath, envNits, *map, &err)) {
+            out << "could not read the environment: " << err << Qt::endl;
+            return 2;
+        }
+        cam.environmentMap = map;
+        cam.environmentLuminance = 0.0;   // the map is the room now
+        out << "environment  " << envPath << "  " << map->width() << " x "
+            << map->height() << " px, mean "
+            << QString::number(map->meanLuminance(), 'g', 4) << " cd/m^2"
+            << Qt::endl;
+    }
+
+    out << "luminance camera -- " << sceneName(sceneIndex) << Qt::endl;
+    out << "  " << cam.width << " x " << cam.height << " px, "
+        << cam.samplesPerPixel << " rays/px, "
+        << QString::number(cam.focalLengthMm, 'f', 1) << " mm on a "
+        << QString::number(cam.sensorWidthMm, 'f', 1) << " mm sensor" << Qt::endl;
+    out.flush();
+
+    backward::LuminanceImage img;
+    backward::RenderControl ctl;
+    backward::render(data->scene, data->scene.surfaces(), srcs, cam,
+                     cfg.physics, cfg.fluxUnit, img, ctl);
+    if (img.empty()) {
+        out << "nothing rendered" << Qt::endl;
+        return 1;
+    }
+
+    const char* unit = cfg.fluxUnit == FluxUnit::Lumen ? "cd/m^2" : "cd/m^2";
+    out << Qt::endl
+        << "  peak      " << QString::number(img.peak, 'g', 6) << " " << unit << Qt::endl
+        << "  mean      " << QString::number(img.mean, 'g', 6) << " " << unit << Qt::endl
+        << "  log mean  " << QString::number(img.logMean, 'g', 6) << " " << unit
+        << "   (what a glare index is built on)" << Qt::endl
+        << "  truncated " << QString::number(100.0 * img.truncatedFraction, 'f', 4)
+        << " %  of the paths' throughput" << Qt::endl
+        << "  " << QString::number(img.seconds, 'f', 3) << " s" << Qt::endl;
+
+    if (!csvPath.isEmpty()) {
+        QString csv;
+        QTextStream ts(&csv);
+        ts << "# Luminance, cd/m^2\n";
+        ts << "# " << sceneName(sceneIndex) << ", " << cam.width << " x " << cam.height
+           << " px, " << cam.samplesPerPixel << " rays/px\n";
+        for (int y = 0; y < img.height; ++y) {
+            for (int x = 0; x < img.width; ++x) {
+                if (x) ts << ",";
+                ts << QString::number(img.at(x, y), 'g', 6);
+            }
+            ts << "\n";
+        }
+        ts.flush();
+        QString err;
+        if (analysis::writeTextFile(csvPath, csv, &err))
+            out << "wrote " << csvPath << Qt::endl;
+        else
+            out << "could not write " << csvPath << ": " << err << Qt::endl;
+    }
+    return 0;
+}
+
 // Checks the tracer against optics derived outside it, and prints the residuals.
 // A feature list is a claim; this table is evidence.
 int validate(int rays, const QString& htmlPath) {
@@ -895,6 +1175,42 @@ int main(int argc, char** argv) {
         int rays = argc >= 3 ? std::atoi(argv[2]) : 0;
         if (rays <= 0) rays = 100000;
         return bench(rays);
+    }
+    if (argc >= 2 && QLatin1String(argv[1]) == QLatin1String("--refcheck")) {
+        const int scene = argc >= 3 ? std::atoi(argv[2]) : 0;
+        int rays = argc >= 4 ? std::atoi(argv[3]) : 0;
+        if (rays <= 0) rays = 200000;
+        bool useGpu = false;
+        if (argc >= 3 && QLatin1String(argv[2]) == QLatin1String("all")) {
+            int n = argc >= 4 ? std::atoi(argv[3]) : 0;
+            if (n <= 0) n = 500000;
+            return refCheckAll(n);
+        }
+        bool plain = false;
+        for (int i = 2; i < argc; ++i) {
+            if (QLatin1String(argv[i]) == QLatin1String("--gpu"))   useGpu = true;
+            if (QLatin1String(argv[i]) == QLatin1String("--plain")) plain  = true;
+        }
+        return refCheck(scene, rays, useGpu, plain);
+    }
+    if (argc >= 2 && QLatin1String(argv[1]) == QLatin1String("--camera")) {
+        const int scene = argc >= 3 ? std::atoi(argv[2]) : 0;
+        int px  = argc >= 4 ? std::atoi(argv[3]) : 0;
+        int spp = argc >= 5 ? std::atoi(argv[4]) : 0;
+        if (px  <= 0) px  = 256;
+        if (spp <= 0) spp = 64;
+        // --camera <scene> [px] [spp] [csv] [env.hdr] [cd/m^2 per unit]
+        const QString env = argc >= 7 ? QString::fromLocal8Bit(argv[6]) : QString();
+        const double nits = argc >= 8 ? std::atof(argv[7]) : 1000.0;
+        return camera(scene, px, spp,
+                      argc >= 6 ? QString::fromLocal8Bit(argv[5]) : QString(),
+                      env, nits > 0.0 ? nits : 1000.0);
+    }
+    if (argc >= 2 && QLatin1String(argv[1]) == QLatin1String("--gpuinfo")) {
+        QTextStream out(stdout);
+        if (gputrace::available()) out << "GPU preview backend: " << gputrace::deviceName() << Qt::endl;
+        else out << "no GPU preview backend: " << gputrace::unavailableReason() << Qt::endl;
+        return gputrace::available() ? 0 : 1;
     }
     if (argc >= 2 && QLatin1String(argv[1]) == QLatin1String("--meshcheck")) {
         return meshCheck();

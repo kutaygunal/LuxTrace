@@ -216,7 +216,43 @@ public:
         return in.dirToWorld(m_blas[std::size_t(in.blas)].tris[std::size_t(hit.tri)].n);
     }
 
+    struct BvhNode {
+        double bmin[3] = {0, 0, 0};
+        double bmax[3] = {0, 0, 0};
+        int    left  = 0;
+        // Interior: the far child. Leaf: where this leaf's packed four-wide
+        // records start, or -1 where it has none. A leaf never had a second
+        // child index to spend, so the wide path costs the node nothing.
+        int    right = 0;
+        int    count = 0;
+        int    axis  = 0;
+    };
+
+    // One instanced part: its own triangles, shading normals and hierarchy.
+    struct Blas {
+        std::vector<SceneTri>   tris;
+        std::vector<TriShading> shade;
+        std::vector<int>        order;
+        std::vector<BvhNode>    nodes;
+        std::vector<simd::Tri4> packed;
+        int                     maxDepth = 0;
+    };
+
     const std::vector<Instance>& instances() const { return m_instances; }
+    // The other half of the hierarchy, for the same reason the flat arrays
+    // below are exposed: a second backend walks these rather than building
+    // its own, because two hierarchies over one scene are two chances to
+    // disagree about what the geometry is.
+    const std::vector<Blas>&    blasParts() const { return m_blas; }
+    const std::vector<BvhNode>& tlasNodes() const { return m_tlasNodes; }
+    const std::vector<int>&     tlasOrder() const { return m_tlasOrder; }
+    // The flat arrays a second backend has to upload. Exposed for the GPU
+    // preview, which walks the same hierarchy over the same triangles rather
+    // than building one of its own -- two hierarchies over one scene would be
+    // two chances to disagree about what the geometry is.
+    const std::vector<BvhNode>&    nodes()   const { return m_nodes; }
+    const std::vector<int>&        order()   const { return m_order; }
+    const std::vector<TriShading>& shading() const { return m_shade; }
     // Triangles across every bottom-level part, counted once each rather than
     // once per placement: the number an instanced scene actually stores.
     std::size_t instancedTriangles() const;
@@ -298,27 +334,7 @@ private:
     // Both are kept in this comment rather than in the code because a
     // performance claim that does not survive its own benchmark is not an
     // optimisation.
-    struct BvhNode {
-        double bmin[3] = {0, 0, 0};
-        double bmax[3] = {0, 0, 0};
-        int    left  = 0;
-        // Interior: the far child. Leaf: where this leaf's packed four-wide
-        // records start, or -1 where it has none. A leaf never had a second
-        // child index to spend, so the wide path costs the node nothing.
-        int    right = 0;
-        int    count = 0;
-        int    axis  = 0;
-    };
 
-    // One instanced part: its own triangles, shading normals and hierarchy.
-    struct Blas {
-        std::vector<SceneTri>   tris;
-        std::vector<TriShading> shade;
-        std::vector<int>        order;
-        std::vector<BvhNode>    nodes;
-        std::vector<simd::Tri4> packed;
-        int                     maxDepth = 0;
-    };
 
     // Fills `packed` with the four-wide records the leaves of `nodes` point at,
     // and stamps each leaf with where its own records begin.

@@ -275,6 +275,9 @@ private:
     // renderer that decides them silently is one that either wastes a minute or
     // hands back a picture too small for the document it was wanted for.
     void exportAppearanceImage();
+    // The same view, measured rather than pictured: luminance in cd/m^2
+    // through the backward tracer, from wherever the preview is standing.
+    void measureLuminance();
     // The render as a report figure, or an empty image where the tab has never
     // been opened and there is no GL context to render with. `shot` comes back
     // describing what was actually produced -- size and frames accumulated --
@@ -314,6 +317,11 @@ private:
     // typed again. Normalised on the way in, so it is always a size that can
     // actually be rendered.
     appearance::ExportRequest m_appearanceExport;
+    // What the last luminance measurement asked for, so the second one does
+    // not have to be typed again.
+    int    m_luminanceWidth   = 320;
+    int    m_luminanceSamples = 64;
+    double m_luminanceRoom    = 200.0;
     RayDiagramWidget* m_diagram  = nullptr;
     HeatmapWidget*    m_heatmap  = nullptr;
     PlotWidget*       m_profile  = nullptr;

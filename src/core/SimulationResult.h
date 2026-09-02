@@ -80,6 +80,20 @@ struct RayInteraction {
     bool    scattered = false;     // the outgoing direction came from a lobe
 };
 
+// One route light took from a source to a receiver, and what it delivered.
+//
+// `ids` is the sequence of contributors in the order they were met, ending at
+// the receiver: a surface index as itself, or -(set + 1) where the run grouped
+// surfaces into sets. Consecutive hits on one contributor are one step, so a
+// guide wall hit ninety times is one entry and not ninety.
+struct StrayPath {
+    std::vector<int> ids;
+    double           flux = 0.0;   // reached the receiver by this route
+    std::size_t      rays = 0;     // arrivals counted along it
+    // The route was longer than the recorder can hold, so `ids` is its head.
+    bool             truncated = false;
+};
+
 // One ray arriving at the receiver, recorded with the direction it came in on.
 //
 // Keeping the direction (not just the hit point) is what makes a through-focus
@@ -302,6 +316,12 @@ struct TruncationBreakdown {
     }
 };
 
+// Builds `g` from a fine uniform master grid of nThetaMaster x nPhi flux bins.
+// The output theta partition is beam-adaptive and is derived from `master`, so
+// every backend must come through here or their far fields are not comparable.
+void finishIntensityGrid(IntensityGrid& g, std::vector<double> master,
+                         int nTheta, int nPhi);
+
 // Medium-tracking anomalies, counted rather than swallowed.
 //
 // The recoveries themselves are right: exiting a body the stack never recorded
@@ -484,6 +504,74 @@ struct SimulationResult {
     // happened. Empty for a Monte Carlo run: it is filled only by
     // RayTracer::traceSingleRay, which is what the ray inspector calls.
     std::vector<RayInteraction> interactions;
+
+    // Which routes delivered light to the receiver, ranked by how much. Empty
+    // unless the run asked for stray-light paths.
+    std::vector<StrayPath> strayPaths;
+    // Arrivals whose route did not fit in the table, so a truncated list says
+    // so instead of reading as a complete one.
+    std::size_t strayPathsDropped = 0;
+    double      strayFluxDropped  = 0.0;
+    // What to call each id a route names, resolved at trace time so an exported
+    // route file reads without the scene beside it.
+    std::vector<QString> straySurfaceLabels;
+    std::vector<QString> straySetNames;
+
+    // What a route's id means: a surface, or a set of them.
+    QString strayName(int id) const {
+        if (id < 0) {
+            const std::size_t k = std::size_t(-(id + 1));
+            if (k < straySetNames.size() && !straySetNames[k].isEmpty())
+                return straySetNames[k];
+            return QStringLiteral("set %1").arg(-(id + 1));
+        }
+        const std::size_t k = std::size_t(id);
+        if (k < straySurfaceLabels.size() && !straySurfaceLabels[k].isEmpty())
+            return straySurfaceLabels[k];
+        return QStringLiteral("surface %1").arg(id);
+    }
+
+    // Per-bin variance of the irradiance grid: the sum of the squares of the
+    // deposits that made each bin, in the same units as `irradiance` squared.
+    //
+    // A bin's value is a sum of independent weighted contributions, so the sum
+    // of their squares is an unbiased estimate of that sum's variance -- which
+    // is the only honest way to say how noisy a pixel is. Ray counts cannot say
+    // it: next-event estimation deposits a highly variable weight at nearly
+    // every diffuse bounce, so on an integrating sphere the count per bin and
+    // the noise in that bin are barely related.
+    //
+    // sqrt() of an entry is a one-sigma error bar on the bin beside it.
+    std::vector<double> irradianceVar;
+
+    // The far field before it was folded into beam-adaptive rings: the fine
+    // uniform grid it was accumulated on, and the sum of squared deposits that
+    // says how noisy each of its cells is.
+    //
+    // Kept, when a noise map was asked for, because the *reported* far field is
+    // binned on edges derived from each run's own histogram -- so two correct
+    // runs land on slightly different rings and cannot be compared cell for
+    // cell. The master grid has the same shape whatever the beam did, which
+    // makes it the thing two backends can actually be held against each other
+    // on. Empty otherwise.
+    // Which backend produced this. Every export and every report carries it,
+    // because "how fast was it" and "what is it" are the same question once
+    // there is more than one tracer in the building.
+    QString backend = QStringLiteral("cpu");
+
+    std::vector<double> intensityMaster;
+    std::vector<double> intensityMasterVar;
+    int                 intensityMasterTheta = 0;
+    int                 intensityMasterPhi   = 0;
+
+    // The binned grids -- irradiance, colour bands, far-field intensity -- are
+    // accumulated per thread and summed in thread order, so which rays landed
+    // in which partial sum depends on how the chunks were scheduled. Every
+    // scalar reduces in chunk order and does not. In practice a bin differs in
+    // its last place or not at all; it is stated because a claim of
+    // reproducibility that is not exactly true is worth less than a smaller one
+    // that is.
+    static constexpr bool gridsReduceInThreadOrder = true;
 
     // Sampled ray path legs, for the 3D viewer and the 2D diagram.
     std::vector<RaySegment> raySegments;

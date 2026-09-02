@@ -41,9 +41,30 @@ ExportRequest normaliseExport(int width, int height, int samples, double viewAsp
 }
 
 QString notPhotometricNote() {
+    // What this sentence has to do changed when the luminance camera
+    // arrived, and it changed in a way that makes it more useful rather
+    // than less.
+    //
+    // It used to say what this render is not, full stop: RGB, no cd/m2, not
+    // reproducible. All of that is still true of this render and none of it
+    // is going to stop being true -- it is an OpenGL path tracer with its own
+    // two-layer BSDF, and it is fast because it is not the physics. What was
+    // missing was the other half: a reader told only that this is not a
+    // measurement has nowhere to go for one.
+    //
+    // There is somewhere to go now. backward::render traces the same
+    // geometry, the same SurfaceOptics, the same coatings and the same
+    // spectra the forward tracer does and reports luminance in cd/m2, and
+    // the sentence names it -- including the button on this very tab, which
+    // measures the view the reader is already looking at. A reader told only
+    // that this is not a measurement, and sent to a command line for one, is
+    // being told half of something useful.
     return QStringLiteral(
-        "Not a photometric result: RGB path tracing, no dispersion, no "
-        "polarisation, no cd/m², and not reproducible frame for frame.");
+        "A picture, not a measurement: RGB path tracing, no dispersion, no "
+        "polarisation, and not reproducible frame for frame. For luminance "
+        "in cd/m² over the same scene and the same view, use Measure "
+        "luminance... beside this render (or --camera, or the \"camera\" "
+        "operation on the JSON API).");
 }
 
 QString distributionNote(const RadianceMap& map, FluxUnit unit) {

@@ -643,6 +643,18 @@ void AppearanceView::setCamera(Camera view) {
     fitAll();
 }
 
+bool AppearanceView::cameraPose(Vec3& eye, Vec3& target, Vec3& up,
+                                double& fovDeg) const {
+    if (m_view.IsNull()) return false;
+    const Handle(Graphic3d_Camera) c = m_view->Camera();
+    if (c.IsNull()) return false;
+    eye    = Vec3(c->Eye().X(),    c->Eye().Y(),    c->Eye().Z());
+    target = Vec3(c->Center().X(), c->Center().Y(), c->Center().Z());
+    up     = Vec3(c->Up().X(),     c->Up().Y(),     c->Up().Z());
+    fovDeg = c->FOVy();
+    return (target - eye).lengthSquared() > 0.0;
+}
+
 // ---- depth of field --------------------------------------------------------
 
 double AppearanceView::autoFocalDistance() const {

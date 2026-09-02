@@ -479,6 +479,9 @@ SimulationResult Simulation::run(const SimConfig& cfg, const TraceControl& ctl) 
     opt.nTheta  = cfg.nTheta;
     opt.nPhi    = cfg.nPhi;
     opt.surfaceOverrides = cfg.surfaceOverrides;
+    opt.strayPaths       = cfg.strayPaths;
+    opt.deterministicGrids = cfg.deterministicGrids;
+    opt.noiseMap           = cfg.noiseMap;
 
     SimulationResult res;
     RayTracer::trace(data->scene, srcs, res, opt, ctl);

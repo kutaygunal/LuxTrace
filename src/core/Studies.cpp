@@ -4,6 +4,7 @@
 #include "Material.h"
 #include "Optics.h"
 #include "Polarisation.h"
+#include "BackwardTracer.h"
 #include "Spectrum.h"
 
 #include <BRepAlgoAPI_Common.hxx>
@@ -1528,6 +1529,113 @@ ValidationCase validateBlackbodyEfficacy() {
                     0.02 * expected);
 }
 
+// A Lambertian emitter of exitance M shows a luminance of M / pi, from any
+// direction and any distance.
+//
+// The fourteenth closed form, and the first one that is a *camera* measurement
+// rather than a receiver one. It is worth having beside the other thirteen for
+// the reason they are there at all: it is the number a renderer gets wrong by
+// exactly pi if it treats a source power as a radiance, and a picture that is
+// out by pi looks entirely convincing.
+//
+// The two inverse squares -- one in the flux falling off with distance, one in
+// the solid angle the emitter subtends -- cancel exactly, which is why the
+// camera is placed at two distances and two angles and all four have to give the
+// same answer.
+ValidationCase validateLambertianLuminance() {
+    SourceConfig src;
+    src.type         = SourceConfig::Type::Lambertian;
+    src.shape        = SourceConfig::Shape::Rect;
+    src.sizeA        = 120.0;                 // mm
+    src.sizeB        = 120.0;
+    src.halfAngleDeg = 90.0;
+    src.power        = 2500.0;                // lumens
+    src.fluxUnit     = FluxUnit::Lumen;
+    src.origin       = gp_Pnt(0, 0, 0);
+    src.axis         = gp_Dir(0, 0, 1);
+
+    const double areaM2   = (src.sizeA * 1e-3) * (src.sizeB * 1e-3);
+    const double expected = backward::lambertianLuminance(src.power / areaM2);
+
+    TraceScene empty;                          // nothing to occlude or reflect
+    double worst = expected;
+    for (double dist : {400.0, 1500.0}) {
+        for (double tiltDeg : {0.0, 55.0}) {
+            const double t = tiltDeg * 3.14159265358979323846 / 180.0;
+            backward::CameraConfig cam;
+            cam.eye    = Vec3(dist * std::sin(t), 0.0, dist * std::cos(t));
+            cam.target = Vec3(0, 0, 0);
+            cam.up     = Vec3(0, 1, 0);
+            cam.width  = cam.height = 24;
+            cam.samplesPerPixel = 4;
+            // A narrow enough field that every pixel lands on the emitter.
+            cam.sensorWidthMm = 36.0;
+            cam.focalLengthMm = 36.0 * dist / 40.0;
+
+            backward::LuminanceImage img;
+            backward::render(empty, {}, {src}, cam, PhysicsOptions{},
+                             FluxUnit::Lumen, img);
+            double sum = 0.0;
+            int    n   = 0;
+            for (int y = 6; y < img.height - 6; ++y)
+                for (int x = 6; x < img.width - 6; ++x) { sum += img.at(x, y); ++n; }
+            const double seen = n > 0 ? sum / double(n) : 0.0;
+            if (std::fabs(seen - expected) > std::fabs(worst - expected)) worst = seen;
+        }
+    }
+    return makeCase(QStringLiteral("Lambertian luminance"),
+                    QStringLiteral("L = M / pi for an emitter of exitance M, worst of "
+                                   "two distances x two view angles"),
+                    QStringLiteral("cd/m^2"), expected, worst, 1e-6 * expected);
+}
+
+// A metalens converges at the numerical aperture its phase profile encodes.
+//
+// The fifteenth closed form, and the only one in the table whose surface does
+// not obey Snell's law. Phi(r) = -(2 pi / lambda_d)(sqrt(r^2 + f^2) - f) is the
+// phase that turns a plane wave into one converging on a point f away, so a ray
+// crossing at radius r has to leave along a direction whose sine to the axis is
+// exactly r / sqrt(r^2 + f^2) -- which is the design NA at the rim.
+//
+// Measured on the scene the library actually ships, at three quarters of the
+// aperture, so what is checked is the device somebody can open rather than a
+// wafer built for the occasion.
+ValidationCase validateMetalensNa() {
+    const auto scene = GeometryProvider::buildScene(GeometryProvider::Scene::Metalens);
+    const SceneParams P = GeometryProvider::defaultParams(GeometryProvider::Scene::Metalens);
+    const double lensR = P.v[0], focal = P.v[1];
+    const double r = 0.75 * lensR;
+
+    TraceScene traced;
+    traced.build(MeshBuilder::build(scene));
+
+    SimulationResult res;
+    PhysicsOptions phys;
+    // Parallel to the axis from well in front, at the design wavelength.
+    RayTracer::traceSingleRay(traced, Vec3(r, 0.0, -50.0), Vec3(0, 0, 1), res, 1.0,
+                              phys, 550.0);
+
+    // The branch that carried the most energy to the receiver is the one that
+    // went through: the Fresnel reflections are a few per cent and go backwards.
+    double best = -1.0;
+    Vec3   arrived;
+    for (const DetectorArrival& a : res.arrivals) {
+        if (double(a.energy) <= best) continue;
+        best = double(a.energy);
+        arrived = a.d;
+    }
+    // Sine of the angle to the axis: the numerical aperture it converged at.
+    const double measured =
+        best > 0.0 ? std::sqrt(std::max(0.0, 1.0 - arrived.z * arrived.z)) : 0.0;
+    const double expected = r / std::sqrt(r * r + focal * focal);
+
+    return makeCase(QStringLiteral("Metalens numerical aperture"),
+                    QStringLiteral("sin(theta) = r / sqrt(r^2 + f^2) at three quarters "
+                                   "of the aperture, from the designed phase gradient "
+                                   "alone -- the plate is flat"),
+                    QStringLiteral("NA"), expected, measured, 1e-6);
+}
+
 std::vector<ValidationCase> validate(int rays) {
     std::vector<ValidationCase> cases;
     cases.push_back(validateLensmaker(rays));
@@ -1546,6 +1654,10 @@ std::vector<ValidationCase> validate(int rays) {
     cases.push_back(validateGgxWhiteFurnace());
     cases.push_back(validateHgNormalisation());
     cases.push_back(validateBlackbodyEfficacy());
+    // The camera side, checked the same way everything else here is.
+    cases.push_back(validateLambertianLuminance());
+    // And the one surface in the library that does not obey Snell law.
+    cases.push_back(validateMetalensNa());
     return cases;
 }
 

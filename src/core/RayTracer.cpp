@@ -1,6 +1,7 @@
 #include "RayTracer.h"
 #include "Material.h"
 #include "Sampling.h"
+#include "Metasurface.h"
 #include "Optics.h"
 #include "ThreadPool.h"
 
@@ -10,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -127,33 +129,6 @@ struct MediumStack {
     }
 };
 
-// Resolves every surface's scattering into the one model the tracer reads, and
-// writes it back over the run's own copy of the surfaces.
-//
-// Done once per run rather than per hit, so the inner loop reads one model
-// instead of choosing between three. It also puts the scene-wide overrides and
-// the physics switches in one place: `scattering` gates the redistribution
-// lobes and `roughness` gates the microfacet one, which is the split those two
-// switches always drove.
-//
-// After this, `SurfaceOptics::scatter` and `::roughness` are not read again by
-// the tracer at all. They are the way a scene *says* what it is; `bsdf` is what
-// the tracer *does*.
-void resolveScattering(std::vector<SceneSurface>& surfs, const PhysicsOptions& phys) {
-    for (SceneSurface& s : surfs) {
-        SurfaceOptics t = s;
-        if (phys.roughnessOverride >= 0.0) t.roughness = phys.roughnessOverride;
-        if (phys.scatterOverride   >= 0.0) t.scatter   = phys.scatterOverride;
-
-        bsdf::Surface b = t.effectiveBsdf();
-        const bool micro = (b.model == bsdf::Model::Microfacet);
-        if (( micro && !phys.roughness) ||
-            (!micro && !phys.scattering))
-            b = bsdf::Surface{};
-
-        s.bsdf = b;
-    }
-}
 
 // A path is a binary tree (reflected + transmitted branch), walked depth first,
 // so the pending stack never exceeds one entry per depth level.
@@ -561,6 +536,40 @@ struct RayStats {
 
 // Diagram segments and receiver arrivals are collected per chunk so they can be
 // concatenated in ray order afterwards, whichever thread ran the chunk.
+// How many contributors a recorded route can hold. A route longer than this is
+// kept as its head and flagged, which is the honest degradation: a
+// forty-bounce path is not a stray-light route anybody acts on, and pretending
+// to hold it would cost every branch the memory.
+constexpr int kStrayDepth = 12;
+
+struct StraySig {
+    std::int16_t e[kStrayDepth] = {};
+    std::uint8_t n     = 0;
+    bool         trunc = false;
+
+    // Consecutive hits on one contributor are one step: that is what makes a
+    // surface set collapse a guide wall to a single entry.
+    void append(int id) {
+        if (n > 0 && e[n - 1] == std::int16_t(id)) return;
+        if (n >= kStrayDepth) { trunc = true; return; }
+        e[n++] = std::int16_t(id);
+    }
+    bool sameAs(const StraySig& o) const {
+        if (n != o.n || trunc != o.trunc) return false;
+        for (std::uint8_t i = 0; i < n; ++i)
+            if (e[i] != o.e[i]) return false;
+        return true;
+    }
+    std::uint64_t hash() const {
+        std::uint64_t h = 0xcbf29ce484222325ull ^ (trunc ? 0x9e3779b97f4a7c15ull : 0ull);
+        for (std::uint8_t i = 0; i < n; ++i) {
+            h ^= std::uint64_t(std::uint16_t(e[i]));
+            h *= 0x100000001b3ull;
+        }
+        return h;
+    }
+};
+
 struct ChunkOutput {
     std::vector<RaySegment>      segments;
     // Parent of each segment within this chunk (-1 for the emitted leg). A path
@@ -592,6 +601,38 @@ struct ChunkOutput {
     // Detected flux per source. Scalars, so they reduce in chunk order like
     // every other scalar and a two-source run stays bit-reproducible.
     std::vector<double>          sourceDet;
+
+    // Stray-light routes seen in this chunk. Held as a vector in first-seen
+    // order with a hash index beside it, rather than as a map: the vector's
+    // order is what the chunk-order merge needs to be reproducible, and a hash
+    // container's iteration order is not something to build that on.
+    std::vector<StraySig>        pathSig;
+    std::vector<double>          pathFlux;
+    std::vector<std::size_t>     pathRays;
+    std::unordered_map<std::uint64_t, std::vector<int>> pathIndex;
+    std::size_t                  pathsDropped = 0;
+    double                       pathFluxDropped = 0.0;
+
+    // Books `energy` against `sig`, or against the dropped bucket once the
+    // table is full.
+    void addPath(const StraySig& sig, double energy, std::size_t maxPaths) {
+        auto& bucket = pathIndex[sig.hash()];
+        for (int i : bucket) {
+            if (!pathSig[std::size_t(i)].sameAs(sig)) continue;
+            pathFlux[std::size_t(i)] += energy;
+            ++pathRays[std::size_t(i)];
+            return;
+        }
+        if (pathSig.size() >= maxPaths) {
+            ++pathsDropped;
+            pathFluxDropped += energy;
+            return;
+        }
+        bucket.push_back(int(pathSig.size()));
+        pathSig.push_back(sig);
+        pathFlux.push_back(energy);
+        pathRays.push_back(1);
+    }
 };
 
 // One branch of a path still waiting to be traced.
@@ -620,10 +661,170 @@ struct PathState {
     // plane of incidence has turned. A Stokes vector only means anything
     // relative to a frame.
     Vec3   polFrame;
+
+    // The route this branch has taken. Written only while stray-light paths are
+    // being recorded; otherwise it is 26 bytes that never move.
+    StraySig stray;
 };
 
 // Everything the tracer needs that does not change from ray to ray. This
 // replaces the fifteen-parameter recursive signature the tracer used to carry.
+// A metasurface interaction: which diffraction order this ray leaves in, and
+// what the ones it did not leave in were carrying.
+//
+// The generalised Snell law replaces the outgoing *direction*; it says nothing
+// about how much energy goes each way, which is what the efficiency table is
+// for. So the two are layered rather than mixed: the Fresnel term still decides
+// what reflects at the interface, and the table then decides how the
+// transmitted share is split between the orders. Whatever the orders do not
+// take between them -- because the device does not diffract it, or because the
+// order is evanescent at this angle and has no propagating direction at all --
+// is absorbed at the surface and booked there. That is the difference between a
+// budget that closes and one that is quietly topped up.
+//
+// Returns false when nothing propagates, in which case the caller books the
+// whole branch as absorbed.
+struct MetaPick {
+    Vec3   direction;
+    double efficiency = 0.0;   // what the orders took between them
+    int    order = 0;
+    // The state the diffracted branch leaves in, when the device is
+    // polarising and the run is carrying polarisation.
+    polarisation::Stokes state;
+    bool   polarised = false;
+};
+
+bool sampleMetaOrder(const meta::Metasurface& ms, const Vec3& d, const Vec3& n,
+                     const Vec3& p, double lambda, double n1, double n2,
+                     std::uint64_t& rng, const Vec3& ordinary,
+                     const polarisation::Stokes* inState, MetaPick& out) {
+    const Vec3 grad = ms.gradientAt(p, n);
+
+    double weight[meta::kOrderSlots] = {};
+    Vec3   dir[meta::kOrderSlots];
+    polarisation::Stokes state[meta::kOrderSlots];
+    double total = 0.0;
+    const bool flat = (grad.lengthSquared() <= 0.0);
+
+    for (int m = -meta::kMaxOrder; m <= meta::kMaxOrder; ++m) {
+        double es = 0.0, ep = 0.0;
+        ms.efficiency.at(m, lambda, es, ep);
+        // A polarising device diffracts s and p by different amounts, and on
+        // a polarised run that split is decided by the *state* rather than by
+        // the unpolarised average of the two. It is a diattenuator, so it is
+        // the same Mueller machinery the Fresnel term uses -- the amplitudes
+        // being the square roots of the efficiencies, and no retardance
+        // between them, because an efficiency table carries moduli and the
+        // phase would have to come from the EM solve that produced it.
+        double e = 0.5 * (es + ep);
+        if (inState && ms.efficiency.polarising) {
+            const polarisation::Stokes o =
+                polarisation::Mueller::fromFresnel(std::sqrt(std::max(0.0, es)),
+                                                   std::sqrt(std::max(0.0, ep)),
+                                                   0.0).apply(*inState);
+            e = std::clamp(o.i / std::max(1e-18, inState->i), 0.0, 1.0);
+            state[m + meta::kMaxOrder] =
+                o.i > 1e-15 ? o.scaled(1.0 / o.i)
+                            : polarisation::Stokes::unpolarised();
+        }
+        if (e <= 0.0) continue;
+        const int slot = m + meta::kMaxOrder;
+        if (flat) {
+            // No gradient is no deflection, for every order at once. Keeping the
+            // direction the ordinary law already produced is not an optimisation
+            // -- it is what makes a metasurface with its gradient switched off
+            // trace *bit-identically* to the glass it replaced, which is the
+            // test that keeps this feature from perturbing the other scenes.
+            dir[slot] = ordinary;
+        } else if (!meta::deflect(d, n, grad, lambda, n1, n2, m, ms.reflective,
+                                  dir[slot])) {
+            continue;                        // evanescent here: no such order
+        }
+        weight[slot] = e;
+        total += e;
+    }
+    if (!(total > 0.0)) return false;
+
+    // One order, drawn in proportion to what it carries. The branch keeps the
+    // whole transmitted share scaled by the total efficiency rather than by its
+    // own order's, which is the standard unbiased estimator of following all of
+    // them -- the same arrangement the refractive split already uses.
+    double pick = uniform01(rng) * total, acc = 0.0;
+    int chosen = -1;
+    for (int slot = 0; slot < meta::kOrderSlots; ++slot) {
+        if (weight[slot] <= 0.0) continue;
+        acc += weight[slot];
+        chosen = slot;
+        if (pick < acc) break;
+    }
+    if (chosen < 0) return false;
+
+    out.direction  = dir[chosen];
+    out.efficiency = std::min(1.0, total);
+    out.order      = chosen - meta::kMaxOrder;
+    out.polarised  = (inState != nullptr) && ms.efficiency.polarising;
+    out.state      = state[chosen];
+    return true;
+}
+
+// Which refractive solids contain `p`.
+//
+// A ray has always been born in vacuum, which is right for every source the
+// registry places -- they all sit in air in front of the optic -- and wrong for
+// the one arrangement an LED is actually built as: a die immersed in its own
+// encapsulant. Such a ray met the dome from the inside while recorded as being
+// in air, so the crossing was read as an *entry* into glass, the incident index
+// was guessed at 1, and no ray could ever reach the critical angle. The answer
+// looked plausible and was arithmetic.
+//
+// Parity along one ray settles it: a closed solid is crossed an odd number of
+// times by any ray leaving a point inside it, and an even number from outside.
+// The direction is arbitrary but must not be axis-aligned -- half the geometry
+// in this library has faces normal to an axis, and a probe that grazes one
+// counts a crossing it should not.
+//
+// Cost is one walk per source per run, not per ray. An emitter is a point or a
+// small patch, and the containment of its centre is the containment of all of
+// it for every arrangement that is not a die half-buried in its own dome.
+MediumStack mediaContaining(const TraceScene& scene,
+                            const std::vector<SceneSurface>& surfs,
+                            const Vec3& p) {
+    MediumStack out;
+
+    Vec3 d(0.21384, 0.34712, 0.91283);
+    if (!d.normalize()) return out;
+
+    // Crossings per surface, and how far away the nearest one was.
+    std::vector<int>    crossings(surfs.size(), 0);
+    std::vector<double> nearest(surfs.size(), 0.0);
+
+    constexpr int kMaxCrossings = 256;
+    double t = 1e-6;
+    for (int guard = 0; guard < kMaxCrossings; ++guard) {
+        RayHit h;
+        if (!scene.nearestHit(p, d, h, t)) break;
+        const int idx = (h.inst < 0) ? scene.triangles()[std::size_t(h.tri)].surf
+                                     : scene.surfaceIndexOf(h);
+        if (idx >= 0 && idx < int(surfs.size()) && surfs[std::size_t(idx)].index > 0.0) {
+            if (crossings[std::size_t(idx)]++ == 0) nearest[std::size_t(idx)] = h.t;
+        }
+        // Past this hit, by enough that the same triangle is not found again.
+        t = h.t + 1e-6;
+    }
+
+    // Outermost first, innermost last: the stack resolves a tie by taking the
+    // last entry, and the solid whose boundary is nearest along the way out is
+    // the one the point is deepest inside.
+    std::vector<int> inside;
+    for (std::size_t i = 0; i < crossings.size(); ++i)
+        if (crossings[i] % 2 == 1) inside.push_back(int(i));
+    std::sort(inside.begin(), inside.end(), [&](int a, int b) {
+        return nearest[std::size_t(a)] > nearest[std::size_t(b)];
+    });
+    for (int idx : inside) out.push(idx);
+    return out;
+}
+
 struct TraceContext {
     const TraceScene*    scene      = nullptr;
     // The surfaces this run sees: the scene's own, or a copy with the caller's
@@ -639,8 +840,12 @@ struct TraceContext {
     // `grid` is used, never both -- the atomic path routes the same cell adds
     // here, so a large grid is a single copy no matter how many cores trace it.
     std::vector<std::atomic<double>>* atomicGrid = nullptr;
+    // Per-thread sum of squared deposits, parallel to `grid`. Null when the
+    // caller did not ask for a noise map.
+    std::vector<double>* varGrid    = nullptr;
     std::vector<double>* bandGrid   = nullptr;  // per-thread 3 x bins of receiver 0
     std::vector<double>* intensity  = nullptr;  // per-thread far-field bins
+    std::vector<double>* intensityVar = nullptr; // squared deposits, or null
     RayStats*            stats      = nullptr;  // per-chunk scalar totals
     ChunkOutput*         chunk      = nullptr;
     // Where to record what happened at each interaction, or null. Null on every
@@ -661,6 +866,15 @@ struct TraceContext {
     bool          bands  = false;
     int           replica = -1;   // which Owen scramble this ray belongs to
     int           source  = 0;    // which source emitted this ray
+    // Stray-light path recording, or null. Null on every run that did not ask
+    // for it, which is the branch the hot loop pays.
+    const StrayPathOptions* stray = nullptr;
+    // The media the emitting source sits inside, and which of them governs.
+    // Empty and -1 for a source in air, which is every source the registry
+    // places; a source inside a solid -- an LED die in its own encapsulant --
+    // starts its rays already in that solid rather than in vacuum.
+    MediumStack   initialMedia;
+    int           initialMedium = -1;
     // Flux-weighted Stokes sum of what reached the receiver, on a polarised run.
     double        detStokes[4] = {0.0, 0.0, 0.0, 0.0};
     // The state the source emits, normalised to unit intensity.
@@ -690,7 +904,9 @@ inline void binDirection(TraceContext& ctx, const Vec3& d, double energy) {
     int ip = int(phi / kTwoPi * double(ctx.nPhi));
     it = std::clamp(it, 0, ctx.nTheta - 1);
     ip = std::clamp(ip, 0, ctx.nPhi - 1);
-    (*ctx.intensity)[std::size_t(it) * std::size_t(ctx.nPhi) + std::size_t(ip)] += energy;
+    const std::size_t k = std::size_t(it) * std::size_t(ctx.nPhi) + std::size_t(ip);
+    (*ctx.intensity)[k] += energy;
+    if (ctx.intensityVar) (*ctx.intensityVar)[k] += energy * energy;
 }
 
 // Refractive index of the medium a branch is travelling through, at this
@@ -737,7 +953,7 @@ inline int effectiveMedium(const TraceContext& ctx, const MediumStack& st) {
 // a bias, and on a transmissive diffuser it is a large one.
 constexpr int kMaxNeeDetectors = 8;
 
-double nextEventEstimate(TraceContext& ctx, const Vec3& p, const Vec3& n, double e,
+double nextEventEstimate(TraceContext& ctx, const StraySig& route, const Vec3& p, const Vec3& n, double e,
                          double opl, int medium) {
     if (!ctx.estimator.nextEventEstimation || !ctx.dets || ctx.dets->empty() || e <= 0.0)
         return -1.0;
@@ -856,12 +1072,23 @@ double nextEventEstimate(TraceContext& ctx, const Vec3& p, const Vec3& n, double
             // One shared atomic grid above the size threshold, per-thread below.
             if (ctx.atomicGrid) atomicAddRelaxed((*ctx.atomicGrid)[cell], contribution);
             else                (*ctx.grid)[cell] += contribution;
+            if (ctx.varGrid) (*ctx.varGrid)[cell] += contribution * contribution;
             if (ctx.bandGrid && ctx.bands && di == 0)
                 for (int b = 0; b < 3; ++b)
                     (*ctx.bandGrid)[std::size_t(b) * ctx.bandCells + cell] +=
                         contribution * ctx.bandW[b];
         }
         ctx.stats->fluxDetector.add(contribution);
+        // A connected contribution took the same route as the branch it left,
+        // with the receiver as its last step -- otherwise the ranked list would
+        // be missing exactly the light that next-event estimation is best at
+        // finding, which is the diffuse stray light it exists to measure.
+        if (ctx.stray && ctx.chunk) {
+            StraySig r = route;
+            const int set = ctx.stray->setOf(det.surf);
+            r.append(set >= 0 ? -(set + 1) : det.surf);
+            ctx.chunk->addPath(r, contribution, ctx.stray->maxPaths);
+        }
         ++ctx.stats->raysHit;
         if (ctx.chunk && di < ctx.chunk->detFlux.size()) {
             ctx.chunk->detFlux[di] += contribution;
@@ -911,6 +1138,11 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
     stack[sp].d      = dir;
     stack[sp].energy = energy;
     stack[sp].stokes = ctx.emitted;
+    // Born inside something, or in air. Everything downstream -- the Fresnel
+    // pair, Beer-Lambert, the critical angle -- reads the stack, so seeding it
+    // here is the whole of what "immersed" means to the tracer.
+    stack[sp].media  = ctx.initialMedia;
+    stack[sp].medium = ctx.initialMedium;
     ++sp;
 
     // Pushes a branch, or books its energy as truncated if it cannot be taken.
@@ -1053,6 +1285,15 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
             ctx.chunk->parent.push_back(s.seg);
         }
 
+        // The route, one step per contributor met. Placed after the volume
+        // block, so a scatter inside a medium does not record the surface the
+        // branch was merely heading towards, and before the receiver branch, so
+        // the receiver is the route's last step.
+        if (ctx.stray) {
+            const int set = ctx.stray->setOf(surfIdx);
+            s.stray.append(set >= 0 ? -(set + 1) : surfIdx);
+        }
+
         if (surf.isDetector) {
             const int di = scene.detectorOfSurface(surfIdx);
             const DetectorInfo& det =
@@ -1096,6 +1337,7 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
                                          std::size_t(bx);
                 if (ctx.atomicGrid) atomicAddRelaxed((*ctx.atomicGrid)[cell], e);
                 else                (*grid)[cell] += e;
+                if (ctx.varGrid) (*ctx.varGrid)[cell] += e * e;
                 // The colour bands describe the first receiver, which is the one
                 // the heatmap draws.
                 if (ctx.bandGrid && ctx.bands && di == 0) {
@@ -1121,6 +1363,8 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
             ts.fluxDetector.add(e);
             rayDetector     += e;
             ++ts.raysHit;
+            if (ctx.stray && ctx.chunk)
+                ctx.chunk->addPath(s.stray, e, ctx.stray->maxPaths);
             if (phys.polarised) {
                 // Flux weighted, because a polarisation is a property of the
                 // light that arrives and not of the rays that carried it.
@@ -1243,6 +1487,11 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
         double reflE = 0.0, transE = 0.0;
         double n1 = 1.0, n2 = 1.0;
         bool   tir = false;
+        // Which side of the interface this crossing is on, hoisted out of the
+        // refractive block below because a metasurface reads it too: a pattern
+        // lives on one face of a wafer and not on both, and a solid whose
+        // surface carries one meets it twice unless somebody says which.
+        bool   metaLeaving = false;
 
         polarisation::Stokes polState = s.stokes;
         polarisation::Stokes reflState = s.stokes;
@@ -1271,6 +1520,7 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
             // describe, so a ray in vacuum meeting one has entered it.
             const bool onStack = s.media.contains(surfIdx);
             const bool leaving = onStack || (s.medium >= 0 && geoLeaving);
+            metaLeaving = leaving;
 
             // Exiting a body that was never recorded as entered -- the sheet
             // idiom again, where the entrance and the exit are different
@@ -1489,6 +1739,10 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
             st.depth  = s.depth + 1;
             st.seg    = segIdx;
             st.skipDetector = skipDet;
+            // The branch inherits the route that reached this surface. It is
+            // built fresh rather than copied from `s`, so this is the one place
+            // the route has to be carried over by hand.
+            st.stray  = s.stray;
             if (phys.polarised) {
                 st.stokes   = pol ? *pol : s.stokes;
                 st.polFrame = ng;
@@ -1510,7 +1764,36 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
                     ++ts.nTruncRefract;
                     tD = Vec3();
                 }
-                if (tD.lengthSquared() > 0.0) {
+                // A designed phase gradient replaces the direction Snell just
+                // produced. The law it obeys is the generalised one -- the
+                // tangential wavevector picks up the gradient of the surface
+                // phase -- and the order it leaves in is drawn from the
+                // efficiency table rather than assumed to be the first.
+                if (tD.lengthSquared() > 0.0 && surf.metasurface.active() &&
+                    !surf.metasurface.reflective &&
+                    surf.metasurface.patternsThisCrossing(metaLeaving)) {
+                    MetaPick pick;
+                    if (sampleMetaOrder(surf.metasurface, s.d, n, p, ctx.lambda,
+                                        n1, n2, ctx.rng, tD,
+                                        phys.polarised ? &transState : nullptr,
+                                        pick)) {
+                        tD = pick.direction;
+                        if (pick.polarised) { transState = pick.state; havePol = true; }
+                        // What no propagating order took. Absorbed at the
+                        // surface and booked there, so the budget closes on
+                        // the light the device did not diffract instead of
+                        // gaining it back.
+                        const double kept = transE * pick.efficiency;
+                        ts.fluxAbsorbed.add(transE - kept);
+                        transE = kept;
+                    } else {
+                        // Nothing propagates at this angle at all.
+                        ts.fluxAbsorbed.add(transE);
+                        transE = 0.0;
+                        tD = Vec3();
+                    }
+                }
+                if (tD.lengthSquared() > 0.0 && transE > 0.0) {
                     bool diffuse = false;
                     // A transmissive diffuser re-emits about the far side of the
                     // surface, through the same lobe the reflected branch uses.
@@ -1531,7 +1814,7 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
                     bool estimated = false;
                     if (diffuse) {
                         const double direct =
-                            nextEventEstimate(ctx, p, -ng, transE, opl, afterMed);
+                            nextEventEstimate(ctx, s.stray, p, -ng, transE, opl, afterMed);
                         estimated = (direct >= 0.0);
                         if (direct > 0.0) {
                             ts.resNee.add(-direct);
@@ -1555,6 +1838,25 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
             // there was not.
             Vec3 refl = haveMicro ? microRefl : reflect(s.d, n);
             if (refl.dot(ng) <= 0.0) refl = reflect(s.d, ng);
+            // A reflective metasurface -- a reflectarray -- deflects the
+            // branch that comes back off it rather than the one that goes
+            // through, and the law is the same one with the outgoing medium
+            // being the incident one.
+            if (surf.metasurface.active() && surf.metasurface.reflective) {
+                MetaPick pick;
+                if (sampleMetaOrder(surf.metasurface, s.d, n, p, ctx.lambda,
+                                    n1, n2, ctx.rng, refl,
+                                    phys.polarised ? &reflState : nullptr, pick)) {
+                    refl = pick.direction;
+                    if (pick.polarised) { reflState = pick.state; havePol = true; }
+                    const double kept = reflE * pick.efficiency;
+                    ts.fluxAbsorbed.add(reflE - kept);
+                    reflE = kept;
+                } else {
+                    ts.fluxAbsorbed.add(reflE);
+                    reflE = 0.0;
+                }
+            }
             bool diffuse = false;
             if (redistributes && lobeTis > 0.0 &&
                 uniform01(ctx.rng) < (lobeTis < 1.0 ? lobeTis : 1.0)) {
@@ -1574,15 +1876,16 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
             }
             bool estimated = false;
             if (diffuse) {
-                const double direct = nextEventEstimate(ctx, p, ng, reflE, opl, s.medium);
+                const double direct = nextEventEstimate(ctx, s.stray, p, ng, reflE, opl, s.medium);
                 estimated = (direct >= 0.0);
                 if (direct > 0.0) {
                     ts.resNee.add(-direct);
                     rayDetector += direct;
                 }
             }
-            spawn(refl, reflE, s.media, s.medium, estimated,
-                  havePol ? &reflState : nullptr);
+            if (reflE > 0.0)
+                spawn(refl, reflE, s.media, s.medium, estimated,
+                      havePol ? &reflState : nullptr);
         }
     }
 
@@ -1598,103 +1901,46 @@ void tracePath(TraceContext& ctx, const Vec3& origin, const Vec3& dir, double en
 
 // ---- far-field reduction ---------------------------------------------------
 
-void finishIntensity(IntensityGrid& g, std::vector<double> master, int nTheta, int nPhi) {
-    g.nTheta = nTheta;
-    g.nPhi   = nPhi;
-    g.perSteradian.assign(std::size_t(nTheta) * std::size_t(nPhi), 0.0);
-    g.profile.assign(std::size_t(nTheta), 0.0);
-    g.totalFlux = 0.0;
-    g.thetaEdges.clear();
-    if (nTheta <= 0 || nPhi <= 0 || master.empty()) {
-        g.bin = std::move(master);
-        return;
-    }
-
-    // `master` is the fine uniform accumulation grid (its theta resolution is
-    // what lets a narrow beam be seen at all). The requested output grid is
-    // beam-adaptive: equal-flux theta bins are rebuilt from it, so the bins
-    // concentrate where the flux is -- which is the fix that lets a ~1.3 deg
-    // beam span several output bins at the default 90 instead of under one.
-    const int masterN = int(master.size()) / nPhi;
-    g.bin.assign(std::size_t(nTheta) * std::size_t(nPhi), 0.0);
-
-    // Ring flux (sum over phi) of the master grid -- the signal the theta edges
-    // are built from.
-    std::vector<double> ringFlux(std::size_t(masterN), 0.0);
-    double peakRing = 0.0;
-    for (int m = 0; m < masterN; ++m) {
-        double s = 0.0;
-        for (int ip = 0; ip < nPhi; ++ip)
-            s += master[std::size_t(m) * std::size_t(nPhi) + std::size_t(ip)];
-        ringFlux[m] = s;
-        peakRing = std::max(peakRing, s);
-    }
-    const double baseline = peakRing > 0.0 ? 1e-9 * peakRing : 1e-12;
-    IntensityGrid::buildBeamAdaptiveEdges(ringFlux, masterN, nTheta, baseline, g.thetaEdges);
-
-    // Aggregate master cells into the adaptive output; a master bin straddling
-    // an output edge is split by the fraction of its theta width each ring owns,
-    // so the total flux is conserved exactly.
-    const double dPhi = kTwoPi / double(nPhi);
-    const double Wm   = kPi / double(masterN);
-    for (int k = 0; k < nTheta; ++k) {
-        const double a = g.thetaEdges[std::size_t(k)];
-        const double b = g.thetaEdges[std::size_t(k) + 1];
-        const double omega = dPhi * (std::cos(a) - std::cos(b));   // one cell's solid angle
-        const int m0 = std::clamp(int(a / Wm), 0, masterN - 1);
-        const int m1 = std::clamp(int(b / Wm), 0, masterN - 1);
-        for (int m = m0; m <= m1; ++m) {
-            const double lo = std::max(a, m * Wm);
-            const double hi = std::min(b, (m + 1) * Wm);
-            if (hi <= lo) continue;
-            const double frac = (hi - lo) / Wm;
-            for (int ip = 0; ip < nPhi; ++ip) {
-                const std::size_t mk = std::size_t(m) * std::size_t(nPhi) + std::size_t(ip);
-                const std::size_t ok = std::size_t(k) * std::size_t(nPhi) + std::size_t(ip);
-                const double v = frac * master[mk];
-                g.bin[ok] += v;
-                g.totalFlux += v;
-            }
-        }
-        double ringSum = 0.0;
-        for (int ip = 0; ip < nPhi; ++ip) {
-            const std::size_t ok = std::size_t(k) * std::size_t(nPhi) + std::size_t(ip);
-            if (omega > 1e-15) g.perSteradian[ok] = g.bin[ok] / omega;
-            ringSum += g.perSteradian[ok];
-        }
-        g.profile[std::size_t(k)] = ringSum / double(nPhi);
-    }
-
-    int peakBin = 0;
-    for (int it = 0; it < nTheta; ++it)
-        if (g.profile[std::size_t(it)] > g.profile[std::size_t(peakBin)]) peakBin = it;
-    g.peak = g.profile[std::size_t(peakBin)];
-
-    // Full width at half maximum, walking out from the peak and interpolating the
-    // crossing so the answer is not quantised to the bin width.
-    g.fwhmDeg = 0.0;
-    if (g.peak > 0.0) {
-        const double half = 0.5 * g.peak;
-        auto edge = [&](int step) {
-            int i = peakBin;
-            while (i + step >= 0 && i + step < nTheta &&
-                   g.profile[std::size_t(i + step)] >= half) i += step;
-            const int j = i + step;
-            double a = g.thetaCenterDeg(i);
-            if (j >= 0 && j < nTheta) {
-                const double vi = g.profile[std::size_t(i)];
-                const double vj = g.profile[std::size_t(j)];
-                if (vi > vj) a += (g.thetaCenterDeg(j) - a) * (vi - half) / (vi - vj);
-            }
-            return a;
-        };
-        g.fwhmDeg = std::fabs(edge(+1) - edge(-1));
-    }
-}
 
 } // namespace
 
-namespace {
+// Resolves every surface's scattering into the one model the tracer reads, and
+// writes it back over the run's own copy of the surfaces.
+//
+// Done once per run rather than per hit, so the inner loop reads one model
+// instead of choosing between three. It also puts the scene-wide overrides and
+// the physics switches in one place: `scattering` gates the redistribution
+// lobes and `roughness` gates the microfacet one, which is the split those two
+// switches always drove.
+//
+// After this, `SurfaceOptics::scatter` and `::roughness` are not read again by
+// the tracer at all. They are the way a scene *says* what it is; `bsdf` is what
+// the tracer *does*.
+std::vector<int> mediaContainingPoint(const TraceScene& scene,
+                                      const std::vector<SceneSurface>& surfs,
+                                      const Vec3& p) {
+    const MediumStack st = mediaContaining(scene, surfs, p);
+    std::vector<int> out;
+    out.reserve(st.n);
+    for (std::uint8_t i = 0; i < st.n; ++i) out.push_back(int(st.e[i]));
+    return out;
+}
+
+void resolveScattering(std::vector<SceneSurface>& surfs, const PhysicsOptions& phys) {
+    for (SceneSurface& s : surfs) {
+        SurfaceOptics t = s;
+        if (phys.roughnessOverride >= 0.0) t.roughness = phys.roughnessOverride;
+        if (phys.scatterOverride   >= 0.0) t.scatter   = phys.scatterOverride;
+
+        bsdf::Surface b = t.effectiveBsdf();
+        const bool micro = (b.model == bsdf::Model::Microfacet);
+        if (( micro && !phys.roughness) ||
+            (!micro && !phys.scattering))
+            b = bsdf::Surface{};
+
+        s.bsdf = b;
+    }
+}
 
 // The receiver frames of a scene, copied onto a result. Every readout that maps
 // a bin back to world millimetres reads these rather than assuming +Z.
@@ -1760,6 +2006,9 @@ void scatterDetectorGrids(const TraceScene& scene, const std::vector<double>& fl
     }
     if (!out.detectors.empty()) out.irradiance = out.detectors[0].grid;
 }
+
+namespace {
+
 
 } // namespace
 
@@ -2091,6 +2340,19 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
     bases.reserve(nSrc);
     for (const SourceConfig& s : srcs) bases.emplace_back(s.axis);
 
+    // What each source is immersed in, resolved once. A source in air -- every
+    // one the registry places -- comes back empty, and the run is then bit for
+    // bit what it was before there was a probe at all.
+    std::vector<MediumStack> srcMedia(nSrc);
+    std::vector<int>         srcMedium(nSrc, -1);
+    for (std::size_t s = 0; s < nSrc; ++s) {
+        srcMedia[s] = mediaContaining(scene, surfs, Vec3(srcs[s].origin));
+        if (srcMedia[s].n == 0) continue;
+        TraceContext probe;                 // effectiveMedium reads surfs through one
+        probe.surfs  = &surfs;
+        srcMedium[s] = effectiveMedium(probe, srcMedia[s]);
+    }
+
     // One emission stream per source, so two sources are two samples of the
     // scene rather than one sample counted twice. The first source's salt is
     // the identity, which is what keeps a one-source run -- and therefore every
@@ -2192,11 +2454,18 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
     std::vector<std::atomic<double>> atomicBins(atomicGrid ? allCells : 0);
     for (auto& a : atomicBins) a.store(0.0, std::memory_order_relaxed);
     std::vector<std::vector<double>> grids(atomicGrid ? 0 : threads);
+    // The noise map costs one more grid per thread and one multiply-add per
+    // deposit, so it is only built when a caller wants it.
+    const bool wantVar = opt.noiseMap && !atomicGrid;
+    std::vector<std::vector<double>> varGrids(wantVar ? threads : 0);
     std::vector<std::vector<double>> bandGrids(spectral ? threads : 0);
     std::vector<std::vector<double>> angleGrids(angles ? threads : 0);
+    std::vector<std::vector<double>> angleVarGrids((angles && opt.noiseMap) ? threads : 0);
     for (auto& g : grids)      g.assign(allCells, 0.0);
+    for (auto& g : varGrids)   g.assign(allCells, 0.0);
     for (auto& g : bandGrids)  g.assign(cells * 3, 0.0);
-    for (auto& g : angleGrids) g.assign(angles, 0.0);
+    for (auto& g : angleGrids)    g.assign(angles, 0.0);
+    for (auto& g : angleVarGrids) g.assign(angles, 0.0);
     std::vector<RayStats> chunkStats(numChunks);
     // One Stokes accumulator per thread. Reduced in thread order rather than
     // chunk order, which is enough for a reported polarisation and is why it is
@@ -2322,6 +2591,10 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
             r.residual.scale(scale);
             r.truncation.scale(scale);
             for (auto& v : r.irradiance)     v *= scale;
+            // Squared, because it is a sum of squared deposits.
+            for (auto& v : r.irradianceVar)  v *= scale * scale;
+            for (auto& v : r.intensityMaster)    v *= scale;
+            for (auto& v : r.intensityMasterVar) v *= scale * scale;
             for (auto& v : r.bandIrradiance) v *= scale;
             for (auto& v : angleBins)        v *= scale;
             for (auto& d : r.detectors) {
@@ -2329,6 +2602,11 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
                 for (auto& v : d.grid) v *= scale;
             }
             for (auto& s : r.sources) s.flux *= scale;
+            // Routes carry flux like every other bucket and are normalised with
+            // them, so a route's share of the receiver is a share of watts and
+            // not of raw ray weight.
+            for (auto& sp : r.strayPaths) sp.flux *= scale;
+            r.strayFluxDropped *= scale;
             r.efficiency = (totalPower > 0.0) ? (r.fluxDetector / totalPower) : 0.0;
 
             // The Welford moments are over per-ray *detected weight*, so the
@@ -2373,10 +2651,16 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
         // start fast enough that it happens in practice.
         if (r.raysEmitted == 0) r.sourcePower = 0.0;
 
-        if (angles) finishIntensity(r.intensity, std::move(angleBins), nTheta, nPhi);
+        if (angles) finishIntensityGrid(r.intensity, std::move(angleBins), nTheta, nPhi);
     };
 
     std::atomic<std::size_t> nextChunk{0};
+    // Which chunks have finished. With chunks dealt by a fixed stride they no
+    // longer complete as a prefix, so a progressive snapshot has to ask rather
+    // than assume -- and asking is also what stops it reading a chunk that is
+    // still being written, which counting dispatches never actually prevented.
+    std::vector<std::atomic<char>> chunkDone(numChunks);
+    for (auto& d : chunkDone) d.store(0, std::memory_order_relaxed);
     std::atomic<std::size_t> raysDone{0};
     std::atomic<bool>        stopped{false};
 
@@ -2472,9 +2756,8 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
             std::vector<double>      repDet(std::size_t(replicas), 0.0);
             std::vector<double>      repEmit(std::size_t(replicas), 0.0);
             std::vector<double>      srcDet(nSrc, 0.0);
-            const std::size_t doneChunks = std::min(numChunks,
-                                                    nextChunk.load(std::memory_order_relaxed));
-            for (std::size_t c = 0; c < doneChunks; ++c) {
+            for (std::size_t c = 0; c < numChunks; ++c) {
+                if (!chunkDone[c].load(std::memory_order_acquire)) continue;
                 const ChunkOutput& co = chunkOut[c];
                 for (std::size_t i = 0; i < detFlux.size() && i < co.detFlux.size(); ++i) {
                     detFlux[i] += co.detFlux[i];
@@ -2523,6 +2806,10 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
         ctx.bandCells = cells;
         ctx.bands     = spectral;
         ctx.intensity = angles ? &angleGrids[tid] : nullptr;
+        ctx.intensityVar = angleVarGrids.empty() ? nullptr : &angleVarGrids[tid];
+        ctx.stray     = opt.strayPaths.enabled ? &opt.strayPaths : nullptr;
+        ctx.varGrid   = wantVar ? &varGrids[tid] : nullptr;
+        std::size_t myChunk = std::size_t(tid);
         ctx.nTheta    = nThetaMaster;
         ctx.nPhi      = nPhi;
         ctx.physics   = opt.physics;
@@ -2573,7 +2860,24 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
                 stopped.store(true, std::memory_order_relaxed);
                 break;
             }
-            const std::size_t chunk = nextChunk.fetch_add(1, std::memory_order_relaxed);
+            // Chunks are dealt to threads by a fixed stride rather than taken
+            // from a shared counter.
+            //
+            // The counter balanced the load and cost the pictures their
+            // reproducibility: which thread's partial grid a ray landed in
+            // followed whoever asked first, so two identical runs summed the
+            // same numbers in a different order and the irradiance map differed
+            // in its last place. The scalars never did -- they reduce per chunk
+            // -- which is exactly why the discrepancy could sit there unnoticed.
+            //
+            // A stride costs balance only when chunk costs are correlated with
+            // chunk index, and they are not: a chunk is 512 consecutive rays of
+            // one source, and the expensive rays are scattered through the
+            // sequence rather than gathered at one end of it.
+            const std::size_t chunk = opt.deterministicGrids
+                                          ? myChunk
+                                          : nextChunk.fetch_add(1, std::memory_order_relaxed);
+            myChunk += threads;
             if (chunk >= numChunks) break;
 
             const std::size_t begin = chunk * kChunkRays;
@@ -2603,6 +2907,8 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
                 const SourceConfig& srcS = srcs[sIdx];
                 ctx.source  = int(sIdx);
                 ctx.emitted = emittedState[sIdx];
+                ctx.initialMedia  = srcMedia[sIdx];
+                ctx.initialMedium = srcMedium[sIdx];
 
                 // Paths are kept for the leading rays *of this source*, so
                 // every emitter contributes to the drawn bundle.
@@ -2644,6 +2950,9 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
             }
 
             chunkStats[chunk].raysDone = end - begin;
+            // Release: everything this chunk wrote is visible to a snapshot
+            // that sees the flag.
+            chunkDone[chunk].store(1, std::memory_order_release);
             if (wantPartial) mine.add(chunkStats[chunk]);
             const std::size_t done =
                 raysDone.fetch_add(end - begin, std::memory_order_relaxed) + (end - begin);
@@ -2674,6 +2983,43 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
     RayStats total;
     for (const auto& cs : chunkStats) total.add(cs);
 
+    // Stray-light routes, merged in chunk order and for the same reason the
+    // scalars are: a ranked list whose ranking moved with the thread count
+    // would be a worse answer than no list.
+    std::vector<StraySig>    mergedSig;
+    std::vector<double>      mergedFlux;
+    std::vector<std::size_t> mergedRays;
+    std::size_t              droppedPaths = 0;
+    double                   droppedFlux  = 0.0;
+    if (opt.strayPaths.enabled) {
+        std::unordered_map<std::uint64_t, std::vector<int>> index;
+        for (const ChunkOutput& co : chunkOut) {
+            for (std::size_t i = 0; i < co.pathSig.size(); ++i) {
+                const StraySig& sig = co.pathSig[i];
+                auto& bucket = index[sig.hash()];
+                int at = -1;
+                for (int j : bucket)
+                    if (mergedSig[std::size_t(j)].sameAs(sig)) { at = j; break; }
+                if (at < 0) {
+                    if (mergedSig.size() >= opt.strayPaths.maxPaths) {
+                        ++droppedPaths;
+                        droppedFlux += co.pathFlux[i];
+                        continue;
+                    }
+                    at = int(mergedSig.size());
+                    bucket.push_back(at);
+                    mergedSig.push_back(sig);
+                    mergedFlux.push_back(0.0);
+                    mergedRays.push_back(0);
+                }
+                mergedFlux[std::size_t(at)] += co.pathFlux[i];
+                mergedRays[std::size_t(at)] += co.pathRays[i];
+            }
+            droppedPaths += co.pathsDropped;
+            droppedFlux  += co.pathFluxDropped;
+        }
+    }
+
     std::vector<double> allBins(allCells, 0.0);
     std::vector<double> bandBins(spectral ? cells * 3 : 0, 0.0);
     std::vector<double> angleBins(angles, 0.0);
@@ -2684,6 +3030,10 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
     } else {
         reduceGrid(grids, allBins);
     }
+    std::vector<double> varBins(wantVar ? allCells : 0, 0.0);
+    if (wantVar) reduceGrid(varGrids, varBins);
+    std::vector<double> angleVarBins(angleVarGrids.empty() ? 0 : angles, 0.0);
+    if (!angleVarGrids.empty()) reduceGrid(angleVarGrids, angleVarBins);
     reduceGrid(bandGrids, bandBins);
     reduceGrid(angleGrids, angleBins);
 
@@ -2714,6 +3064,51 @@ void RayTracer::trace(const TraceScene& scene, const std::vector<SourceConfig>& 
     for (const auto& c : chunkOut) {
         out.raySegments.insert(out.raySegments.end(), c.segments.begin(), c.segments.end());
         out.arrivals.insert(out.arrivals.end(), c.arrivals.begin(), c.arrivals.end());
+    }
+
+    // Ranked by what each route delivers, which is the order a stray-light
+    // review reads. Ties break on the route itself so the ranking is total: two
+    // routes carrying identical flux must not swap places between runs.
+    if (opt.strayPaths.enabled) {
+        out.strayPaths.reserve(mergedSig.size());
+        for (std::size_t i = 0; i < mergedSig.size(); ++i) {
+            StrayPath sp;
+            sp.ids.assign(mergedSig[i].e, mergedSig[i].e + mergedSig[i].n);
+            sp.flux      = mergedFlux[i];
+            sp.rays      = mergedRays[i];
+            sp.truncated = mergedSig[i].trunc;
+            out.strayPaths.push_back(std::move(sp));
+        }
+        std::sort(out.strayPaths.begin(), out.strayPaths.end(),
+                  [](const StrayPath& a, const StrayPath& b) {
+                      if (a.flux != b.flux) return a.flux > b.flux;
+                      if (a.ids.size() != b.ids.size()) return a.ids.size() < b.ids.size();
+                      return a.ids < b.ids;
+                  });
+        out.strayPathsDropped = droppedPaths;
+        out.strayFluxDropped  = droppedFlux;
+        out.straySurfaceLabels = scene.surfaceLabels();
+        out.straySetNames      = opt.strayPaths.setNames;
+    }
+
+    // The squares scale with the square of the flux normalisation, and the
+    // grid holds every receiver end to end while `irradiance` is the first one.
+    // Left unscaled here on purpose: finalise() owns the flux normalisation and
+    // applies it to this alongside the grid, squared, so the two cannot drift
+    // apart. Scaling it here meant reading a ray count finalise had not set yet.
+    if (wantVar) {
+        out.irradianceVar.assign(std::size_t(nx) * std::size_t(ny), 0.0);
+        for (std::size_t i = 0; i < out.irradianceVar.size() && i < varBins.size(); ++i)
+            out.irradianceVar[i] = varBins[i];
+    }
+    // The master far field, kept before finishIntensityGrid folds it into
+    // adaptive rings. Unscaled here for the same reason the receiver's variance
+    // is: finalise() owns the flux normalisation.
+    if (!angleVarBins.empty()) {
+        out.intensityMasterTheta = nThetaMaster;
+        out.intensityMasterPhi   = nPhi;
+        out.intensityMaster      = angleBins;
+        out.intensityMasterVar   = angleVarBins;
     }
 
     out.cancelled = stopped.load(std::memory_order_relaxed);

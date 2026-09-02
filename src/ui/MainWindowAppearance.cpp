@@ -7,6 +7,10 @@
 // in one file is what keeps the three from drifting apart.
 #include "MainWindowInternal.h"
 
+#include <atomic>
+
+#include "core/BackwardTracer.h"
+
 // ---- the appearance preview ------------------------------------------------
 //
 // What the part looks like switched on, path-traced on the GPU through OCCT's
@@ -27,6 +31,14 @@ QWidget* MainWindow::buildAppearanceTab() {
     auto* render  = new QPushButton(QStringLiteral("Restart"), this);
     auto* fit     = new QPushButton(QStringLiteral("Fit (F)"), this);
     auto* save    = new QPushButton(QStringLiteral("Save PNG..."), this);
+    auto* measure = new QPushButton(QStringLiteral("Measure luminance..."), this);
+    measure->setToolTip(QStringLiteral(
+        "The same scene from the same place, through the measurement tracer: "
+        "luminance in cd/m2, the quantity a glare limit and a display "
+        "specification are written in. It reads the SurfaceOptics the forward "
+        "run reads -- the scatter model, the coating, the dispersion curve -- "
+        "which the preview beside it does not, and it is written out as "
+        "numbers rather than as a picture."));
     render->setToolTip(QStringLiteral(
         "Throws the accumulated image away and starts again. Every camera move "
         "does this by itself -- the picture is an average over frames taken "
@@ -196,6 +208,7 @@ QWidget* MainWindow::buildAppearanceTab() {
     dof->addWidget(focus);
     dof->addStretch(1);
     dof->addWidget(save);
+    dof->addWidget(measure);
 
     auto* page = new QWidget(this);
     auto* col  = new QVBoxLayout(page);
@@ -279,6 +292,7 @@ QWidget* MainWindow::buildAppearanceTab() {
     });
 
     connect(save, &QPushButton::clicked, this, &MainWindow::exportAppearanceImage);
+    connect(measure, &QPushButton::clicked, this, &MainWindow::measureLuminance);
 
     return page;
 }
@@ -533,6 +547,188 @@ QImage MainWindow::appearanceFigure(appearance::ExportRequest& shot) const {
     shot.height  = image.height();
     shot.samples = std::max(1, rendered);
     return image;
+}
+
+
+// A luminance measurement of what the tab is showing.
+//
+// The picture above this button is a preview and its caption says so. This is
+// the other thing: the same scene, from the same place, through the tracer that
+// reads the same SurfaceOptics the forward run does, reported in cd/m^2 rather
+// than in tone-mapped sRGB.
+//
+// The two share the *view* and nothing else, and that is deliberate. Framing is
+// what the preview is genuinely good at -- a user orbits until the part looks
+// the way they want it to -- and a measurement of some other view would answer a
+// different question. Everything after the pose comes from the document, not
+// from the renderer.
+void MainWindow::measureLuminance() {
+    Vec3   eye, target, up;
+    double fovDeg = 40.0;
+    if (!m_appearance || !m_appearance->cameraPose(eye, target, up, fovDeg)) {
+        QMessageBox::information(this, windowTitle(),
+                                 QStringLiteral("There is no view to measure yet."));
+        return;
+    }
+    if (!m_sceneData || m_sceneData->scene.surfaces().empty()) {
+        QMessageBox::information(this, windowTitle(),
+                                 QStringLiteral("There is no geometry to measure yet."));
+        return;
+    }
+    const std::vector<SourceConfig> srcs = appearanceSources();
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Measure luminance"));
+    auto* form = new QFormLayout;
+    auto* width = new QSpinBox(&dialog);
+    width->setRange(32, 4096);
+    width->setValue(m_luminanceWidth);
+    auto* samples = new QSpinBox(&dialog);
+    samples->setRange(1, 100000);
+    samples->setValue(m_luminanceSamples);
+    auto* room = new QDoubleSpinBox(&dialog);
+    room->setRange(0.0, 1e6);
+    room->setDecimals(1);
+    room->setValue(m_luminanceRoom);
+    room->setSuffix(QStringLiteral(" cd/m2"));
+    room->setToolTip(QStringLiteral(
+        "A uniform surround to look at the optic in. Most of this library is "
+        "specular, and a mirror in a black room lit by a point source is a black "
+        "rectangle -- the right answer to a question nobody asked. 200 cd/m2 is "
+        "an ordinary interior; a fixture is orders of magnitude brighter and "
+        "still reads as the bright thing in the picture."));
+    form->addRow(QStringLiteral("Width (px)"), width);
+    form->addRow(QStringLiteral("Rays per pixel"), samples);
+    form->addRow(QStringLiteral("Surround"), room);
+
+    auto* note = new QLabel(
+        QStringLiteral("Luminance in cd/m2 through the measurement tracer, from "
+                       "this view. Written as a CSV of numbers: a tone mapping is "
+                       "a display decision, and an image file has already thrown "
+                       "away what was measured."),
+        &dialog);
+    note->setWordWrap(true);
+
+    auto* ok     = new QPushButton(QStringLiteral("Measure..."), &dialog);
+    auto* cancel = new QPushButton(QStringLiteral("Cancel"), &dialog);
+    ok->setDefault(true);
+    auto* buttons = new QHBoxLayout;
+    buttons->addStretch(1);
+    buttons->addWidget(ok);
+    buttons->addWidget(cancel);
+
+    auto* column = new QVBoxLayout(&dialog);
+    column->addLayout(form);
+    column->addWidget(note);
+    column->addLayout(buttons);
+    connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
+    connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return;
+
+    m_luminanceWidth   = width->value();
+    m_luminanceSamples = samples->value();
+    m_luminanceRoom    = room->value();
+
+    const QString path = QFileDialog::getSaveFileName(
+        this, QStringLiteral("Save the luminance measurement"),
+        QStringLiteral("%1 luminance.csv").arg(currentConfig().sceneName()),
+        QStringLiteral("CSV (*.csv)"));
+    if (path.isEmpty()) return;
+
+    const double aspect = std::max(0.2, m_appearance->viewAspect());
+    backward::CameraConfig cam;
+    cam.eye    = eye;
+    cam.target = target;
+    cam.up     = up;
+    cam.width  = m_luminanceWidth;
+    cam.height = std::max(1, int(std::lround(double(m_luminanceWidth) / aspect)));
+    cam.samplesPerPixel = m_luminanceSamples;
+    cam.environmentLuminance = m_luminanceRoom;
+    // The same view as a real lens. A vertical field of view and a sensor give
+    // a focal length; either alone does not, and the tracer is written in the
+    // terms a photograph is specified in rather than in an angle.
+    cam.sensorWidthMm = 36.0;
+    const double sensorHeightMm = cam.sensorWidthMm * double(cam.height) /
+                                  double(std::max(1, cam.width));
+    const double halfFov = 0.5 * fovDeg * 3.14159265358979323846 / 180.0;
+    cam.focalLengthMm = 0.5 * sensorHeightMm /
+                        std::max(1e-6, std::tan(std::max(1e-6, halfFov)));
+    // A pinhole, deliberately. The preview's aperture is a radius in scene
+    // units and this one is an f-number on a 36 mm sensor; carrying one across
+    // to the other would be inventing a correspondence rather than measuring
+    // one, and a measurement usually wants everything in focus anyway.
+    cam.fNumber = 0.0;
+
+    QProgressDialog progress(
+        QStringLiteral("Measuring %1 x %2...").arg(cam.width).arg(cam.height),
+        QStringLiteral("Stop"), 0, cam.samplesPerPixel, this);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(400);
+
+    std::atomic<bool> stop{false};
+    backward::RenderControl ctl;
+    ctl.cancel = &stop;
+    ctl.progress = [&](std::size_t done, std::size_t total) {
+        progress.setMaximum(int(std::max<std::size_t>(1, total)));
+        progress.setValue(int(done));
+        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents |
+                                        QEventLoop::AllEvents);
+        if (progress.wasCanceled()) stop.store(true, std::memory_order_relaxed);
+    };
+
+    backward::LuminanceImage img;
+    backward::render(m_sceneData->scene, m_sceneData->scene.surfaces(), srcs, cam,
+                     currentConfig().physics, currentConfig().fluxUnit, img, ctl);
+    progress.reset();
+
+    if (img.empty()) {
+        QMessageBox::warning(this, windowTitle(),
+                             QStringLiteral("Nothing was measured: this view has no "
+                                            "light in it and no surround to supply "
+                                            "any."));
+        return;
+    }
+
+    QString csv;
+    QTextStream ts(&csv);
+    ts << "# Luminance, cd/m^2\n";
+    ts << "# " << currentConfig().sceneName() << ", " << cam.width << " x "
+       << cam.height << " px, " << cam.samplesPerPixel << " rays/px, surround "
+       << QString::number(cam.environmentLuminance, 'g', 6) << " cd/m^2\n";
+    for (int y = 0; y < img.height; ++y) {
+        for (int x = 0; x < img.width; ++x) {
+            if (x) ts << ",";
+            ts << QString::number(img.at(x, y), 'g', 6);
+        }
+        ts << "\n";
+    }
+    ts.flush();
+
+    QString err;
+    if (!analysis::writeTextFile(path, csv, &err)) {
+        QMessageBox::warning(this, windowTitle(),
+                             QStringLiteral("Could not write %1: %2").arg(path, err));
+        return;
+    }
+
+    // The three numbers a luminance measurement is quoted with, and the
+    // truncated share, which is the one that says whether to believe them.
+    QMessageBox::information(
+        this, windowTitle(),
+        QStringLiteral("Measured %1 x %2 px at %3 rays/px.\n\n"
+                       "peak      %4 cd/m2\n"
+                       "mean      %5 cd/m2\n"
+                       "log mean  %6 cd/m2   (what a glare index is built on)\n"
+                       "truncated %7 %  of the paths' throughput\n\n"
+                       "Written to %8")
+            .arg(cam.width)
+            .arg(cam.height)
+            .arg(cam.samplesPerPixel)
+            .arg(QString::number(img.peak, 'g', 6),
+                 QString::number(img.mean, 'g', 6),
+                 QString::number(img.logMean, 'g', 6),
+                 QString::number(100.0 * img.truncatedFraction, 'f', 4),
+                 path));
 }
 
 // The emitters the current configuration traces, or an empty list where the

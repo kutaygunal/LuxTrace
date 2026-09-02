@@ -27,7 +27,7 @@ TracePro, OpticStudio) is expected to do:
 
 | Capability | LuxTrace |
 |---|---|
-| Geometry | 28 parametric OCCT scenes, plus STEP/IGES import of a customer's own CAD; instanced parts share one mesh and one hierarchy |
+| Geometry | 29 parametric OCCT scenes, plus STEP/IGES import of a customer's own CAD; instanced parts share one mesh and one hierarchy |
 | Surface normals | Read off the exact B-Rep at each tessellation node and interpolated across the facet, so the mesh is no longer what limits how sharply a scene focuses |
 | Materials | A catalogue by name — N-BK7, N-SF11, fused silica, PMMA, polycarbonate, water, cement, Al/Ag/Au — with Sellmeier dispersion, Abbe numbers and complex-index Fresnel for the metals |
 | Glass catalogue | Import a real catalogue — a Zemax `.agf` from Schott, Ohara, CDGM, Hoya or Sumita, or a refractiveindex.info `.yml` entry — and the ten built-in names become a catalogue a lens designer can actually type into |
@@ -45,9 +45,11 @@ TracePro, OpticStudio) is expected to do:
 | Measurements | Spot metrics, far-field intensity, MTF, wavefront error and Strehl, CIE chromaticity and colour temperature |
 | Studies | Convergence, through-focus, parameter sweeps in 1D and 2D, Nelder-Mead and CMA-ES optimisation, and Monte Carlo tolerance analysis with a yield and a sensitivity ranking |
 | Progressive results | The image forms and the error bar shrinks while the trace runs |
-| Appearance preview | A GPU path-traced picture of the part switched on — real glass, real metal, the scene's own emitters, and a nominated receiver glowing with the distribution the run measured. An **appearance preview, not a photometric result**: RGB, no dispersion, no polarisation, no cd/m² |
+| Luminance camera | A camera-side integrator over the same geometry, the same `SurfaceOptics`, the same coatings and the same spectra the forward tracer reads, reporting **cd/m²**. Pinhole or thin lens with a real focal length, sensor and aperture; analytic connections to every emitter; a uniform surround or an importance-sampled HDR environment; progressive, and bit-identical at any thread count. Measured against the forward tracer's own receiver, bin for bin, in each estimator's measured error |
+| Meta-optics | A designed phase gradient obeying the generalised Snell law, with diffraction orders, per-order efficiency over wavelength and polarisation, and an importer for what an EM solver exports. Its chromatic dispersion is reversed and an order of magnitude larger than a refractive lens, which is checked rather than claimed |
+| Appearance preview | A GPU path-traced picture of the part switched on — real glass, real metal, the scene's own emitters, and a nominated receiver glowing with the distribution the run measured. A **picture, not a measurement**: RGB, no dispersion, no polarisation, not reproducible frame for frame. **Measure luminance...** beside it runs the camera above over the view already framed and writes the cd/m² out as numbers |
 | Import/export | JSON config; CSV irradiance, intensity, metrics and ensembles; **IES LM-63 and EULUMDAT** for DIALux, AGi32 and Relux; PNG of any view, and the appearance preview offscreen at any resolution; a one-click HTML report |
-| Validation | `--validate` checks the tracer against seven closed forms derived outside it and prints the residuals |
+| Validation | `--validate` checks the tracer against fifteen closed forms derived outside it and prints the residuals |
 
 ---
 
@@ -123,7 +125,7 @@ would be absurd.
 
 ## The scene library
 
-28 scenes, all built from OCCT B-Rep and enumerated from one registry
+29 scenes, all built from OCCT B-Rep and enumerated from one registry
 (`GeometryProvider::Scene`), so the UI, the diagnostics and the tests pick them
 up automatically. Each declares 2-4 editable dimensions (`paramInfo`), the last
 of which is always the receiver position; the emitter follows the geometry, so
@@ -208,8 +210,135 @@ accounted for exactly in every scene: `detected + absorbed + escaped + truncated
 Every ray seeds its own RNG from its index — for its emission direction, its
 emitting-area sample and its scatter/roughness draws alike — and the scalar
 totals reduce in chunk order rather than thread order, so a run's efficiency and
-energy budget do not depend on the thread count. `--bench` checks that on every
-scene/source combination.
+energy budget do not depend on the thread count.
+
+The binned results — the irradiance grid, the colour bands, the far-field
+intensity — are accumulated per thread, because one buffer per chunk would be
+195,313 buffers on a hundred-million-ray run. So which partial sum a ray lands
+in is a scheduling question, and that used to make the pictures depend on it:
+two identical runs summed the same numbers in a different order and the map
+differed in its last place. Chunks are now dealt to threads by a fixed stride
+rather than taken from a shared counter, which fixes the scheduling and makes a
+run reproduce itself exactly — at a cost of 3 % to 8.5 % in throughput, worst on
+a light guide, where ray costs vary most and dynamic stealing had the most to
+balance. `run.deterministicGrids: false` buys that back and gives up the
+guarantee; the scalars are unaffected either way.
+
+What is still true only to rounding: a grid bin can differ in its last place
+between two *different* thread counts, because a different number of partial
+sums is a different summation tree. The tests pin both halves — the scalars as
+exactly equal, the bins as equal to within 1e-12 of the peak — and `--bench`
+checks every scene against both, refusing to pass if a grid fails to repeat.
+
+## The GPU preview backend
+
+A second tracer over the same geometry, on the same hierarchy, for scenes whose
+physics it can model. On an RTX 4090 it traces the LED dome's hundred million
+rays in **0.42 s** against the reference's **18.1 s**, and a light guide at
+**84x**. It is built only where CMake found CUDA; without it every entry point
+still links and reports itself unavailable, so a build without a card is the
+same application saying it has no preview.
+
+It is a *preview*, and two rules keep that honest.
+
+**It refuses what it cannot model, by name.** A multi-layer coating stack, a
+metasurface, a measured ray file, a collimated beam with a radius, stray-light
+path recording, two sources with different spectra, and a surface edit that
+matches nothing. Nothing is approximated silently, because a preview that
+quietly drops a term returns a number indistinguishable from the right one. Of
+the 29 scenes it takes 28; the metalens is refused, because the kernel obeys
+Snell's law and a metasurface does not.
+
+What it does take is everything else: scattering, volume scattering, instanced
+geometry, several sources and several receivers, measured coating tables,
+spectral runs with dispersion, and polarisation — a Stokes vector per branch,
+rotated into each plane of incidence, with the Fresnel split and the metal
+reflection decided by the state rather than by the unpolarised average of the
+two. Its variance reduction is the reference's: Owen-scrambled Sobol emission,
+next-event estimation, aiming and Russian roulette, each booking what it did
+not trace so the energy budget still closes to 1e-9.
+
+**Its answer is checked against the reference, not assumed.** `--refcheck all`
+traces every scene both ways and compares them in units of their own error bars:
+a scalar has to land inside four combined standard errors, a distribution inside
+three times the noise floor the two runs' own per-bin variance implies. Speed is
+not evidence.
+
+```
+LuxTrace.exe --gpuinfo                 what the backend is, or why there isn't one
+LuxTrace.exe --refcheck all [rays]     every scene, both ways, one table
+LuxTrace.exe --refcheck <scene> [rays] --gpu     one scene in detail
+```
+
+Headless, `"backend": "gpu"` on a `run` operation demands it and fails with the
+reason if the scene is not one it can take; `"auto"` uses it where it fits and
+says in the result which tracer ran and why it fell back.
+
+### What it models, and what it costs
+
+Specular reflection, complex-index metal reflectance, Fresnel refraction with
+medium tracking, ideal coatings, Beer-Lambert absorption, surface scattering
+(GGX with Smith masking, ABg, Lambertian and measured tables), volume scattering
+(Henyey-Greenstein and Gegenbauer), the two-level instanced hierarchy, multiple
+sources, area emitters, the receiver grid and the far field. In single precision,
+sampling one branch at each interface rather than following both.
+
+Its emission stream is Owen-scrambled Sobol, and its error bar is measured across
+independent scrambles rather than ray to ray -- a low-discrepancy sequence is not
+a set of independent samples, so the ray-to-ray spread would report the error a
+plain Monte Carlo run of the same size would have had, which is the whole gain
+thrown away in the reporting and, worse, an overstated bar that makes every
+disagreement look acceptable.
+
+What it still does not carry is next-event estimation, emission aiming and
+Russian roulette, so on the diffuse scenes it needs more rays than the reference
+for the same error bar and the wall-clock win is smaller than the ray-rate win.
+
+### What the comparison found, and what it took to fix
+
+Refractive scenes used to come out **about 1 % low in delivered flux**, growing
+with how obliquely rays crossed a refracting surface: invisible on the LED dome
+at normal incidence, largest on the plano-convex lens and the axicon's cone, and
+a bias rather than noise -- it grew in sigma as rays were added, reaching −14.7σ
+and −24.9σ at eight million rays. Those two scenes were the ones `--refcheck all`
+reported as DIFFERS.
+
+It was single-precision geometry, in one specific place. The kernel computed the
+hit point as `o + d*t`, and Möller-Trumbore produces `t` as a ratio of triple
+products built from vectors the length of the whole ray -- so its relative error
+is a few ulp of *the distance travelled*. A ray crossing 250 mm to reach a lens
+landed with a couple of ten-thousandths of a millimetre of error along its own
+direction, which is the same size as the offset the next leg is spawned with. The
+branch started on the wrong side of the surface it had just left, immediately
+re-hit it, and refracted a second time at a face it had already crossed.
+
+The hit point now comes from the barycentrics, `v0 + e1*u + e2*v`: the same point
+anchored on the triangle instead of on the ray, so its error is a few ulp of the
+*vertex* coordinates and does not grow with how far the ray came. The oracle is
+sharp -- with all reflection removed, every ray through the lens must reach the
+receiver, and the reference delivers exactly 1.000000 where the preview delivered
+0.991151. It delivers 1.000000 now, and that is a test.
+
+Two smaller differences went with it: the shading normal is now arbitrated by the
+facet the way the reference arbitrates it, and the ideal coating is applied to s
+and p separately before averaging rather than to their average, which near
+Brewster's angle is nearly a factor of two and was the whole of the axicon's
+residual.
+
+Opening the gate on scattering and instancing needed the geometry to be
+watertight rather than merely close, and an integrating sphere turned out to be
+the sharpest oracle in the library for it: the reference escapes exactly nothing
+from a closed diffuse shell, so any leak at all is a defect. Four things came out
+of that -- edges rounded from the rounded vertices so neighbouring triangles
+share one edge exactly, node bounds rounded outward rather than to nearest, the
+watertight triangle test of Woop, Benthin and Wald, and a search that starts past
+the wedge near a shared edge where the neighbouring facet's half-space intrudes.
+Together they took the leak from three parts in ten thousand to about one in a
+million, which is the floor of single-precision geometry and is stated rather
+than rounded away.
+
+`--refcheck all 8000000` now reports **0 differing** across every scene the gate
+takes.
 
 ## Interoperation: measured data in
 
@@ -427,7 +556,7 @@ angle, edge cases, sampling statistics, detector binning, the async worker, and
 the irradiance patterns each scene claims to produce), the physics and analysis
 are pinned against arithmetic rather than against another simulation:
 
-- **validation** — the same seven closed forms `--validate` prints, run in CI.
+- **validation** — the same fifteen closed forms `--validate` prints, run in CI.
   This is the suite that says the physics is right rather than merely
   self-consistent.
 - **media** — exact surface normals against the analytic ones, outward winding on
@@ -489,6 +618,31 @@ are pinned against arithmetic rather than against another simulation:
 - **params / config** — every scene's parameter block, clamping and NaN
   rejection, geometry staying alive while a run holds it, and a JSON round trip
   that identifies scenes by name rather than by registry index.
+- **gpu** — that the backend agrees with itself about whether it exists, that
+  every term it cannot model is refused *by name* (keyed to the terms, not to
+  scenes, so it still says something once the scenes move), and that everything
+  it does take is indistinguishable from the reference through
+  `backendcheck::compare`: scattering, instancing, several sources and
+  receivers, coating tables, aiming, roulette, next-event estimation,
+  polarisation, and a broadband prism whose two wavelengths land where the
+  reference puts them. Also that a closed cavity leaks less than 1e-5 of the
+  source, which is the sharpest geometric oracle in the library.
+- **camera** — a Lambertian emitter reading exactly `M/π`, a lit matte wall
+  rendering uniform, watts and lumens differing by the efficacy and nothing
+  else, an aperture blurring only what is out of focus, the same image at any
+  thread count, and — the acceptance test the whole thing is written to — a
+  receiver and a camera measuring the same wall bin for bin, sized in each
+  estimator's own measured error.
+- **environment** — that a uniform map is the uniform surround it replaces,
+  that the sampler and the density it reports are the same distribution, that a
+  patch of sky lights a wall by a direct quadrature of the same map, that a
+  Radiance file round trips, and that a file it cannot read is refused by name
+  rather than loaded upside down.
+- **metasurface** — that a zero gradient reduces to the base case bit for bit,
+  that a designed metalens focuses at its design focal length and to its design
+  numerical aperture, that energy closes across the orders, and that its
+  chromatic dispersion runs the other way from a refractive lens and is an
+  order of magnitude larger.
 
 ## Install and package
 
@@ -536,7 +690,7 @@ before anything is traced:
 | **Studies** | Convergence with error bars, and the through-focus sweep |
 | **Design** | A metric against any of the optic's own dimensions, with the error bars that say whether a bump is the design or the noise; and a Nelder-Mead or CMA-ES search for the design that makes it best, which can be adopted into the parameter boxes |
 | **Tolerance** | A simulated production run: the yield against a specification, and the ranking that says which dimension to tighten first. Beside it, the modulation transfer curve with its diffraction limit |
-| **Appearance** | What the part looks like switched on: GPU path tracing with the scene's own emitters, a studio rig or a procedural sky; exposure, white point and tone mapping; depth of field; and — with a receiver nominated — an exit surface glowing with the distribution the trace computed. Exports offscreen at any resolution and goes into the HTML report. A **preview**, labelled as one everywhere it appears, and not a measurement |
+| **Appearance** | What the part looks like switched on: GPU path tracing with the scene's own emitters, a studio rig or a procedural sky; exposure, white point and tone mapping; depth of field; and — with a receiver nominated — an exit surface glowing with the distribution the trace computed. Exports offscreen at any resolution and goes into the HTML report. A **preview**, labelled as one everywhere it appears, and not a measurement — with **Measure luminance...** beside it, which traces the same view through the backward tracer and writes cd/m² per pixel to a CSV, with peak, mean and log mean reported |
 
 **Compare → Pin this run** keeps a result to measure the next one against: the
 plots overlay it, the map shows the difference, and the metrics carry the deltas
@@ -700,7 +854,7 @@ print(res["metrics"]["efficiency"])        # 0.4083 ...
 sweep = luxtrace.sweep(config, slot=0, metric="rms_radius_mm", steps=6)
 best  = luxtrace.optimise(config, slots=[0, 1], metric="efficiency",
                           goal="maximise", evaluations=25)
-val   = luxtrace.validate(rays=30000)      # 13/13 closed-form checks
+val   = luxtrace.validate(rays=30000)      # 15/15 closed-form checks
 ```
 
 Operations: `features`, `scenes`, `materials`, `run`, `focus`, `convergence`,
@@ -733,7 +887,7 @@ src/
     Polarisation        Stokes vectors and Mueller matrices
     Spectrum            SPDs, CIE colour matching, V(lambda), sampling
     Sampling            Owen-scrambled Sobol
-    GeometryProvider    scene registry: 28 parametric OCCT scenes + their sources
+    GeometryProvider    scene registry: 29 parametric OCCT scenes + their sources
     CadImport           STEP / IGES reading, and optics assigned per part or face
     MeshBuilder         BRepMesh tessellation -> triangle meshes + exact normals
     Mesh                the flat triangle mesh the tracer walks

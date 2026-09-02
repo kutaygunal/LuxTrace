@@ -47,6 +47,7 @@ bool flag(const QJsonObject& o, const char* key, bool fallback) {
 const char* kBsdfModel[]   = {"specular", "microfacet", "abg", "lambertian", "table"};
 const char* kCoatModel[]   = {"none", "ideal", "table", "stack"};
 const char* kRejectMode[]  = {"absorb", "pass"};
+const char* kPhase[]       = {"henyey-greenstein", "gegenbauer"};
 
 // ---- surface overrides -----------------------------------------------------
 //
@@ -184,6 +185,8 @@ QJsonObject opticsJson(const SurfaceOptics& s) {
     QJsonObject vol;
     vol[QStringLiteral("coefficient")] = s.volume.coefficient;
     vol[QStringLiteral("anisotropy")]  = s.volume.anisotropy;
+    vol[QStringLiteral("phase")] = QLatin1String(kPhase[std::clamp(int(s.volume.phase), 0, 1)]);
+    vol[QStringLiteral("alpha")] = s.volume.alpha;
     o[QStringLiteral("volume")] = vol;
 
     if (s.isDetector) {
@@ -239,6 +242,11 @@ SurfaceOptics opticsFrom(const QJsonObject& o, SurfaceOptics s) {
     s.volume.coefficient = std::max(0.0, num(vol, "coefficient", s.volume.coefficient));
     s.volume.anisotropy  = std::clamp(num(vol, "anisotropy", s.volume.anisotropy),
                                       -0.999, 0.999);
+    // A file written before there was a choice carries no "phase" and loads as
+    // Henyey-Greenstein, which is what it was traced with.
+    s.volume.phase = bsdf::Phase(indexOf(kPhase, vol.value(QStringLiteral("phase")).toString(),
+                                         int(s.volume.phase)));
+    s.volume.alpha = std::clamp(num(vol, "alpha", s.volume.alpha), 0.01, 10.0);
 
     if (o.contains(QStringLiteral("detector"))) {
         const QJsonObject det = o.value(QStringLiteral("detector")).toObject();
@@ -465,6 +473,25 @@ QString toJson(const SimConfig& cfg, const scenedoc::SceneDocument* doc) {
     phys[QStringLiteral("absorptionScale")]   = cfg.physics.absorptionScale;
     root[QStringLiteral("physics")] = phys;
 
+    // Stray-light path analysis. Written only when it is on, so a configuration
+    // that never asked for it is byte-for-byte what it was.
+    if (cfg.strayPaths.enabled) {
+        QJsonObject sp;
+        sp[QStringLiteral("enabled")]  = true;
+        sp[QStringLiteral("maxPaths")] = double(cfg.strayPaths.maxPaths);
+        if (!cfg.strayPaths.surfaceSet.empty()) {
+            QJsonArray sets;
+            for (int v : cfg.strayPaths.surfaceSet) sets.append(v);
+            sp[QStringLiteral("surfaceSet")] = sets;
+        }
+        if (!cfg.strayPaths.setNames.empty()) {
+            QJsonArray names;
+            for (const QString& n : cfg.strayPaths.setNames) names.append(n);
+            sp[QStringLiteral("setNames")] = names;
+        }
+        root[QStringLiteral("strayPaths")] = sp;
+    }
+
     QJsonObject run;
     run[QStringLiteral("rays")]    = cfg.rays;
     run[QStringLiteral("threads")] = int(cfg.threads);
@@ -472,6 +499,7 @@ QString toJson(const SimConfig& cfg, const scenedoc::SceneDocument* doc) {
     run[QStringLiteral("nTheta")]  = cfg.nTheta;
     run[QStringLiteral("nPhi")]    = cfg.nPhi;
     run[QStringLiteral("detectorBins")] = cfg.detectorBins;
+    run[QStringLiteral("deterministicGrids")] = cfg.deterministicGrids;
     root[QStringLiteral("run")] = run;
 
     // An empty document writes nothing at all, so a configuration saved from a
@@ -557,6 +585,19 @@ bool fromJson(const QString& json, SimConfig& out, scenedoc::SceneDocument* doc,
     cfg.physics.absorptionScale =
         std::clamp(num(phys, "absorptionScale", cfg.physics.absorptionScale), 0.0, 1000.0);
 
+    if (root.contains(QStringLiteral("strayPaths"))) {
+        const QJsonObject sp = root.value(QStringLiteral("strayPaths")).toObject();
+        cfg.strayPaths.enabled  = flag(sp, "enabled", true);
+        cfg.strayPaths.maxPaths = std::size_t(std::clamp(num(sp, "maxPaths", 4096.0),
+                                                        1.0, 1000000.0));
+        cfg.strayPaths.surfaceSet.clear();
+        for (const QJsonValue& v : sp.value(QStringLiteral("surfaceSet")).toArray())
+            cfg.strayPaths.surfaceSet.push_back(int(v.toDouble(-1.0)));
+        cfg.strayPaths.setNames.clear();
+        for (const QJsonValue& v : sp.value(QStringLiteral("setNames")).toArray())
+            cfg.strayPaths.setNames.push_back(v.toString());
+    }
+
     const QJsonObject run = root.value(QStringLiteral("run")).toObject();
     cfg.rays    = std::clamp(int(num(run, "rays", cfg.rays)), 1, 100000000);
     cfg.threads = unsigned(std::clamp(int(num(run, "threads", int(cfg.threads))), 0, 1024));
@@ -564,6 +605,7 @@ bool fromJson(const QString& json, SimConfig& out, scenedoc::SceneDocument* doc,
     cfg.nTheta  = std::clamp(int(num(run, "nTheta", cfg.nTheta)), 0, 720);
     cfg.nPhi    = std::clamp(int(num(run, "nPhi", cfg.nPhi)), 1, 720);
     cfg.detectorBins = std::clamp(int(num(run, "detectorBins", cfg.detectorBins)), 0, 4096);
+    cfg.deterministicGrids = flag(run, "deterministicGrids", cfg.deterministicGrids);
 
     out = cfg;
 

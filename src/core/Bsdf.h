@@ -120,12 +120,31 @@ struct Surface {
 // every white diffusing plastic in every fixture is a volume scatterer, not a
 // surface one. A ray travelling through one is deflected by a Henyey-Greenstein
 // phase function every mean free path.
+// Which phase function a scattering medium uses.
+//
+// Henyey-Greenstein is one number and fits most filled polymers. It is also a
+// one-parameter family, and the thing it cannot do is put a forward peak and a
+// wide skirt on the same lobe -- which is exactly the shape biological tissue,
+// paint and heavily loaded diffusers actually have. The Gegenbauer kernel adds
+// that second degree of freedom, and contains Henyey-Greenstein exactly at
+// alpha = 0.5, so nothing that was tuned against HG has to be retuned.
+enum class Phase : int {
+    HenyeyGreenstein = 0,
+    Gegenbauer,
+};
+
 struct Volume {
     // Scattering coefficient, 1/mm. 0 is a clear medium.
     double coefficient = 0.0;
-    // Henyey-Greenstein asymmetry. 0 is isotropic, positive is forward
-    // scattering (which is what a filled polymer does), negative is backward.
+    // Asymmetry. 0 is isotropic, positive is forward scattering (which is what
+    // a filled polymer does), negative is backward.
     double anisotropy = 0.0;
+
+    Phase phase = Phase::HenyeyGreenstein;
+    // The Gegenbauer kernel's second shape parameter; ignored by HG. 0.5 makes
+    // the kernel Henyey-Greenstein exactly, above it the forward peak sharpens
+    // relative to the skirt, below it the lobe broadens.
+    double alpha = 0.5;
 
     bool active() const { return coefficient > 0.0; }
     // Distance to the next scattering event, exponentially distributed.
@@ -137,5 +156,13 @@ struct Volume {
 // The Henyey-Greenstein phase function, per steradian, for the angle whose
 // cosine is `cosTheta`. Exposed so a test can integrate it.
 double henyeyGreenstein(double cosTheta, double g);
+
+// The Gegenbauer-kernel phase function, per steradian. `alpha` is the shape
+// parameter; at alpha = 0.5 this is henyeyGreenstein(cosTheta, g) to the last
+// bit the arithmetic allows, which is what the test asserts.
+double gegenbauer(double cosTheta, double g, double alpha);
+
+// The phase function a medium actually uses, per steradian.
+double phaseValue(const Volume& v, double cosTheta);
 
 } // namespace bsdf

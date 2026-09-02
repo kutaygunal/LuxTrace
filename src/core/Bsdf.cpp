@@ -258,6 +258,35 @@ double henyeyGreenstein(double cosTheta, double g) {
     return (1.0 - g * g) / std::max(1e-12, 4.0 * kPi * d * std::sqrt(d));
 }
 
+// The Gegenbauer kernel, normalised over the sphere:
+//
+//   p(mu) = alpha g (1-g^2)^(2a) / ( pi [ (1+g)^(2a) - (1-g)^(2a) ] )
+//           / (1 + g^2 - 2 g mu)^(a+1)
+//
+// Reynolds and McCormick's two-parameter family. At a = 1/2 the prefactor
+// collapses to (1-g^2)/(4 pi) and the exponent to 3/2, which is Henyey-
+// Greenstein term for term.
+double gegenbauer(double cosTheta, double g, double alpha) {
+    g     = std::clamp(g, -0.99, 0.99);
+    alpha = std::clamp(alpha, 0.01, 10.0);
+    // g -> 0 makes the normalisation 0/0; the limit is the isotropic sphere,
+    // which is also what an unset asymmetry means.
+    if (std::fabs(g) < 1e-6) return 1.0 / (4.0 * kPi);
+
+    const double a2   = 2.0 * alpha;
+    const double span = std::pow(1.0 + g, a2) - std::pow(1.0 - g, a2);
+    if (std::fabs(span) < 1e-300) return 1.0 / (4.0 * kPi);
+
+    const double k = alpha * g * std::pow(1.0 - g * g, a2) / (kPi * span);
+    const double d = std::max(1e-12, 1.0 + g * g - 2.0 * g * cosTheta);
+    return k / std::pow(d, alpha + 1.0);
+}
+
+double phaseValue(const Volume& v, double cosTheta) {
+    return v.phase == Phase::Gegenbauer ? gegenbauer(cosTheta, v.anisotropy, v.alpha)
+                                        : henyeyGreenstein(cosTheta, v.anisotropy);
+}
+
 double Volume::sampleDistance(std::uint64_t& rng) const {
     if (coefficient <= 0.0) return 1e30;
     const double u = std::max(1e-12, uniform01(rng));
@@ -270,6 +299,18 @@ Vec3 Volume::scatter(const Vec3& d, std::uint64_t& rng) const {
     double cosTheta;
     if (std::fabs(g) < 1e-4) {
         cosTheta = 1.0 - 2.0 * u;
+    } else if (phase == Phase::Gegenbauer) {
+        // The exact inverse of the Gegenbauer kernel's cumulative distribution.
+        // Integrating p(mu) over the sphere from -1 gives
+        //   F(mu) = D [ (1+g^2-2 g mu)^-a - (1+g)^-2a ],  D = (1-g^2)^2a / span
+        // which inverts in closed form -- so this costs two pow() calls and no
+        // rejection loop, exactly like the HG case beside it.
+        const double a    = std::clamp(alpha, 0.01, 10.0);
+        const double a2   = 2.0 * a;
+        const double span = std::pow(1.0 + g, a2) - std::pow(1.0 - g, a2);
+        const double D    = std::pow(1.0 - g * g, a2) / span;
+        const double base = u / D + std::pow(1.0 + g, -a2);
+        cosTheta = (1.0 + g * g - std::pow(base, -1.0 / a)) / (2.0 * g);
     } else {
         // The exact inverse of the Henyey-Greenstein cumulative distribution.
         const double s = (1.0 - g * g) / (1.0 - g + 2.0 * g * u);

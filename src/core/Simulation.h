@@ -133,6 +133,14 @@ struct SimConfig {
     // trace rather than a rebuild.
     std::vector<SurfaceOverride> surfaceOverrides;
 
+    // Stray-light path analysis. Off by default; a run with it on costs the
+    // aggregation and nothing else.
+    StrayPathOptions strayPaths;
+
+    // See TraceOptions::noiseMap and TraceOptions::deterministicGrids.
+    bool noiseMap = false;
+    bool deterministicGrids = true;
+
     int            rays    = 10000;
     unsigned       threads = 0;      // 0 == every hardware thread
     std::uint64_t  seed    = 12345u;

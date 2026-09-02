@@ -159,6 +159,9 @@ public:
         // --- multi-source ---
         LedArrayLuminaire,      // a row of reflector cups, one emitter each
 
+        // --- meta-optics ---
+        Metalens,               // a phase-gradient flat lens, no curvature at all
+
         // --- showcase ---
         ShowcaseLuminaire,      // a whole fixture, built to be looked at
 

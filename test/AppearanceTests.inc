@@ -847,8 +847,23 @@ TEST(appearanceoutput, every_caption_says_the_render_is_not_a_measurement) {
     // arithmetic, and the one worth having. An exported PNG lands beside
     // irradiance maps and candela plots that *are* measurements; the sentence
     // that says this one is not has to be impossible to lose.
+    //
+    // The wording changed when the luminance camera arrived, and again when
+    // the measurement reached this tab, and this test was changed with it
+    // both times rather than deleted. The claim it guards is the same one
+    // and it is in two halves: this render is a picture, and the measurement
+    // it is not exists somewhere the reader can be sent. Losing either half
+    // is what the checks below refuse -- and the place they send the reader
+    // is now the button beside the render as well as the command line,
+    // because a caption that sends a user to a terminal for something the
+    // window can do is a caption that will not be followed.
     const QString note = appearance::notPhotometricNote();
-    CHECK(note.contains(QStringLiteral("Not a photometric result")));
+    CHECK(note.contains(QStringLiteral("not a measurement")));
+    CHECK(note.contains(QStringLiteral("RGB path tracing")));
+    // And where to get the real thing.
+    CHECK(note.contains(QStringLiteral("cd/m")));
+    CHECK(note.contains(QStringLiteral("--camera")));
+    CHECK(note.contains(QStringLiteral("Measure luminance")));
 
     appearance::ExportRequest r;
     r.width = 1920; r.height = 1080; r.samples = 512;

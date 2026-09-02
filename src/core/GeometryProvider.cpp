@@ -94,6 +94,12 @@ OpticalSurface mirror(TopoDS_Shape s, const QString& label, double refl = kMirro
 // Fresnel model is switched off they fall back to R = 0 / T = 1 rather than to
 // a 4 % surface reflection. With Fresnel on -- the default -- the split comes
 // from the angle of incidence either way, so the flag only sets the fallback.
+// How thick the metalens wafer is drawn. A real one is a fraction of a
+// millimetre of fused silica and the thickness is optically irrelevant --
+// the phase is designed, not accumulated -- but a solid has to have two
+// faces for a ray to enter and leave through.
+constexpr double kMetalensThicknessMm = 0.5;
+
 OpticalSurface glass(TopoDS_Shape s, const QString& label, bool guide = false,
                      const char* material = kDefaultGlass,
                      const char* coating = nullptr) {
@@ -660,6 +666,28 @@ const std::array<SceneInfo, std::size_t(Scene::Count)>& registry() {
                         "by one at all."),
          gp_Pnt(-135.0, 0, 32.0), gp_Dir(0, 0, -1)},
 
+        // --- meta-optics ---
+        {QStringLiteral("Metalens (phase gradient)"),
+         QStringLiteral("A flat plate that focuses, which no shape in this library "
+                        "does. Every other lens here bends light by being curved: a "
+                        "ray meets a tilted interface and Snell does the rest. This "
+                        "one is a parallel-sided disc of glass, and the focusing is "
+                        "a designed phase gradient printed across it -- a "
+                        "metasurface, whose sub-wavelength scatterers add a "
+                        "position-dependent phase to the wavefront. The outgoing "
+                        "angle then follows the generalised Snell law rather than "
+                        "the ordinary one.\n\nTwo things follow, and both are "
+                        "visible here. The deflection is proportional to "
+                        "wavelength, so the chromatic dispersion runs the other way "
+                        "from a glass lens and is far larger: red focuses nearer "
+                        "than blue, the reverse of every refractive lens in this "
+                        "library. And a phase gradient has diffraction orders -- "
+                        "ninety per cent of the light goes into the designed one "
+                        "and the rest passes straight through undeflected, which is "
+                        "the halo around the focus and what the energy budget has "
+                        "to account for."),
+         gp_Pnt(0, 0, -400.0), gp_Dir(0, 0, 1)},
+
         // --- showcase ---
         {QStringLiteral("Showcase Luminaire (appearance)"),
          QStringLiteral("A whole fixture rather than a bare optic: an LED die in an "
@@ -844,6 +872,22 @@ const std::array<std::vector<SceneParamInfo>, std::size_t(Scene::Count)>& paramT
             "Rim radius of one cup. Clamped below half the pitch, because "
             "neighbouring cups that overlap are not a luminaire."),
          detZ(200, 1200, 500)},
+        // Metalens
+        {mk("Lens radius", "mm", 10, 80, 30, 2.5, 1,
+            "Radius of the flat wafer. Nothing about it is curved: this sets how "
+            "much of the beam the phase profile covers, and so the numerical "
+            "aperture the design reaches."),
+         mk("Design focal length", "mm", 40, 400, 150, 5, 1,
+            "Where the design wavelength focuses. The profile is written for this "
+            "focal length at 550 nm; every other wavelength focuses at f times "
+            "550 / lambda -- nearer for red, further for blue, the opposite of a "
+            "glass lens."),
+         mk("Source distance", "mm", 80, 900, 400, 10, 1,
+            "How far in front of the wafer the emitter sits. At infinity the focus "
+            "is at f; nearer than that it moves out, by the same thin-lens relation "
+            "a refractive lens obeys."),
+         detZ(60, 900, 150)},
+
         // ShowcaseLuminaire
         {mk("Cup radius", "mm", 25, 120, 60, 2.5, 1,
             "Rim radius of the reflector, and the size of the whole fixture: the "
@@ -1374,6 +1418,35 @@ std::vector<DerivedQuantity> GeometryProvider::derived(Scene scene, const SceneP
                                         "the spill the receiver sees around the beams.")));
         break;
     }
+    case Scene::Metalens: {
+        const double R = P.v[0], f = P.v[1], srcD = P.v[2];
+        addFNumberAndNa(out, f, R);
+        // Where the design wavelength actually focuses for a source at a finite
+        // distance: the same thin-lens relation a curved lens obeys, because the
+        // phase profile was written to make it so.
+        const double img = (srcD > f) ? (srcD * f) / (srcD - f) : 0.0;
+        if (img > 0.0)
+            out.push_back(dq(QStringLiteral("Image distance at 550 nm"), img, 1,
+                             QStringLiteral("mm"),
+                             QStringLiteral("1/s + 1/s′ = 1/f, at the wavelength the "
+                                            "phase profile was designed for. Compare it "
+                                            "with the receiver position.")));
+        // The reversed dispersion, as two numbers rather than as a claim. A
+        // phase-gradient lens deflects in proportion to wavelength, so its focal
+        // length goes as lambda_design / lambda -- red nearer, blue further,
+        // which is the opposite of every glass lens in this library and an order
+        // of magnitude larger.
+        out.push_back(dq(QStringLiteral("Focal length at 450 nm"), f * 550.0 / 450.0,
+                         1, QStringLiteral("mm"),
+                         QStringLiteral("Blue focuses *further* than the design "
+                                        "wavelength, not nearer.")));
+        out.push_back(dq(QStringLiteral("Focal length at 650 nm"), f * 550.0 / 650.0,
+                         1, QStringLiteral("mm"),
+                         QStringLiteral("Red focuses nearer. A crown-glass singlet does "
+                                        "the reverse and by a few per cent; this is "
+                                        "eighteen.")));
+        break;
+    }
     case Scene::ShowcaseLuminaire: {
         const Fixture x = fixture(P);
         addFNumberAndNa(out, x.focal, x.cupRadius);
@@ -1842,6 +1915,42 @@ GeometryProvider::SceneSetup GeometryProvider::build(Scene scene, const ScenePar
     }
 
     // ------------------------------------------------------------ showcase --
+    case Scene::Metalens: {
+        const double R = P.v[0], f = P.v[1], srcD = P.v[2];
+        // A flat plate, and that is the whole point: the focusing is in the
+        // designed phase and not in a shape. A metalens is a wafer with a
+        // sub-wavelength pattern on it, so the geometry a tracer sees is a disc
+        // of glass with parallel faces, and everything optical about it lives in
+        // the surface property rather than in the surface.
+        OpticalSurface plate = glass(
+            BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)),
+                                     R, kMetalensThicknessMm).Shape(),
+            QStringLiteral("Metalens"), false, kDefaultGlass, nullptr);
+
+        plate.metasurface.profile        = meta::Profile::Metalens;
+        plate.metasurface.focalLengthMm  = f;
+        plate.metasurface.designLambdaNm = 550.0;
+        plate.metasurface.centre         = Vec3(0, 0, kMetalensThicknessMm);
+        // Ninety per cent into the design order and the rest into the zeroth,
+        // which is what a good visible metalens actually achieves. The residue
+        // in order zero is the light that passes straight through undeflected --
+        // the halo a real metalens image has around its focus, and the reason
+        // the energy budget has something to close on.
+        plate.metasurface.efficiency.flat[1 + meta::kMaxOrder]  = 0.90;
+        plate.metasurface.efficiency.flatP[1 + meta::kMaxOrder] = 0.90;
+        plate.metasurface.efficiency.flat[0 + meta::kMaxOrder]  = 0.06;
+        plate.metasurface.efficiency.flatP[0 + meta::kMaxOrder] = 0.06;
+        s.push_back(plate);
+
+        // Wide enough to catch the undeflected order as well as the focus: the
+        // six per cent that passes straight through is the halo a real metalens
+        // image has around its spot, and a receiver that only saw the spot would
+        // report an efficiency with the interesting part cropped off.
+        s.push_back(detector(std::max(140.0, 4.0 * R), dz));
+        out.sourceOrigin = gp_Pnt(0, 0, -srcD);
+        break;
+    }
+
     case Scene::ShowcaseLuminaire: {
         const Fixture x = fixture(P);
 

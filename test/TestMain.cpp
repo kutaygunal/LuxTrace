@@ -39,6 +39,12 @@
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
 #include "core/Analysis.h"
+#include "core/BackendCheck.h"
+#include "core/EnvironmentMap.h"
+#include "core/BackwardTracer.h"
+#include "core/Metasurface.h"
+#include "core/MetaFile.h"
+#include "gpu/GpuTrace.h"
 #include "core/CadImport.h"
 #include "core/Report.h"
 #include "core/ConfigIO.h"
@@ -1102,6 +1108,11 @@ TEST(patterns, retroreflectors_only_score_by_sending_light_back) {
 #include "MultiEditTests.inc"
 #include "AdaptiveMeshTests.inc"
 #include "AuditTests.inc"
+#include "BackendCheckTests.inc"
+#include "GpuBackendTests.inc"
+#include "BackwardTests.inc"
+#include "EnvironmentTests.inc"
+#include "MetasurfaceTests.inc"
 
 // Tests for the assembled-scene document: the object model the scene tree, the
 // object library and the property editor are all views onto.

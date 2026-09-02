@@ -21,6 +21,8 @@
 #include "core/Material.h"
 #include "core/RayFile.h"
 #include "core/Simulation.h"
+#include "core/BackwardTracer.h"
+#include "gpu/GpuTrace.h"
 #include "core/Studies.h"
 
 namespace jobrunner {
@@ -177,10 +179,47 @@ QJsonObject runMetrics(const SimulationResult& res) {
     spot["total_bins"]  = m.totalBins;
     o["spot"] = spot;
 
+    // The ranked stray-light routes, when the run asked for them. Only the head
+    // of the list goes in the envelope -- the whole table is what the CSV is
+    // for, and a run that found ten thousand routes must not put them all in a
+    // JSON line a script has to parse before it can read the efficiency.
+    if (!res.strayPaths.empty()) {
+        QJsonArray routes;
+        for (std::size_t i = 0; i < res.strayPaths.size() && i < 20; ++i) {
+            const StrayPath& sp = res.strayPaths[i];
+            QJsonObject o;
+            o["flux"]      = sp.flux;
+            o["share"]     = frac(sp.flux, res.fluxDetector);
+            o["rays"]      = qlonglong(sp.rays);
+            o["truncated"] = sp.truncated;
+            QJsonArray names, ids;
+            for (int id : sp.ids) { names.append(res.strayName(id)); ids.append(id); }
+            o["route"] = names;
+            o["ids"]   = ids;
+            routes.append(o);
+        }
+        QJsonObject sp;
+        sp["count"]        = qlonglong(res.strayPaths.size());
+        sp["listed"]       = qlonglong(routes.size());
+        sp["dropped"]      = qlonglong(res.strayPathsDropped);
+        sp["dropped_flux"] = res.strayFluxDropped;
+        sp["routes"]       = routes;
+        o["stray_paths"]   = sp;
+    }
+
     QJsonObject far;
     far["beam_fwhm_deg"] = studies::metricValue(res, studies::Metric::BeamFwhmDeg);
     far["peak_intensity"] = studies::metricValue(res, studies::Metric::PeakIntensity);
     o["far_field"] = far;
+
+    // The medium-tracking anomaly counts the engine already keeps. A headless
+    // run reporting an efficiency without them cannot say whether the index
+    // pairs behind it were the geometry's or a guess.
+    QJsonObject anom;
+    anom["unmatched_exit"] = qlonglong(res.anomalies.unmatchedExit);
+    anom["stack_overflow"] = qlonglong(res.anomalies.stackOverflow);
+    anom["guessed_index"]  = qlonglong(res.anomalies.guessedIndex);
+    o["medium_anomalies"]  = anom;
 
     QJsonObject colour;
     colour["x"]     = m.cieX;
@@ -265,8 +304,40 @@ bool opRun(const QJsonObject& params, QJsonObject& data, QString* errCode, QStri
     SimConfig cfg; QStringList warnings;
     if (!loadConfig(params, cfg, warnings, errCode, errMsg)) return false;
 
-    const SimulationResult res = Simulation::run(cfg);
+    // Which tracer. "cpu" is the reference and the default; "gpu" demands the
+    // preview and fails loudly if the scene is one it cannot take; "auto" takes
+    // the preview where it fits and the reference otherwise. Whichever ran says
+    // so in the result, and a refusal says why -- a preview that silently fell
+    // back would be a speed claim nobody could check.
+    const QString backend = str(params, "backend", QStringLiteral("cpu")).toLower();
+    SimulationResult res;
+    QString gpuRefusal;
+    bool ranGpu = false;
+    if (backend == QStringLiteral("gpu") || backend == QStringLiteral("auto")) {
+        const Simulation::SceneRef data_ = Simulation::dataFor(cfg);
+        const std::vector<SourceConfig> srcs = Simulation::sourcesFor(cfg, *data_);
+        TraceOptions opt;
+        opt.threads  = cfg.threads;
+        opt.seed     = cfg.seed;
+        opt.physics  = cfg.physics;
+        opt.nTheta   = cfg.nTheta;
+        opt.nPhi     = cfg.nPhi;
+        opt.noiseMap = cfg.noiseMap;
+        opt.strayPaths = cfg.strayPaths;
+        opt.surfaceOverrides = cfg.surfaceOverrides;
+        ranGpu = gputrace::trace(data_->scene, data_->scene.surfaces(), srcs, opt,
+                                 cfg.power, cfg.fluxUnit, res, &gpuRefusal);
+        if (!ranGpu && backend == QStringLiteral("gpu")) {
+            *errCode = "gpu_unsupported";
+            *errMsg  = gpuRefusal;
+            return false;
+        }
+    }
+    if (!ranGpu) res = Simulation::run(cfg);
     data["scene"]         = cfg.sceneName();
+    data["backend"]       = res.backend;
+    if (!ranGpu && !gpuRefusal.isEmpty()) data["gpu_refused"] = gpuRefusal;
+    if (ranGpu) data["gpu_device"] = gputrace::deviceName();
     data["rays"]          = cfg.rays;
     data["seed"]          = static_cast<double>(cfg.seed);
     data["metrics"]       = runMetrics(res);
@@ -276,12 +347,40 @@ bool opRun(const QJsonObject& params, QJsonObject& data, QString* errCode, QStri
         data["warnings"] = w;
     }
     const QString csvPath = str(params, "export_csv");
+    QJsonArray written;
     if (!csvPath.isEmpty()) {
         QString err;
-        const QJsonArray written = exportCsv(res, analysis::computeSpotMetrics(res), csvPath, &err);
+        written = exportCsv(res, analysis::computeSpotMetrics(res), csvPath, &err);
         if (!err.isEmpty()) { *errCode = "csv_write_failed"; *errMsg = err; return false; }
-        data["exported_csv"] = written;
     }
+    // The receiver grid and the far-field curve, which only the window could
+    // write before. A headless run that reports a beam width but cannot hand
+    // over the distribution behind it is asking to be taken on trust.
+    const QString gridPath = str(params, "export_irradiance_csv");
+    if (!gridPath.isEmpty()) {
+        QString err;
+        if (!analysis::writeTextFile(gridPath, analysis::irradianceCsv(res), &err)) {
+            *errCode = "csv_write_failed"; *errMsg = err; return false;
+        }
+        written.append(gridPath);
+    }
+    const QString routePath = str(params, "export_paths_csv");
+    if (!routePath.isEmpty()) {
+        QString err;
+        if (!analysis::writeTextFile(routePath, analysis::strayPathCsv(res), &err)) {
+            *errCode = "csv_write_failed"; *errMsg = err; return false;
+        }
+        written.append(routePath);
+    }
+    const QString farPath = str(params, "export_intensity_csv");
+    if (!farPath.isEmpty()) {
+        QString err;
+        if (!analysis::writeTextFile(farPath, analysis::intensityCsv(res), &err)) {
+            *errCode = "csv_write_failed"; *errMsg = err; return false;
+        }
+        written.append(farPath);
+    }
+    if (!written.isEmpty()) data["exported_csv"] = written;
     return true;
 }
 
@@ -673,6 +772,133 @@ bool opRayfile(const QJsonObject& params, QJsonObject& data, QString* errCode, Q
     return true;
 }
 
+// What an observer sees, rather than what a receiver collects.
+//
+// Every other operation here reports a flux, an efficiency or a map of one of
+// them. This reports luminance in cd/m^2 along the directions a camera looks,
+// which is the quantity a glare limit and a display specification are written in
+// and which no arrangement of receivers produces.
+//
+// The camera defaults to a view that frames the whole scene, so
+// {"op":"camera","params":{"config":{...}}} is a complete request; every field
+// below overrides one part of it.
+bool opCamera(const QJsonObject& params, QJsonObject& data,
+              QString* errCode, QString* errMsg) {
+    SimConfig cfg; QStringList warnings;
+    if (!loadConfig(params, cfg, warnings, errCode, errMsg)) return false;
+
+    const Simulation::SceneRef scene = Simulation::dataFor(cfg);
+    const std::vector<SourceConfig> srcs = Simulation::sourcesFor(cfg, *scene);
+
+    const QJsonObject cam = params.value(QStringLiteral("camera")).toObject();
+    backward::CameraConfig c = backward::defaultView(
+        scene->scene, int(num(cam, "width", 256.0)), int(num(cam, "height", 192.0)));
+    auto vec = [&](const char* key, const Vec3& fallback) {
+        const QJsonArray a = cam.value(QLatin1String(key)).toArray();
+        if (a.size() != 3) return fallback;
+        return Vec3(a[0].toDouble(), a[1].toDouble(), a[2].toDouble());
+    };
+    c.eye    = vec("eye", c.eye);
+    c.target = vec("target", c.target);
+    c.up     = vec("up", c.up);
+    c.focalLengthMm   = num(cam, "focal_length_mm", c.focalLengthMm);
+    c.sensorWidthMm   = num(cam, "sensor_width_mm", c.sensorWidthMm);
+    c.fNumber         = num(cam, "f_number", c.fNumber);
+    c.focusDistanceMm = num(cam, "focus_distance_mm", c.focusDistanceMm);
+    c.samplesPerPixel = int(num(cam, "samples_per_pixel", 64.0));
+    c.maxDepth        = int(num(cam, "max_depth", double(c.maxDepth)));
+    c.seed            = std::uint64_t(std::max(0.0, num(cam, "seed", double(c.seed))));
+    c.threads         = unsigned(std::max(0.0, num(cam, "threads", 0.0)));
+    // The room the optic is looked at in. Zero is a black surround, which is
+    // the right answer for a specular scene lit by a point source and a black
+    // picture -- so it is a choice the caller makes rather than a default that
+    // silently decides what the render is of.
+    c.environmentLuminance = num(cam, "environment_cd_m2", 0.0);
+    c.environmentFloor     = num(cam, "environment_floor", c.environmentFloor);
+    if (!c.valid()) {
+        *errCode = "bad_camera";
+        *errMsg  = QStringLiteral("the camera needs a positive size, focal length "
+                                  "and sample count");
+        return false;
+    }
+
+    backward::LuminanceImage img;
+    backward::render(scene->scene, scene->scene.surfaces(), srcs, c, cfg.physics,
+                     cfg.fluxUnit, img);
+    if (img.empty()) {
+        *errCode = "render_failed";
+        *errMsg  = QStringLiteral("the camera produced no image");
+        return false;
+    }
+
+    data["scene"]  = cfg.sceneName();
+    QJsonObject shot;
+    shot["width"]   = img.width;
+    shot["height"]  = img.height;
+    shot["samples_per_pixel"] = c.samplesPerPixel;
+    shot["seconds"] = img.seconds;
+    QJsonArray eye, target;
+    for (int i = 0; i < 3; ++i) { eye.append(c.eye[i]); target.append(c.target[i]); }
+    shot["eye"]    = eye;
+    shot["target"] = target;
+    shot["focal_length_mm"] = c.focalLengthMm;
+    shot["sensor_width_mm"] = c.sensorWidthMm;
+    shot["f_number"]        = c.fNumber;
+    data["camera"] = shot;
+
+    QJsonObject lum;
+    lum["unit"]      = QStringLiteral("cd/m^2");
+    lum["peak"]      = img.peak;
+    lum["mean"]      = img.mean;
+    // The log mean is what a glare index is built on and is not recoverable
+    // from the other two, so it is reported rather than left to the caller.
+    lum["log_mean"]  = img.logMean;
+    lum["truncated"] = img.truncatedFraction;
+    data["luminance"] = lum;
+
+    // The image itself, only when it is asked for: a 256 x 192 frame is fifty
+    // thousand numbers, and a caller that wanted the peak should not have to
+    // parse them to reach it.
+    if (params.value(QStringLiteral("include_image")).toBool()) {
+        QJsonArray rows;
+        for (int y = 0; y < img.height; ++y) {
+            QJsonArray row;
+            for (int x = 0; x < img.width; ++x) row.append(img.at(x, y));
+            rows.append(row);
+        }
+        data["image"] = rows;
+    }
+    const QString csvPath = str(params, "export_csv");
+    if (!csvPath.isEmpty()) {
+        QString csv;
+        QTextStream ts(&csv);
+        ts << "# Luminance, cd/m^2\n";
+        for (int y = 0; y < img.height; ++y) {
+            for (int x = 0; x < img.width; ++x) {
+                if (x) ts << ",";
+                ts << QString::number(img.at(x, y), 'g', 6);
+            }
+            ts << "\n";
+        }
+        ts.flush();
+        QString err;
+        if (!analysis::writeTextFile(csvPath, csv, &err)) {
+            *errCode = "csv_write_failed";
+            *errMsg  = err;
+            return false;
+        }
+        QJsonArray written;
+        written.append(csvPath);
+        data["exported_csv"] = written;
+    }
+    if (!warnings.isEmpty()) {
+        QJsonArray w;
+        for (const QString& s : warnings) w.append(s);
+        data["warnings"] = w;
+    }
+    return true;
+}
+
 bool dispatch(const QString& op, const QJsonObject& params, QJsonObject& data,
               QString* errCode, QString* errMsg) {
     if (op == "features")   return opFeatures(params, data, errCode, errMsg);
@@ -688,6 +914,7 @@ bool dispatch(const QString& op, const QJsonObject& params, QJsonObject& data,
     if (op == "validate")   return opValidate(params, data, errCode, errMsg);
     if (op == "cad")        return opCad(params, data, errCode, errMsg);
     if (op == "rayfile")    return opRayfile(params, data, errCode, errMsg);
+    if (op == "camera")     return opCamera(params, data, errCode, errMsg);
     *errCode = "unknown_operation";
     *errMsg  = QStringLiteral("unknown operation '%1', known: %2").arg(op, opNames().join(", "));
     return false;
@@ -837,6 +1064,7 @@ QStringList opNames() {
     return {
         "features", "scenes", "materials", "run", "focus", "convergence",
         "sweep", "sweep2d", "optimise", "tolerance", "validate", "cad", "rayfile",
+        "camera",
     };
 }
 

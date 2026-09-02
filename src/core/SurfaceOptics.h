@@ -3,6 +3,7 @@
 #include "Bsdf.h"
 #include "Coating.h"
 #include "Material.h"
+#include "Metasurface.h"
 
 
 // Optical behaviour of one surface, shared verbatim by the three
@@ -101,6 +102,14 @@ struct SurfaceOptics {
     // Every white diffusing plastic in every luminaire is a volume scatterer,
     // and there was no way to say so at all.
     bsdf::Volume volume;
+
+    // A designed phase gradient across this surface, if it has one.
+    //
+    // Off by default and behind one null check, like `bsdf` and `coating`
+    // beside it: a metasurface is a different physical law -- the
+    // generalised Snell law rather than Snell -- and every scene that does
+    // not have one should pay a predicted branch for the fact.
+    meta::Metasurface metasurface;
 
     // The thin film on this surface. Without one, every refractive surface pays
     // bare-glass Fresnel and a multi-element system overstates its loss by

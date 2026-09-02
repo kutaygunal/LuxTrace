@@ -1,0 +1,45 @@
+{
+  "format": "occt-optics-studio/1",
+  "scene": {
+    "name": "Half-Ball Lens (LED dome)",
+    "useDefaults": false,
+    "params": [
+      60.0,
+      250.0
+    ],
+    "paramNames": [
+      "Dome radius",
+      "Detector Z"
+    ]
+  },
+  "source": {
+    "type": "lambertian",
+    "shape": "rect",
+    "spectrum": "monochrome",
+    "wavelengthNm": 550.0,
+    "halfAngleDeg": 90.0,
+    "sizeA": 10.0,
+    "sizeB": 10.0,
+    "power": 1.0,
+    "powerUnit": "watt",
+    "polarisation": "unpolarised"
+  },
+  "physics": {
+    "fresnel": true,
+    "absorption": true,
+    "scattering": true,
+    "roughness": true,
+    "dispersion": false,
+    "coatings": true,
+    "volumeScattering": true,
+    "polarised": false
+  },
+  "run": {
+    "rays": 1000000,
+    "threads": 0,
+    "seed": 12345,
+    "nTheta": 180,
+    "nPhi": 72,
+    "detectorBins": 128
+  }
+}

@@ -59,6 +59,45 @@ enable_testing()
 # Core: geometry, meshing, BVH and the ray tracer. Kept as its own library so
 # the tests link the same objects the app runs, with no Qt Widgets dependency.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# The GPU preview backend, if this machine can build one.
+#
+# Optional by construction: LUXTRACE_CUDA is only ever ON when CMake found a
+# CUDA compiler, and with it OFF the stub is compiled instead and every caller
+# links unchanged. A build without CUDA is not a lesser build with holes in it;
+# it is the same application reporting that it has no preview backend.
+#
+# nvcc drives cl.exe, so a Visual Studio generator needs the CUDA build
+# customisation installed alongside the toolkit -- check_language finds out
+# rather than the build failing halfway through.
+# ---------------------------------------------------------------------------
+include(CheckLanguage)
+check_language(CUDA)
+if(CMAKE_CUDA_COMPILER)
+    enable_language(CUDA)
+    set(LUXTRACE_CUDA ON)
+    # 8.9 is Ada (RTX 4000 series); 7.5 and 8.6 cover Turing and Ampere. Real
+    # architectures rather than virtual ones, so the kernel is compiled rather
+    # than JIT-ed on first run.
+    # Turing, Ampere and Ada. Real architectures rather than virtual ones, so the
+    # kernel is compiled rather than JIT-ed on the first run. enable_language
+    # fills this in with the oldest thing the toolkit supports, which is not what
+    # anybody wants, so it is set unconditionally.
+    set(CMAKE_CUDA_ARCHITECTURES 75 86 89)
+    # Explicit, minimal, and not inherited from the C++ side. The MSBuild CUDA
+    # task re-splits whatever it is handed, and a forwarded -Xcompiler="a b"
+    # comes back out as two input files -- which nvcc reports as "a single input
+    # file is required", a message that says nothing about the cause.
+    set(CMAKE_CUDA_FLAGS "")
+    set(CMAKE_CUDA_FLAGS_RELEASE "-O3")
+    set(CMAKE_CUDA_FLAGS_DEBUG "-G")
+    set(CMAKE_CUDA_FLAGS_RELWITHDEBINFO "-O3")
+    message(STATUS "LuxTrace: GPU preview backend enabled (CUDA ${CMAKE_CUDA_COMPILER_VERSION})")
+else()
+    set(LUXTRACE_CUDA OFF)
+    message(STATUS "LuxTrace: no CUDA compiler; the GPU preview backend will report itself unavailable")
+endif()
+
 add_library(optics_core STATIC
     src/core/Vec3.h
     src/core/Optics.h
@@ -82,6 +121,16 @@ add_library(optics_core STATIC
     src/core/MultiEditFields.h src/core/MultiEditFields.cpp
     src/core/CadImport.h src/core/CadImport.cpp
     src/core/MeshBuilder.h src/core/MeshBuilder.cpp
+    # A surface that does not obey Snell law: a designed phase gradient, and
+    # the diffraction orders that come with one. Its own file because it is a
+    # physical law rather than a property, and because the import side has to
+    # read what an EM solver produced.
+    src/core/Metasurface.h src/core/Metasurface.cpp
+    # Reading a metasurface out of what an EM solver produced: a table of
+    # complex coefficients per order, per wavelength, per polarisation. The
+    # same pattern MaterialFile and RayFile follow -- read the vendor format,
+    # report what was loaded, and degrade loudly rather than silently.
+    src/core/MetaFile.h src/core/MetaFile.cpp
     src/core/TraceScene.h src/core/TraceScene.cpp
     src/core/TraceSceneSimd.h src/core/TraceSceneSimd.cpp
     src/core/RayTracer.h src/core/RayTracer.cpp
@@ -90,6 +139,20 @@ add_library(optics_core STATIC
     src/core/SimulationWorker.h src/core/SimulationWorker.cpp
     src/core/GeometryWorker.h src/core/GeometryWorker.cpp
     src/core/Analysis.h src/core/Analysis.cpp
+    # The camera-side integrator. Core rather than render/: it measures
+    # luminance in cd/m^2 over the same SurfaceOptics, coatings and spectra the
+    # forward tracer reads, and the appearance preview beside it is a picture.
+    src/core/BackwardTracer.h src/core/BackwardTracer.cpp
+    src/core/EnvironmentMap.h src/core/EnvironmentMap.cpp
+    # Comparing a fast backend against the reference one. Core, and independent
+    # of which backend produced either side: it takes two results, so it is
+    # testable without a GPU and just as useful for "did this refactor move the
+    # answer" as for "is the preview lying".
+    src/core/BackendCheck.h src/core/BackendCheck.cpp
+    # The GPU preview backend's interface. The implementation is either the
+    # CUDA kernel or the stub below, decided at configure time, so nothing above
+    # this line is compiled twice or guarded by an #ifdef.
+    src/gpu/GpuTrace.h
     src/core/ConfigIO.h src/core/ConfigIO.cpp
     src/core/JobRunner.h src/core/JobRunner.cpp
     src/core/Studies.h src/core/Studies.cpp
@@ -106,6 +169,26 @@ add_library(optics_core STATIC
     src/render/RadianceMap.h src/render/RadianceMap.cpp
     src/render/AppearanceExport.h src/render/AppearanceExport.cpp
 )
+
+# One implementation of the backend or the other, never both.
+if(LUXTRACE_CUDA)
+    # The device half lives in its own target so nvcc is handed one file and the
+    # include paths that file actually needs. Qt and OCCT never reach it, and
+    # the C++ target's warning and codegen flags never reach it either.
+    add_library(optics_gpu STATIC src/gpu/GpuKernel.h src/gpu/GpuTrace.cu)
+    target_include_directories(optics_gpu PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    set_target_properties(optics_gpu PROPERTIES
+        CUDA_SEPARABLE_COMPILATION OFF
+        CUDA_ARCHITECTURES "75;86;89"
+        POSITION_INDEPENDENT_CODE ON)
+    # The host half is ordinary C++: it is what knows about QString, gp_Pnt and
+    # SimulationResult, and it is the only thing that talks to the kernel.
+    target_sources(optics_core PRIVATE src/gpu/GpuTraceHost.cpp)
+    target_link_libraries(optics_core PUBLIC optics_gpu)
+    target_compile_definitions(optics_core PUBLIC LUXTRACE_HAS_CUDA=1)
+else()
+    target_sources(optics_core PRIVATE src/gpu/GpuTraceStub.cpp)
+endif()
 
 target_include_directories(optics_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
@@ -234,8 +317,12 @@ if(LUXTRACE_SANITIZE)
 endif()
 
 if(MSVC)
-    target_compile_options(optics_core PRIVATE /W3 /MP)
-    target_compile_options(LuxTrace PRIVATE /W3 /MP)
+    # CXX only. nvcc passes an unrecognised flag straight to the host compiler
+    # and then refuses the command line it built -- /MP in particular makes it
+    # report "a single input file is required", which says nothing about the
+    # actual problem.
+    target_compile_options(optics_core PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W3 /MP>)
+    target_compile_options(LuxTrace PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W3 /MP>)
     target_compile_options(optics_core PRIVATE $<$<CONFIG:Release,RelWithDebInfo>:/O2>)
 else()
     target_compile_options(optics_core PRIVATE -Wall -Wextra)
