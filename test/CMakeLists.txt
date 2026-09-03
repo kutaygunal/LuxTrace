@@ -4,7 +4,8 @@ add_executable(optics_tests TestMain.cpp NewTests.inc AuditTests.inc SceneDocTes
                AppearanceTests.inc ThetaBinTests.inc MeasuredDataTests.inc
                SceneParamsTests.inc AtomicGridTests.inc AdaptiveMeshTests.inc
                MultiEditTests.inc BackendCheckTests.inc GpuBackendTests.inc
-               BackwardTests.inc EnvironmentTests.inc MetasurfaceTests.inc)
+               BackwardTests.inc EnvironmentTests.inc MetasurfaceTests.inc
+               LoggingTests.inc)
 
 # The reference corpus lives beside the tests, and the test binary runs from the
 # build tree, so the path has to be baked in rather than guessed at run time.

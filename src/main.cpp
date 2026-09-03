@@ -23,6 +23,7 @@
 
 #include "core/Analysis.h"
 #include "core/BackendCheck.h"
+#include "core/Logging.h"
 #include "gpu/GpuTrace.h"
 #include "core/CadImport.h"
 #include "core/GeometryProvider.h"
@@ -1169,6 +1170,11 @@ int main(int argc, char** argv) {
     QApplication::setApplicationName(QStringLiteral("LuxTrace"));
     QApplication::setApplicationVersion(QStringLiteral("1.0.0"));
     QApplication::setOrganizationName(QStringLiteral("LuxTrace"));
+
+    // Structured, rotating logging, installed before anything else can log.
+    // The application name and organisation are set above because the log
+    // directory is derived from them.
+    logging::install();
 
     // Several sizes rather than one master: QIcon picks the nearest, and the
     // taskbar, the switcher and the title bar all ask for different ones.

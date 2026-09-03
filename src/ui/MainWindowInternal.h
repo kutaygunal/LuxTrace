@@ -42,6 +42,7 @@
 #include "ImportDialog.h"
 #include "PythonPanel.h"
 #include "core/ConfigIO.h"
+#include "core/Diagnostics.h"
 #include "core/MaterialFile.h"
 #include "core/SceneDocument.h"
 #include "core/SimulationWorker.h"

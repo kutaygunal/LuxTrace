@@ -435,6 +435,12 @@ to what it was before there was a list at all.
   the quantities they imply, the energy budget, every plot, the metrics, any
   studies that were run, and the seed stamped on it — so the numbers in it can be
   regenerated exactly rather than merely read.
+- **A support bundle, not a thread.** *Save diagnostics bundle...* writes one ZIP
+  holding the structured log, the configuration (and the scene document, when
+  one is open), the build fingerprint and the GPU/driver report — everything a
+  support engineer needs to reproduce a problem. The log itself is a rotating,
+  structured record installed by a Qt message handler at startup, so every
+  subsystem reports through it without a call site learning about the log.
 
 ## Performance
 
@@ -1082,8 +1088,7 @@ python resources/make_icon.py
   own sun direction. The light agrees with the drawn sky because both are read
   from the same constant, not because the renderer gathered from it.
 - No collision in the walkthrough — the camera passes straight through geometry.
-- No logging or diagnostics capture, and the config format string has no
-  versioned migration path.
+- The config format string has no versioned migration path.
 
 ## What this does not model
 

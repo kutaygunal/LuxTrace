@@ -939,6 +939,18 @@ void MainWindow::buildMenus() {
             "plot and the metrics, stamped with the seed so it can be reproduced."));
     file->addSeparator();
 
+    // The support story. A report is what the design review reads; this is what
+    // the support engineer reads when the design review is not enough. One zip
+    // with the log, the configuration, the build fingerprint and the GPU report
+    // turns "it does not work" into a reproduction.
+    file->addAction(QStringLiteral("Save &diagnostics bundle..."), this,
+                    &MainWindow::onSaveDiagnostics)
+        ->setStatusTip(QStringLiteral(
+            "One zip: the log, the configuration, the build fingerprint and the "
+            "GPU/driver report. Everything a support engineer needs to reproduce "
+            "a problem, in one file."));
+    file->addSeparator();
+
     file->addAction(QStringLiteral("&Reset the results"), this,
                     &MainWindow::onResetResults)
         ->setStatusTip(QStringLiteral(

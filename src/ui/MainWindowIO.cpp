@@ -30,6 +30,23 @@ void MainWindow::onSaveConfig() {
         statusBar()->showMessage(QStringLiteral("Saved %1").arg(path), 4000);
 }
 
+void MainWindow::onSaveDiagnostics() {
+    const QString path = QFileDialog::getSaveFileName(
+        this, QStringLiteral("Save diagnostics bundle"),
+        QStringLiteral("LuxTrace-diagnostics.zip"),
+        QStringLiteral("ZIP archive (*.zip)"));
+    if (path.isEmpty()) return;
+    QString err;
+    // One zip: the log, the configuration, the build fingerprint and the
+    // GPU/driver report. The document travels with the configuration, exactly
+    // as it does for a saved setup, so a composed scene is reproducible too.
+    if (!diagnostics::saveBundle(path, currentConfig(), &m_document, &err))
+        QMessageBox::warning(this, windowTitle(),
+                             QStringLiteral("Could not save diagnostics: %1").arg(err));
+    else
+        statusBar()->showMessage(QStringLiteral("Saved %1").arg(path), 4000);
+}
+
 void MainWindow::onLoadConfig() {
     const QString path = QFileDialog::getOpenFileName(
         this, QStringLiteral("Open configuration"), QString(), QStringLiteral("JSON (*.json)"));

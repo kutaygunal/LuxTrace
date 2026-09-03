@@ -98,6 +98,46 @@ else()
     message(STATUS "LuxTrace: no CUDA compiler; the GPU preview backend will report itself unavailable")
 endif()
 
+# ---------------------------------------------------------------------------
+# The build fingerprint.
+#
+# Must stay *after* the CUDA detection above: it reads LUXTRACE_CUDA, and
+# running it before that variable is set baked "CUDA no" into every build.
+#
+# Generated into build_info.h at configure time, so the running binary always
+# knows which build it is: the version, the git commit and branch, the build
+# type, the compiler, Qt and whether CUDA is present. The diagnostics bundle
+# (core/Diagnostics.cpp) packages this so a support engineer can say which
+# exact build produced a report. The git commit is captured at configure time
+# and degrades to "unknown" when the tree is not a git checkout.
+# ---------------------------------------------------------------------------
+execute_process(COMMAND git rev-parse --short HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE LUXTRACE_GIT_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+if(NOT LUXTRACE_GIT_COMMIT)
+    set(LUXTRACE_GIT_COMMIT "unknown")
+endif()
+execute_process(COMMAND git branch --show-current
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE LUXTRACE_GIT_BRANCH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+if(NOT LUXTRACE_GIT_BRANCH)
+    set(LUXTRACE_GIT_BRANCH "unknown")
+endif()
+string(TIMESTAMP LUXTRACE_BUILD_DATE "%Y-%m-%d %H:%M:%S UTC" UTC)
+set(LUXTRACE_BUILD_COMPILER "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
+set(LUXTRACE_BUILD_QT "${Qt6_VERSION}")
+if(LUXTRACE_CUDA)
+    set(LUXTRACE_BUILD_CUDA "yes (CUDA ${CMAKE_CUDA_COMPILER_VERSION})")
+else()
+    set(LUXTRACE_BUILD_CUDA "no")
+endif()
+configure_file(src/core/build_info.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/build_info.h @ONLY)
+
 add_library(optics_core STATIC
     src/core/Vec3.h
     src/core/Optics.h
@@ -158,6 +198,14 @@ add_library(optics_core STATIC
     src/core/Studies.h src/core/Studies.cpp
     src/core/Report.h src/core/Report.cpp
     src/core/StudyWorker.h src/core/StudyWorker.cpp
+    # Structured, rotating application logging, and the diagnostics bundle that
+    # packages the log, the configuration, the build fingerprint and the GPU
+    # report into one file a support engineer can open. The bundle needs a
+    # single portable file, and Qt's own QZipWriter is private, so a minimal
+    # ZIP writer lives here too.
+    src/core/Logging.h src/core/Logging.cpp
+    src/core/Diagnostics.h src/core/Diagnostics.cpp
+    src/core/ZipWriter.h src/core/ZipWriter.cpp
     # The appearance preview's scene side: SurfaceOptics -> Graphic3d_BSDF, and
     # the presentations built from it. Here rather than in the application
     # because neither file needs Qt Widgets or a GL context, so the whole
@@ -191,6 +239,11 @@ else()
 endif()
 
 target_include_directories(optics_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+# The generated build fingerprint header.
+target_include_directories(optics_core PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/generated)
+# The build type is a per-configuration value on a multi-config generator, so
+# it is supplied here rather than baked into the generated header.
+target_compile_definitions(optics_core PRIVATE LUXTRACE_BUILD_TYPE_STR="$<CONFIG>")
 
 target_link_libraries(optics_core PUBLIC
     Qt6::Core

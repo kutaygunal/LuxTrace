@@ -1126,6 +1126,11 @@ TEST(patterns, retroreflectors_only_score_by_sending_light_back) {
 #include "EnvironmentTests.inc"
 #include "MetasurfaceTests.inc"
 
+// The structured rotating log, the minimal ZIP writer, and the diagnostics
+// bundle that packages the log, the configuration, the build fingerprint and
+// the GPU report into one file.
+#include "LoggingTests.inc"
+
 // Tests for the assembled-scene document: the object model the scene tree, the
 // object library and the property editor are all views onto.
 #include "SceneDocTests.inc"

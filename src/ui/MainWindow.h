@@ -153,6 +153,9 @@ private slots:
     void onExportImage();
     void onExportReport();
     void onImportCad();
+    // Packages the log, the configuration, the build fingerprint and the
+    // GPU/driver report into one zip a support engineer can open.
+    void onSaveDiagnostics();
 
 private:
     QWidget* buildViewerTab();
