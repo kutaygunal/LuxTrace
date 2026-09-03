@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Kutay Gunal
+//
+// This file is part of LuxTrace, distributed under the GNU Affero General
+// Public License version 3 only, WITHOUT ANY WARRANTY. See LICENSE.
+// A commercial licence is available; see LICENSING.md.
+
 // The scene document: creating, selecting, editing and deleting objects.
 //
 // This is the editor half of the window -- the object library, the scene tree

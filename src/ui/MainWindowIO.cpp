@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Kutay Gunal
+//
+// This file is part of LuxTrace, distributed under the GNU Affero General
+// Public License version 3 only, WITHOUT ANY WARRANTY. See LICENSE.
+// A commercial licence is available; see LICENSING.md.
+
 // Everything that crosses the process boundary: saving and loading a config,
 // importing CAD and a material catalogue, and the CSV, image and HTML report
 // exports.

@@ -1,0 +1,229 @@
+# The machine that checks the GPU preview against the reference.
+#
+# The preview's whole warrant is one sentence in the README -- "`--refcheck all
+# 8000000` now reports 0 differing across every scene the gate takes" -- and that
+# sentence was, until this file, defended by nobody. ci.yml runs on a hosted
+# Windows runner, which has no CUDA device, so `optics_gpu` there is the stub:
+# every entry point links and reports itself unavailable, the `gpu` and
+# `backendcheck` suites check the refusal path and not the kernel, and the one
+# claim that matters -- that the two tracers agree -- is never evaluated at all.
+#
+# So this is a separate workflow rather than another job in ci.yml: it needs a
+# machine ci.yml does not have, and its result answers a different question. A
+# red ci.yml means the code broke. A red refcheck means the preview and the
+# reference disagree about the physics, which is the failure the preview exists
+# to be trusted about.
+#
+# ---------------------------------------------------------------------------
+# What this needs to run
+#
+# A runner with an NVIDIA card and a CUDA toolkit, labelled so `runs-on` finds
+# it. By default that is a self-hosted runner labelled `self-hosted, windows,
+# cuda`; set the repository variable GPU_RUNNER_LABELS to a JSON array to point
+# it somewhere else -- a cloud GPU runner, a Linux box, a differently labelled
+# machine:
+#
+#     gh variable set GPU_RUNNER_LABELS --body '["self-hosted","windows","cuda"]'
+#
+# Until such a runner exists the workflow queues rather than failing, which is
+# visible in the Actions tab and is the honest state: unchecked, not passing.
+# ---------------------------------------------------------------------------
+name: GPU refcheck
+
+on:
+  # Every merge. This is the point: the claim is re-earned per commit that
+  # reaches main, not per release.
+  push:
+    branches: [main]
+  # A pull request that touches either tracer or the geometry they share. Not
+  # every PR -- the reference side of a full run is minutes of CPU, and a
+  # documentation change cannot move it.
+  pull_request:
+    paths:
+      - 'src/gpu/**'
+      - 'src/core/TraceScene*'
+      - 'src/core/RayTracer*'
+      - 'src/core/BackendCheck*'
+      - 'src/core/MeshBuilder*'
+      - 'src/core/GeometryProvider*'
+      - 'src/core/Bsdf*'
+      - 'src/core/Coating*'
+      - 'src/core/Polarisation*'
+      - '.github/workflows/refcheck.yml'
+  # The nightly run is where the ray count the README quotes gets spent. A merge
+  # gate has to fit in a merge; the claim is about eight million.
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+    inputs:
+      rays:
+        description: 'Rays per scene, per side'
+        required: false
+        default: '8000000'
+
+concurrency:
+  group: refcheck-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  VCPKG_COMMIT: 0b63bdd30d6716affc6fc0caef3886ca3022dc7b
+  QT_VERSION: 6.8.2
+  QT_ARCH: win64_msvc2022_64
+  QT_PREFIX: C:\Qt\6.8.2\msvc2022_64
+  QT_QPA_PLATFORM: offscreen
+
+jobs:
+  refcheck:
+    runs-on: ${{ fromJSON(vars.GPU_RUNNER_LABELS || '["self-hosted","windows","cuda"]') }}
+    # Eight million rays a scene on both sides, over twenty-eight scenes, with a
+    # cold dependency cache underneath it.
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---- The card, before anything is built --------------------------
+      #
+      # First, and fatal. A runner that has lost its GPU builds the stub, and
+      # every later step still succeeds -- there is nothing to trace, so nothing
+      # differs. Finding that out here costs seconds; finding it out from a green
+      # check that meant nothing costs the claim.
+      - name: Report the device
+        run: |
+          nvidia-smi
+          nvcc --version
+
+      # ---- Dependencies ------------------------------------------------
+      #
+      # The same kit ci.yml pins, for the same reason: a disagreement between
+      # the two tracers has to be about this code and not about which OCCT
+      # tessellated the geometry. A self-hosted runner keeps these between runs,
+      # so this is a no-op after the first.
+      - name: Cache Qt
+        id: qt-cache
+        uses: actions/cache@v4
+        with:
+          path: C:\Qt
+          key: qt-${{ env.QT_VERSION }}-${{ env.QT_ARCH }}
+
+      - name: Install Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: |
+          pip install "aqtinstall>=3.1,<4"
+          aqt install-qt windows desktop $env:QT_VERSION $env:QT_ARCH --outputdir C:\Qt
+
+      - name: Check out vcpkg
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}\vcpkg-binary-cache
+          key: vcpkg-${{ env.VCPKG_COMMIT }}-x64-windows-opencascade
+
+      - name: Build OpenCASCADE
+        env:
+          VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-binary-cache
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          .\vcpkg\bootstrap-vcpkg.bat
+          .\vcpkg\vcpkg.exe install opencascade:x64-windows --clean-after-build
+
+      - name: Put Qt and OCCT on PATH
+        run: |
+          "$env:QT_PREFIX\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          "${{ github.workspace }}\vcpkg\installed\x64-windows\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      # ---- Build -------------------------------------------------------
+      # The configure log is kept because the next step reads it. CMakeLists.txt
+      # prints either "GPU preview backend enabled (CUDA <version>)" or the line
+      # saying it will report itself unavailable, and which of the two appeared
+      # decides whether this whole workflow means anything.
+      - name: Configure
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake `
+            -DCMAKE_PREFIX_PATH=$env:QT_PREFIX 2>&1 | Tee-Object -FilePath configure.log
+          exit $LASTEXITCODE
+
+      # Configuring against the stub and then comparing nothing is the failure
+      # this workflow is written to prevent, so it is caught at the point the
+      # decision is made rather than inferred from an empty table at the end.
+      - name: Assert CUDA was found
+        run: |
+          if (-not (Select-String -Path configure.log -Pattern 'GPU preview backend enabled' -Quiet)) {
+            Get-Content configure.log
+            Write-Error "CMake did not enable the GPU preview backend: this build would compare nothing."
+            exit 1
+          }
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      # ---- The check ---------------------------------------------------
+      #
+      # --gpuinfo exits non-zero when there is no backend, so the run stops here
+      # rather than reporting a vacuous pass from --refcheck.
+      - name: Backend present
+        run: .\build\Release\LuxTrace.exe --gpuinfo
+
+      # The unit side of the same question, which is cheap and localises a
+      # failure: `gpu` and `backendcheck` exercise the kernel and the comparison
+      # itself, and on this runner they exercise the real one rather than the
+      # stub they exercise in ci.yml.
+      - name: GPU unit suites
+        run: ctest --test-dir build -C Release --output-on-failure --no-tests=error -R "^(gpu|backendcheck)$"
+
+      # The gate. Every scene the backend takes, traced both ways at the same ray
+      # count, compared in units of each run's own error bar -- a scalar inside
+      # four combined standard errors, a distribution inside three times the
+      # noise floor the two runs' measured per-bin variance implies. Exits 1 if
+      # any scene differs and 2 if nothing was traced at all.
+      #
+      # A merge gets two million rays a scene, which is minutes. The nightly run
+      # and a manual dispatch get eight million -- the count the README's "0
+      # differing" is quoted at, which is the sentence being defended.
+      - name: Determine the ray count
+        id: rays
+        run: |
+          $rays = "${{ github.event.inputs.rays }}"
+          if (-not $rays) {
+            if ("${{ github.event_name }}" -eq "schedule") { $rays = "8000000" }
+            else { $rays = "2000000" }
+          }
+          "rays=$rays" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "refcheck at $rays rays per scene, per side"
+
+      - name: Preview against reference
+        run: |
+          .\build\Release\LuxTrace.exe --refcheck all ${{ steps.rays.outputs.rays }} `
+            | Tee-Object -FilePath refcheck.txt
+          exit $LASTEXITCODE
+
+      # Kept whether it passed or not: a pass is the table that says how much
+      # margin each scene had, and a failure is the table that says which one
+      # went and by how many sigma.
+      - name: Upload the table
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: refcheck-${{ steps.rays.outputs.rays }}-rays
+          path: refcheck.txt
+          if-no-files-found: warn
+
+      - name: Summarise
+        if: always()
+        run: |
+          "## GPU refcheck" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if (Test-Path refcheck.txt) { Get-Content refcheck.txt | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8 }
+          else { "no table: the run did not reach --refcheck" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8 }
+          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8

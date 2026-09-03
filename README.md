@@ -30,11 +30,11 @@ TracePro, OpticStudio) is expected to do:
 | Geometry | 29 parametric OCCT scenes, plus STEP/IGES import of a customer's own CAD; instanced parts share one mesh and one hierarchy |
 | Surface normals | Read off the exact B-Rep at each tessellation node and interpolated across the facet, so the mesh is no longer what limits how sharply a scene focuses |
 | Materials | A catalogue by name — N-BK7, N-SF11, fused silica, PMMA, polycarbonate, water, cement, Al/Ag/Au — with Sellmeier dispersion, Abbe numbers and complex-index Fresnel for the metals |
-| Glass catalogue | Import a real catalogue — a Zemax `.agf` from Schott, Ohara, CDGM, Hoya or Sumita, or a refractiveindex.info `.yml` entry — and the ten built-in names become a catalogue a lens designer can actually type into |
+| Glass catalogue | Import a real catalogue — a Zemax `.agf` from Schott, Ohara, CDGM, Hoya or Sumita, or a refractiveindex.info `.yml` entry — and the eleven built-in names become a catalogue a lens designer can actually type into |
 | Media | A medium stack with priorities: cemented doublets, immersed optics, clad guides and nested solids all refract against the right pair of indices |
 | Coatings | Ideal AR/HR by residual, measured R(lambda) tables, and a characteristic-matrix thin-film solver |
-| Scattering | GGX microfacet with Smith masking, ABg / Harvey-Shack, measured BSDF tables, Lambertian, and Henyey-Greenstein volume scattering inside a medium |
-| Polarisation | Stokes vectors and Mueller matrices behind a switch: Brewster's angle, polarisers, retarders and the phase of total internal reflection |
+| Scattering | GGX microfacet with Smith masking, ABg / Harvey-Shack, measured BSDF tables, Lambertian, and Henyey-Greenstein or Gegenbauer volume scattering inside a medium |
+| Polarisation | Stokes vectors and Mueller matrices behind a switch: Brewster's angle, the phase of total internal reflection, and metal reflection decided by the state rather than by the unpolarised average |
 | Light sources | Point / Lambertian / collimated over a real emitting area, with absolute flux in watts or lumens and a real spectrum (monochromatic, RGB, blackbody, white LED, D65 or a measured SPD) |
 | Measured ray sources | A vendor's measured ray set — Zemax binary `.dat`, ASAP `.dis`, or TracePro text — loads as an emitter, so "model an LED" becomes "use this LED" |
 | Multi-source | Any number of sources, each placed relative to the scene emitter, with per-source arrival tagging and the ray budget shared in proportion to power |
@@ -202,7 +202,7 @@ differently for good reasons — the elliptical reflector does *better* with a
 point source, because its Lambertian hemisphere aims straight at the hole in the
 bottom of the cup.
 
-The whole 27-scene library at 50 000 rays each traces in **0.85 s**. Energy is
+The whole 29-scene library at 50 000 rays each traces in **0.85 s**. Energy is
 accounted for exactly in every scene: `detected + absorbed + escaped + truncated
 == emitted` to 1e-9.
 
@@ -290,9 +290,11 @@ plain Monte Carlo run of the same size would have had, which is the whole gain
 thrown away in the reporting and, worse, an overstated bar that makes every
 disagreement look acceptable.
 
-What it still does not carry is next-event estimation, emission aiming and
-Russian roulette, so on the diffuse scenes it needs more rays than the reference
-for the same error bar and the wall-clock win is smaller than the ray-rate win.
+It carries the reference's variance reduction as well -- next-event estimation
+at diffuse bounces, emission aiming at the scene and Russian roulette -- so the
+diffuse scenes need no more rays than the reference does for the same error bar.
+Without them the ray-rate win did not survive into a wall-clock win on an
+integrating sphere, which is what put them in the kernel.
 
 ### What the comparison found, and what it took to fix
 
@@ -338,7 +340,9 @@ million, which is the floor of single-precision geometry and is stated rather
 than rounded away.
 
 `--refcheck all 8000000` now reports **0 differing** across every scene the gate
-takes.
+takes -- and reports it nightly, on a runner with a card, rather than the last
+time somebody ran it by hand. See the CI section: that number is the preview's
+entire warrant, so it is re-earned on every merge instead of quoted.
 
 ## Interoperation: measured data in
 
@@ -362,7 +366,7 @@ for the whole. A ray file is an `EmittedRay` stream, so it needs no engine
 change: emission is the only place that branches, and everything downstream
 already carries a per-ray weight, wavelength and origin.
 
-**Glass catalogue import.** The engine shipped with ten materials hard-coded.
+**Glass catalogue import.** The engine shipped with eleven materials hard-coded.
 That is a demonstration, not a tool: the first thing a lens designer does is
 type a glass name, and if it is not there the tool is not usable for their job
 whatever else it does. Two formats cover almost everything anyone actually has:
@@ -542,15 +546,45 @@ assertion -- so a unit regression, a physics regression and a determinism
 regression each report as their own failure. The vcpkg commit is pinned, so the
 OCCT under test is the one the developer box has.
 
+Two things run beside them.
+
+**The counts in this file are checked against the code.** `tools/check_readme_counts.py`
+reads `GeometryProvider::Scene` and `studies::validate()` and fails if any
+sentence here quoting the number of scenes or the number of closed forms
+disagrees with them. It is seconds and needs no build, and it exists because
+both had drifted: this file carried a "27-scene library" three paragraphs from
+"29 scenes", and described `--validate` as checking seven results when it checks
+fifteen. A claim about the code that nothing checks is a claim that goes stale.
+
+**The GPU preview is checked against the reference on a machine with a card.**
+A hosted runner has no CUDA device, so the backend in `ci.yml` is the stub and
+`--refcheck` there would compare nothing and pass.
+`.github/workflows/refcheck.yml` runs on a CUDA runner instead -- every merge to
+`main`, every pull request touching either tracer, and nightly -- and traces
+every scene the gate takes both ways: two million rays a scene on a merge, eight
+million on the nightly run, which is the count the "0 differing" below is quoted
+at. It refuses to pass vacuously: no card, no backend, or nothing traced each
+fail by name rather than reporting an empty table as agreement. Point it at a
+runner by setting the `GPU_RUNNER_LABELS` repository variable; until one exists
+the workflow queues, which is the honest state -- unchecked, not passing.
+
 ## Test
 
 ```bash
 ctest --preset release
 ```
 
-418 tests in 73 suites, no external framework. The scene and test counts are
-derived, not retyped: `python tools/regenerate_counts.py` regenerates them from
-`--smoke` and the test binary's own totals. Beyond the original coverage
+493 tests in 82 suites, no external framework. CTest gets that list of suites
+from the binary rather than from a list kept by hand -- a POST_BUILD step asks
+`optics_tests --list-suites`, which enumerates the same registry the runner
+iterates, and writes one `add_test` per suite. The list used to be typed in
+`test/CMakeLists.txt` and had fallen ten suites behind: `backendcheck`, `camera`,
+`determinism`, `environment`, `gpu`, `immersed`, `metafile`, `metasurface`,
+`straypaths` and `tircollimator` all ran under `optics_tests` and none of them
+ran under `ctest`. A suite is now registered by existing. The scene and test
+counts are derived too: `python tools/regenerate_counts.py` regenerates them from
+`--smoke` and the test binary's own totals, and `python tools/check_readme_counts.py`
+fails the build if the ones quoted here have drifted. Beyond the original coverage
 (Moller-Trumbore branches, BVH vs brute force, energy conservation, TIR critical
 angle, edge cases, sampling statistics, detector binning, the async worker, and
 the irradiance patterns each scene claims to produce), the physics and analysis
@@ -676,7 +710,7 @@ The image forms while the trace runs — a snapshot arrives every couple of hund
 milliseconds, so the heatmap fills in and the error bar visibly shrinks, and a run
 can be stopped as soon as the answer is good enough.
 
-Seven tabs over a metrics panel, with a live strip of derived quantities under
+Ten tabs over a metrics panel, with a live strip of derived quantities under
 the parameters (f-number, numerical aperture, acceptance angle, concentration,
 etendue, where the paraxial focus lands) that updates as the spin boxes move,
 before anything is traced:
@@ -783,12 +817,14 @@ compares 1-thread against all-threads on every scene/source combination and
 asserts determinism. `--meshcheck` dumps mesh/BVH stats with a BVH-vs-brute-force
 spot check.
 
-`--validate` is the one worth reading first: it checks the tracer against seven
+`--validate` is the one worth reading first: it checks the tracer against fifteen
 results derived entirely outside it — the lensmaker's equation, the
 integrating-sphere multiplier, the inverse-square cosine law, the flux a square
-receiver subtends, the concentration limit of a CPC, a prism's minimum deviation
-and Lambert's cosine law — and prints the residual on each. They currently land
-between 0.00 % and 0.35 %.
+receiver subtends, the concentration limit of a CPC, a prism's minimum deviation,
+Lambert's cosine law, the Fresnel curve, Brewster's null, the retardance of total
+internal reflection, the GGX white furnace, the Henyey-Greenstein normalisation,
+blackbody luminous efficacy, Lambertian luminance and a metalens's numerical
+aperture — and prints the residual on each.
 
 `--cad <file> [scale] [rays] [axis]` reads a STEP or IGES file and traces it
 through the same path the Import CAD menu item and the Run button take: it
@@ -966,11 +1002,13 @@ python resources/make_icon.py
   *normals* are exact — read off the surface at each node and interpolated across
   the facet — so what the mesh still limits is the hit *position*, which is a far
   weaker constraint. Coarsening the mesh now costs far less than it used to.
-- `SceneParams` is still capped at four doubles. A doublet with two radii, two
-  thicknesses, a spacing and a receiver is already six.
-- The far field bins uniformly in theta, so a 1.3-degree beam is resolved by less
-  than one 2-degree bin and the polar cells are starved of samples.
-  Equal-solid-angle binning is the fix.
+- `SceneParams` holds six doubles and the last is always the receiver, so a
+  registry scene has five free dimensions. The sharper limit is that only
+  registry scenes have any: an assembled or imported scene carries no parameter
+  set, and the sweeps, the optimiser and the tolerance study decline on it.
+- The far field bins theta on a beam-adaptive equal-flux partition, so a
+  couple-of-degree beam spans several rings rather than starving one; phi is
+  still uniform, which is what limits an asymmetric distribution.
 - The estimator is unbiased rather than exact per ray: Russian roulette, branch
   collapsing, emission aiming and next-event estimation each replace a sampled
   quantity with an estimate of it. Every one books its difference into a
@@ -982,8 +1020,8 @@ python resources/make_icon.py
   and most illumination work does not need it, so the unpolarised fast path is
   the default.
 - Volume scattering models a filled medium with a scattering coefficient and a
-  Henyey-Greenstein phase function. It does not model dependent scattering at
-  high particle densities.
+  Henyey-Greenstein or Gegenbauer phase function. It does not model dependent
+  scattering at high particle densities.
 - The through-focus sweep propagates recorded arrivals in a straight line, so it
   is only valid where nothing stands between the planes — near the receiver,
   which is the interesting region.
@@ -999,6 +1037,8 @@ python resources/make_icon.py
   the measurements and the reasoning are in the comment on `TraceScene::BvhNode`.
   A performance claim that does not survive its own benchmark is not an
   optimisation.
+- There is no undo. A scene edit, a delete or a multi-edit is not reversible, so
+  a delete asks first rather than offering to take it back.
 - Imported CAD does not appear in the scene list and does not persist. Import
   assembles a full traceable scene and a run traces that rather than the
   selected scene, but touching a geometry parameter replaces it and the file has
@@ -1073,29 +1113,54 @@ in.
 - **Thermal coupling.** Optical properties do not depend on temperature, and a
   material does not warm up as it absorbs. There is no thermo-mechanical or
   thermal-optical loop.
-- **Ghost / stray-light attribution.** A ghost image or a stray-light path is
-  real geometry the trace can hit, but arrivals are not attributed to a
-  specific bounce chain or interface. You get the spot and the flux, not the
-  "which surface did this come off" answer a ghost study wants.
+- **Ghost imaging.** Stray light *is* attributed: a run can ask for the routes
+  to the receiver, and they come back ranked by the flux each carries, grouped
+  into named surface sets and readable back for run-to-run comparison. What a
+  route does not carry is where it lands or how large its image is -- so the
+  answer is "which surface, and how much", not "which surface, and where it
+  shows up".
 
 ## Licence
 
-LuxTrace is **Copyright 2026 Kutay Gunal**, released under the
-[PolyForm Noncommercial License 1.0.0](LICENSE)
-(SPDX: `PolyForm-Noncommercial-1.0.0`).
+LuxTrace is **Copyright (C) 2026 Kutay Gunal** and is **dual-licensed**. Pick
+the arm that fits what you are doing; full detail is in
+[LICENSING.md](LICENSING.md).
 
-Fork it, change it, publish your changes, use it for study, teaching or
-research: all of that is granted, provided a copy you pass on carries this
-licence and the `Required Notice:` line naming the author. What is *not*
-granted is commercial use — that includes selling the software or a product
-built on it, and internal use inside a for-profit company. This is a
-source-available licence, not an OSI-approved open-source one, so tooling that
-expects one of the standard open licences will not recognise it. For a
-commercial licence, contact the copyright holder.
+| | Open source | Commercial |
+|---|---|---|
+| **Terms** | [GNU AGPL v3, *only*](LICENSE) (SPDX: `AGPL-3.0-only`) | [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) |
+| **Cost** | Free | Paid, per seat |
+| **Must you publish your source?** | Yes | No |
+| **For** | Research, teaching, personal use, other AGPL projects | Products, internal for-profit use, closed-source work, hosted services |
+
+**Under the AGPL** you may use, modify, redistribute and sell LuxTrace. The
+price is reciprocity: distribute a modified LuxTrace or a program that
+incorporates it, and the complete corresponding source of that whole work goes
+out under the AGPL too — not just your diff. And under **section 13**, letting
+users reach a modified LuxTrace *over a network* counts: a hosted service or an
+internal simulation API owes those users the source, even though no binary was
+ever shipped. Internal use with no distribution and no network exposure triggers
+neither.
+
+The grant is `AGPL-3.0-only`, not `-or-later`: it does not extend to future AGPL
+versions the FSF may publish.
+
+**Take the commercial licence** to ship LuxTrace inside a product, run a
+modified copy as a service, link it into closed-source code, or get a warranty,
+indemnity or support — none of which the AGPL offers. Contact the copyright
+holder.
+
+**Contributing:** every contributor signs the [CLA](CLA.md) before their code is
+merged — see [CONTRIBUTING.md](CONTRIBUTING.md). Only the copyright holder can
+offer the commercial arm, and a single contribution held under the AGPL alone
+would end it permanently. You keep the copyright in what you write.
+
+**The name is not licensed by either arm.** "LuxTrace" and its logo remain the
+copyright holder's; AGPL section 7(e) preserves that.
 
 ### Third-party components
 
-Neither dependency is covered by the licence above; each is licensed by its own
+Neither dependency is covered by the licences above; each is licensed by its own
 authors, and neither is redistributed in this repository — the build resolves
 both from vcpkg and from a Qt kit you install yourself.
 
@@ -1105,27 +1170,16 @@ both from vcpkg and from a Qt kit you install yourself.
 | Qt 6.8.2 | LGPL-3.0 | Dynamic, via `windeployqt` |
 
 Both are used as a *work that uses the library*: LuxTrace links them
-dynamically, ships no part of their source, and derives nothing from them
-beyond their published headers. That is what lets a differently-licensed
-application sit on top of them at all.
+dynamically, ships no part of their source, and derives nothing from them beyond
+their published headers. Both are AGPL-compatible in this configuration — Qt's
+LGPL-3.0 directly, OCCT's LGPL-2.1 through section 6 — so the copyleft in this
+project is the one chosen for it, not one the libraries imposed.
 
 **If you distribute a built LuxTrace**, the LGPL obligations travel with the
-binary and are yours to meet, not this repository's:
-
-- Ship the two libraries as their own DLLs — never statically linked, never
-  merged into `LuxTrace.exe`. The shared-library mechanism is what satisfies
-  LGPL-3.0 §4(d)(0) without your having to publish anything of your own.
-- State prominently that the work uses Qt and OpenCASCADE Technology, and
-  include a copy of each library's licence with what you ship.
-- Offer the corresponding source of the libraries — the unmodified upstream
-  release is enough if you did not modify them, and the vcpkg port pins the
-  exact version to point at. If you *did* modify either, that modified source
-  is what you must offer, under the same LGPL.
-- Leave the recipient able to relink: they may swap in their own build of Qt or
-  OCCT and run your binary against it. The [LICENSE](LICENSE) file grants the
-  reverse-engineering-for-debugging permission this requires, so the
-  noncommercial terms above do not stand in its way.
-
-Under the LGPL the recipient's rights are in the libraries, not in LuxTrace: a
-recipient may rebuild Qt and relink, and still holds no commercial licence to
-LuxTrace itself.
+binary and are yours to meet, under *either* arm of the licence: ship the
+libraries as their own DLLs, give notice and include their licence texts, make
+the corresponding library source available or carry a written offer for it, and
+leave the recipient able to relink against their own build. A commercial licence
+releases you from the AGPL; it cannot release you from the LGPL.
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) spells each of those out and
+includes sample written-offer wording.

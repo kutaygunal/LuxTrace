@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Kutay Gunal
+#
+# This file is part of LuxTrace, distributed under the GNU Affero General
+# Public License version 3 only, WITHOUT ANY WARRANTY. See LICENSE.
+# A commercial licence is available; see LICENSING.md.
+
 """runner.py -- drive LuxTrace from a Python script.
 
 What it does

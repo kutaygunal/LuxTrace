@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Kutay Gunal
+//
+// This file is part of LuxTrace, distributed under the GNU Affero General
+// Public License version 3 only, WITHOUT ANY WARRANTY. See LICENSE.
+// A commercial licence is available; see LICENSING.md.
+
 #pragma once
 #include "Vec3.h"
 #include <cmath>
@@ -5,9 +12,13 @@
 // Polarisation, as a Stokes vector carried by each branch and a Mueller matrix
 // applied at each interaction.
 //
-// Unpolarised Fresnel is the average of Rs and Rp, so Brewster's angle appears
-// in the reflectance curve but a polariser cannot be modelled, total internal
-// reflection carries no phase, and stress birefringence is out of reach.
+// This is what the unpolarised model cannot express. Averaging Rs and Rp puts
+// Brewster's angle in the reflectance curve, but leaves no state for a polariser
+// to act on and no phase for total internal reflection to carry; both are here
+// -- Mueller::polariser and Mueller::retarder, and the phase fresnelAmplitudes
+// returns past the critical angle. Stress birefringence is still out of reach:
+// it needs an index that varies through a solid, and the geometry carries one
+// index per medium.
 //
 // A polarised trace costs roughly four times the per-ray state, and most
 // illumination work does not need it, so it sits behind a switch and the

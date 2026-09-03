@@ -31,7 +31,7 @@ BEGIN
             VALUE "FileDescription", "LuxTrace - Optical Design Studio"
             VALUE "FileVersion",     "1.0.0.0"
             VALUE "InternalName",    "LuxTrace"
-            VALUE "LegalCopyright",  "Copyright 2026 Kutay Gunal. PolyForm Noncommercial License 1.0.0."
+            VALUE "LegalCopyright",  "Copyright (C) 2026 Kutay Gunal. GNU AGPL v3 only, or a commercial licence."
             VALUE "OriginalFilename","LuxTrace.exe"
             VALUE "ProductName",     "LuxTrace"
             VALUE "ProductVersion",  "1.0.0.0"

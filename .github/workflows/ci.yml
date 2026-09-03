@@ -10,6 +10,10 @@
 # failing and --bench failing mean three different things (a unit regression, a
 # physics regression, a determinism regression), and a single red step that
 # lumps them together would throw that away.
+#
+# What this file cannot check is the GPU preview: a hosted runner has no CUDA
+# device, so the backend here is the stub and `--refcheck` would compare nothing.
+# That gate lives in .github/workflows/refcheck.yml, on a machine with a card.
 name: CI
 
 on:
@@ -35,6 +39,28 @@ env:
   QT_QPA_PLATFORM: offscreen
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # The counts the README quotes.
+  #
+  # Two numbers in the README are facts about the source rather than prose: how
+  # many scenes the library holds, and how many closed forms `--validate`
+  # checks. Both had drifted -- the README carried a "27-scene library" three
+  # paragraphs from "29 scenes", and described `--validate` as checking seven
+  # results when it checks fifteen -- because nothing failed when they did.
+  #
+  # Seconds, no build, no toolchain: it parses `GeometryProvider::Scene` and
+  # `studies::validate()` and compares them with every sentence that quotes
+  # either. First job in the file because it is the one that can report before
+  # OCCT has finished configuring.
+  # ---------------------------------------------------------------------------
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: README counts against the code
+        run: python tools/check_readme_counts.py
+
   windows:
     # windows-latest moves between images; the generator below is what pins
     # the toolchain to MSVC 2022, which every current image still carries.

@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Kutay Gunal
+//
+// This file is part of LuxTrace, distributed under the GNU Affero General
+// Public License version 3 only, WITHOUT ANY WARRANTY. See LICENSE.
+// A commercial licence is available; see LICENSING.md.
+
 #include <QApplication>
 #include <QIcon>
 #include <QTextStream>
@@ -300,6 +307,22 @@ int refCheckAll(int rays) {
         << "traced " << traced << " of " << GeometryProvider::count()
         << ", " << ok << " indistinguishable from the reference, "
         << (traced - ok) << " differing, " << refused << " refused by name" << Qt::endl;
+
+    // Nothing traced is not zero differing. Without this, the check exits 0 on a
+    // machine with no card -- which is the one result a gate defending the
+    // preview must never give, because it is indistinguishable from a pass and
+    // is what a CI job would report on the day the runner lost its GPU.
+    if (traced == 0) {
+        out << Qt::endl
+            << "FAILED: no scene was traced by the preview backend, so nothing "
+               "was compared." << Qt::endl
+            << "        " << (gputrace::available()
+                                  ? QStringLiteral("Every scene was refused by name.")
+                                  : QStringLiteral("There is no preview backend: ")
+                                        + gputrace::unavailableReason())
+            << Qt::endl;
+        return 2;
+    }
     return (traced - ok) == 0 ? 0 : 1;
 }
 

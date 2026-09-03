@@ -799,11 +799,13 @@ __device__ __forceinline__ void basisOf(float3 n, float3& t, float3& b) {
 // arrivals, and because three of the library's scenes -- the integrating
 // sphere, the diffuser plate, the showcase luminaire -- are nothing else.
 //
-// What is deliberately *not* here is next-event estimation. The reference
-// connects every diffuse bounce analytically to every receiver; the preview
-// samples and waits. Both converge to the same answer and the preview needs far
-// more rays to get there, which is a variance difference the comparison sizes
-// rather than a physics one it has to refuse.
+// Next-event estimation is here as well, and is the reference's term for term:
+// nextEventEstimate below connects every diffuse bounce analytically to every
+// receiver and declines on the same geometric test the reference declines on.
+// Sampling and waiting is what this kernel did before the gate opened on the
+// diffuse scenes, and on an integrating sphere it cost an order of magnitude in
+// rays for the same error bar -- a variance difference the comparison would
+// have sized rather than refused, but not one worth paying.
 // ---------------------------------------------------------------------------
 
 __device__ __forceinline__ float3 cosineHemisphere(float3 n, float u1, float u2) {

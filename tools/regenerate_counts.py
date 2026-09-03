@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Kutay Gunal
+#
+# This file is part of LuxTrace, distributed under the GNU Affero General
+# Public License version 3 only, WITHOUT ANY WARRANTY. See LICENSE.
+# A commercial licence is available; see LICENSING.md.
+
 """Regenerate the scene and test counts the README quotes.
 
-The README's "26 scenes" and "283 tests in 58 suites" are derived facts, and a
+The README's "29 scenes" and "493 tests in 82 suites" are derived facts, and a
 derived fact should be derived, not retyped. This script regenerates them from
 the two authorities that already print them:
 
   * `LuxTrace.exe --smoke <n>` enumerates every scene in the registry, one per
     line, so counting the lines is counting the scenes.
   * `optics_tests.exe` prints its own totals -- "N test(s), ... check(s)" -- and
-    the suite count is the number of distinct suite names it runs.
+    `optics_tests.exe --list-suites` names every suite it carries, which is the
+    same list CTest is registered from.
 
 Run it from the repository root:
 
@@ -69,8 +77,14 @@ def count_tests(exe):
     if not m:
         raise RuntimeError("test binary did not print its totals")
     tests = int(m.group(1))
-    suites = len({l.split(".")[0].replace("[ RUN ]", "").strip()
-                  for l in out.splitlines() if l.startswith("[ RUN ]")})
+
+    # The suite count comes from the binary's own enumeration rather than from
+    # counting [ RUN ] lines, because that enumeration is what CTest registers
+    # from -- so this number and `ctest -N` cannot disagree.
+    listing = subprocess.run(
+        [exe, "--list-suites"], capture_output=True, text=True, env=env, timeout=120,
+    )
+    suites = len([l for l in listing.stdout.splitlines() if l.strip()])
     return tests, suites
 
 

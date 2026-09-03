@@ -1,10 +1,21 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Kutay Gunal
+//
+// This file is part of LuxTrace, distributed under the GNU Affero General
+// Public License version 3 only, WITHOUT ANY WARRANTY. See LICENSE.
+// A commercial licence is available; see LICENSING.md.
+
 // Unit tests for the optics core. Deliberately dependency-free: a tiny
 // assertion harness keeps the test target buildable with nothing but Qt + OCCT,
 // which are already required by the app.
 //
 // Run everything:      optics_tests
 // Run one suite:       optics_tests <suite>
-// CTest registers one test per suite (see test/CMakeLists.txt).
+// Name every suite:    optics_tests --list-suites
+//
+// CTest registers one test per suite, and it gets the list by asking this
+// binary rather than from a list kept by hand: see test/CMakeLists.txt and
+// test/DiscoverSuites.cmake. A suite is registered by existing.
 
 #include <QCoreApplication>
 #include <QDir>
@@ -17,6 +28,7 @@
 #include <QEventLoop>
 #include <QTimer>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -1126,7 +1138,30 @@ TEST(patterns, retroreflectors_only_score_by_sending_light_back) {
 
 // =================================================================== main ===
 
+namespace {
+
+// Every distinct suite name in the registry, in the order the suites were first
+// registered. This is what CTest is driven from, so it is deliberately the same
+// registry the runner iterates -- there is no second list that could disagree.
+std::vector<std::string> suiteNames() {
+    std::vector<std::string> names;
+    for (const auto& tc : registry())
+        if (std::find(names.begin(), names.end(), tc.suite) == names.end())
+            names.push_back(tc.suite);
+    return names;
+}
+
+} // namespace
+
 int main(int argc, char** argv) {
+    // Answered before QCoreApplication is constructed: the build-time discovery
+    // step runs this on a machine that has only just linked the binary, and a
+    // suite list should not depend on Qt finding a platform plugin.
+    if (argc > 1 && std::strcmp(argv[1], "--list-suites") == 0) {
+        for (const std::string& n : suiteNames()) std::printf("%s\n", n.c_str());
+        return 0;
+    }
+
     // Queued signal delivery needs an event loop to dispatch into.
     QCoreApplication app(argc, argv);
     const std::string filter = (argc > 1) ? argv[1] : std::string();

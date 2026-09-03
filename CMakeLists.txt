@@ -414,7 +414,7 @@ endforeach()
 # it. `cpack -C Release` from the build directory writes one.
 # A package that cannot be read without the repository beside it is not a
 # package. Guarded because neither file is required to build.
-foreach(doc LICENSE README.md)
+foreach(doc LICENSE LICENSING.md THIRD-PARTY-NOTICES.md README.md)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${doc}")
         install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/${doc}" DESTINATION .)
     endif()

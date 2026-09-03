@@ -3,7 +3,8 @@
 add_executable(optics_tests TestMain.cpp NewTests.inc AuditTests.inc SceneDocTests.inc
                AppearanceTests.inc ThetaBinTests.inc MeasuredDataTests.inc
                SceneParamsTests.inc AtomicGridTests.inc AdaptiveMeshTests.inc
-               MultiEditTests.inc)
+               MultiEditTests.inc BackendCheckTests.inc GpuBackendTests.inc
+               BackwardTests.inc EnvironmentTests.inc MetasurfaceTests.inc)
 
 # The reference corpus lives beside the tests, and the test binary runs from the
 # build tree, so the path has to be baked in rather than guessed at run time.
@@ -21,34 +22,66 @@ if(MSVC)
     target_compile_options(optics_tests PRIVATE /W3 /MP)
 endif()
 
-# One CTest entry per suite, so a failure names the area that broke. Named once
-# and reused: the list was duplicated for the properties below, which is one
-# list to forget when a suite is added.
-set(LUXTRACE_TEST_SUITES
-    intersect bvh trace edge tir sampling detector worker patterns fresnel
-    absorption scatter roughness spectral intensity metrics focus convergence
-    source rays params config media material spectrum units detectors photometry
-    validation estimator instances cad sweep optimise derived report overrides
-    bsdf coating polarised imagequality tolerancing geometry channels diagnostics
-    overridekeys polarisedmetal catalogue rayfile multisource regression
-    configkeys scattermodel importaudit simd preview rayinspector pythonenv
-    fidelity sceneparams thetabin meshadaptive scenedoc atomicgrid
-    multiedit
-    appearancematerials appearancescene appearanceemitters appearanceradiance
-    appearanceoutput appearanceshowcase appearancecolour)
+# ---------------------------------------------------------------------------
+# One CTest entry per suite, so a failure names the area that broke -- and the
+# list of suites comes from the binary rather than from this file.
+#
+# It used to be typed here. That list fell ten suites behind what the binary
+# carried (backendcheck, camera, determinism, environment, gpu, immersed,
+# metafile, metasurface, straypaths, tircollimator all ran under `optics_tests`
+# and none of them ran under `ctest`), because adding a suite and remembering to
+# name it here are two separate acts and only the first one is enforced by the
+# compiler. Asking the binary makes them one act: a suite is registered with
+# CTest by existing.
+#
+# The mechanics are the ones GoogleTest's discovery uses, for the same reason:
+# CTest needs the list at configure time and the binary only knows it once it is
+# linked, so a POST_BUILD step writes an include file that CTest reads. The
+# include file is generated at configure time as well, so a configured-but-not-
+# yet-built tree registers a failing placeholder rather than silently no tests.
+# ---------------------------------------------------------------------------
+set(suite_timeout 300)
+set(discovery_base "${CMAKE_CURRENT_BINARY_DIR}/optics_tests_suites")
 
-foreach(suite IN LISTS LUXTRACE_TEST_SUITES)
-    add_test(NAME ${suite} COMMAND optics_tests ${suite})
-    set_tests_properties(${suite} PROPERTIES TIMEOUT 300)
-endforeach()
+# The generated list names the binary by its full path, so a multi-config tree
+# keeps one list per configuration rather than letting the last build win and
+# sending `ctest -C Release` at a Debug binary.
+set(discovery_tests "${discovery_base}_tests-$<CONFIG>.cmake")
 
-# Qt needs its platform plugin resolved even for a console binary on Windows,
-# and the Qt DLLs have to be findable before that can happen. Prepending the
-# kit's own bin directory to PATH does both: Qt6Core carries the prefix it was
-# built with, so the offscreen plugin resolves from there without any of it
-# being copied into the build tree. OCCT is already beside the binary -- the
-# vcpkg toolchain copies it there on every build (VCPKG_APPLOCAL_DEPS) -- so a
-# fresh clone runs ctest with nothing deployed by hand.
-set_tests_properties(${LUXTRACE_TEST_SUITES} PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+add_custom_command(TARGET optics_tests POST_BUILD
+    COMMAND ${CMAKE_COMMAND}
+            -D "TEST_EXECUTABLE=$<TARGET_FILE:optics_tests>"
+            -D "TESTS_FILE=${discovery_tests}"
+            -D "QT_BIN_DIR=$<TARGET_FILE_DIR:Qt6::Core>"
+            -D "TEST_TIMEOUT=${suite_timeout}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/DiscoverSuites.cmake"
+    BYPRODUCTS "${discovery_tests}"
+    VERBATIM
+    COMMENT "Enumerating optics_tests suites for CTest")
+
+# A tree that was configured but never built has no suite list. Registering a
+# test that cannot run says so; registering nothing would let `ctest` come back
+# green having run no tests at all.
+file(GENERATE OUTPUT "${discovery_base}_include-$<CONFIG>.cmake" CONTENT
+"if(EXISTS \"${discovery_tests}\")
+    include(\"${discovery_tests}\")
+else()
+    add_test(optics_tests_NOT_BUILT optics_tests_NOT_BUILT)
+endif()
+")
+
+# CTest reads the file below with generator expressions already spent, so the
+# configuration has to be chosen with a variable it sets rather than with
+# $<CONFIG>. One indirection buys that.
+if(CMAKE_CONFIGURATION_TYPES)
+    file(WRITE "${discovery_base}_include.cmake"
+         "include(\"${discovery_base}_include-\${CTEST_CONFIGURATION_TYPE}.cmake\")
+")
+else()
+    file(GENERATE OUTPUT "${discovery_base}_include.cmake" CONTENT
+         "include(\"${discovery_base}_include-$<CONFIG>.cmake\")
+")
+endif()
+
+set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES
+             "${discovery_base}_include.cmake")
