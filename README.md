@@ -20,6 +20,19 @@ for the ray tracing that gets there.*
 
 ---
 
+## Screenshots
+
+| | |
+|---|---|
+| ![3D viewport, default scene](docs/images/01_3dview_default.png) | ![Traced showcase luminaire](docs/images/02_3dview_showcase.png) |
+| **3D View.** B-Rep geometry in the OCCT viewport before a trace runs — drag optics, mirrors and light guides in from the palette on the left. | **A traced run.** A showcase luminaire (LED die, reflector cup, opal cover) with 100,000 rays colour-mapped by energy, and the energy budget, spot metrics and efficiency reported live underneath. |
+| ![Irradiance heatmap](docs/images/03_irradiance.png) | ![Far-field intensity polar plot](docs/images/04_intensity.png) |
+| **Irradiance.** The receiver heatmap with a click-to-move cross-section cut and the encircled-energy curve — five colour maps, linear/log/sqrt scaling. | **Intensity.** The far-field candela distribution as a polar curve with C0/C90 meridians — the same grid that exports as IES LM-63 or EULUMDAT. |
+| ![GPU path-traced appearance render](docs/images/05_appearance.png) | ![2D ray-fan diagram](docs/images/06_raydiagram.png) |
+| **Appearance.** A GPU path-traced product shot of the part switched on, under a studio rig — a preview, not a measurement, with **Measure luminance...** alongside it for the real cd/m² numbers. | **Ray Diagram (X-Z).** The flat projection where a whole ray fan reads at once, coloured by bounce path from source through the optic to the receiver. |
+
+---
+
 ## Capabilities
 
 Benchmarked against what a commercial illumination-design package (LightTools,
